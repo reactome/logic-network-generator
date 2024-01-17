@@ -1,4 +1,4 @@
-""
+"""
 Created on Wed Jan 17 11:43:39 2024
 
 @author: thomasbarbazuk
@@ -23,7 +23,7 @@ def get_reaction_connections(pathway_id):
        OPTIONAL MATCH (r1:ReactionLikeEvent)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway:Pathway)
            WHERE pathway.dbId = %s
        RETURN r1.dbId AS parent_reaction_id, r2.dbId AS child_reaction_id
-    """ %  (pathway_id, pathway_id)
+    """ % (pathway_id, pathway_id)
     df = pd.DataFrame(graph.run(query).data())
     df = df.astype({'parent_reaction_id': 'Int64',
                     'child_reaction_id': 'Int64'})
@@ -39,7 +39,8 @@ def get_all_pathways():
             p.name[0] AS name
         LIMIT 10
         """
-    return graph.run(query).data();
+    return graph.run(query).data()
+
 
 def get_labels(entity_id):
     query_get_labels_template = """
@@ -60,6 +61,7 @@ def get_complex_components(entity_id):
     query = query_get_components_template % entity_id
 
     return set(graph.run(query).data()[0]["component_ids"])
+
 
 def get_set_members(entity_id):
     query_get_members_template = """
@@ -94,7 +96,7 @@ def get_reaction_input_output_ids(reaction_id, input_or_output):
     query = query_template % (relation_type, reaction_id)
 
     return set(graph.run(query).data()[0]["io_ids"])
-      
+
 
 def break_apart_entity(entity_id):
     labels = get_labels(entity_id)
@@ -108,8 +110,14 @@ def break_apart_entity(entity_id):
                 broken_apart_members.append(member)
 
         return broken_apart_members if broken_apart_members else [[entity_id]]
-    elif any(entity_label in labels for entity_label in ["EntityWithAccessionedSequence", "SimpleEntity", "OtherEntity", "GenomeEncodedEntity", "Polymer", "ChemicalDrug", "Drug"]):
-
+    elif any(entity_label in labels for entity_label in [
+          "ChemicalDrug",
+          "Drug",
+          "EntityWithAccessionedSequence",
+          "GenomeEncodedEntity",
+          "OtherEntity",
+          "Polymer",
+          "SimpleEntity"]):
         return [[entity_id]]
     else:
         print("labels not handled")
@@ -118,8 +126,10 @@ def break_apart_entity(entity_id):
         print(entity_id)
         exit()
 
+
 def add_outputs_for_reaction():
     print("adding output_reactions")
+
 
 def add_reaction_pair(pathway_pi_df, reaction_pair):
     print("adding reaction pair")
@@ -127,11 +137,13 @@ def add_reaction_pair(pathway_pi_df, reaction_pair):
     exit()
     add_outputs_for_reaction(reaction_pair["parent_reaction_id"], )
 
+
 def generate_combinations(entity_ids):
     decomposed_entities = []
     for entity_id in entity_ids:
         decomposed_entities.append(break_apart_entity(entity_id))
     return list(itertools.product(*decomposed_entities))
+
 
 def create_entity_combinations_dict(combinations):
     entity_combinations = {}
@@ -139,6 +151,7 @@ def create_entity_combinations_dict(combinations):
         key = "-".join(map(str, sorted(list(np.concatenate(combination)))))
         entity_combinations[key] = combination
     return entity_combinations
+
 
 def create_rows(reaction_id, decomposed_combinations, input_or_output):
     rows = []
@@ -152,8 +165,9 @@ def create_rows(reaction_id, decomposed_combinations, input_or_output):
             }
             rows.append(row)
     return rows
-#take an rxn ID, a dictionary of decomposed combinations (input or output), and type of input or output. 
-#creates a list of dictionaries (rows) representing the data for the final DataFrame.
+# take an rxn ID, a dictionary of decomposed combinations (input or output), and type of input or output.
+# creates a list of dictionaries (rows) representing the data for the final DataFrame.
+
 
 def match_input_to_output(input_combination_key, input_combination_key_parts, output_combinations):
     best_match_count = 0
@@ -169,15 +183,10 @@ def match_input_to_output(input_combination_key, input_combination_key_parts, ou
 
     return output_entities
 
-#match input combinations to output combinations. 
-#calculate the number of common elements between input and output combination keys
-#select the output combination with the highest number of common elements.          
-#retrieve input and output IDs for each reaction.
-#Decompose input and output entities and generate all possible combinations.
-#Create dictionaries for input and output combinations.
-#Extend the rows list with data for input and output entities.
-#Match input combinations to output combinations and extend the rows list accordingly
 
+# match input combinations to output combinations.
+# calculate the number of common elements between input and output combination keys
+# select the output combination with the highest number of common elements.
 def get_reaction_inputs_and_outputs(reaction_ids):
     print("Create reaction inputs and outputs dataframe")
     rows = []
@@ -230,14 +239,13 @@ def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df
         exit()
 
 
-
 def generate_pathway_file(pathway_id, taxon_id, pathway_name):
     print("Generating " + pathway_id + " " + pathway_name)
-    reaction_connections_df =  get_reaction_connections(pathway_id)
+    reaction_connections_df = get_reaction_connections(pathway_id)
     reaction_ids = pd.unique(reaction_connections_df[['parent_reaction_id', 'child_reaction_id']].values.ravel('K'))
-    reaction_ids = reaction_ids[~pd.isna(reaction_ids)]#removing NA value from list
+    reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
 
-    reaction_inputs_and_outputs_filename = 'reaction_inputs_and_outputs_df_' +  pathway_id + '.tsv'
+    reaction_inputs_and_outputs_filename = 'reaction_inputs_and_outputs_df_' + pathway_id + '.tsv'
     if os.path.isfile(reaction_inputs_and_outputs_filename):
         reaction_inputs_and_outputs_df = pd.read_table(reaction_inputs_and_outputs_filename, delimiter="\t")
     else:
@@ -247,21 +255,22 @@ def generate_pathway_file(pathway_id, taxon_id, pathway_name):
     pathway_pi_df = create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df)
     exit()
 
+
 def main():
     taxon_id = "9606"
-    #pathways = get_all_pathways();
-    pathways = { "69620": "Cell_Cycle_Checkpoints",
-                 "5693567": "HDR_through_Homologous_Recombination_HRR_or_Single_Strand_Annealing_SSA_",
-                 "453274": "Mitotic_G2-G2_M_phases",
-                 "68875": "Mitotic_Prophase",
-                 "453279": "Mitotic_G1-G1_S_phases",
-                 "1257604": "PIP3_activates_AKT_signaling",
-                 "5673001": "RAF_MAP_kinase_cascade",
-                 "1227986": "Signaling_by_ERBB2",
-                 "195721": "Signaling_by_WNT",
-                 "69242": "S_Phase",
-                 "3700989": "Transcriptional_Regulation_by_TP53"
-            }
+    # pathways = get_all_pathways()
+    pathways = {"69620": "Cell_Cycle_Checkpoints",
+                "5693567": "HDR_through_Homologous_Recombination_HRR_or_Single_Strand_Annealing_SSA_",
+                "453274": "Mitotic_G2-G2_M_phases",
+                "68875": "Mitotic_Prophase",
+                "453279": "Mitotic_G1-G1_S_phases",
+                "1257604": "PIP3_activates_AKT_signaling",
+                "5673001": "RAF_MAP_kinase_cascade",
+                "1227986": "Signaling_by_ERBB2",
+                "195721": "Signaling_by_WNT",
+                "69242": "S_Phase",
+                "3700989": "Transcriptional_Regulation_by_TP53"
+                }
 
     for pathway_id, pathway_name in pathways.items():
         generate_pathway_file(pathway_id, taxon_id, pathway_name)
