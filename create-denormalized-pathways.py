@@ -94,14 +94,6 @@ def get_reaction_input_output_ids(reaction_id, input_or_output):
     query = query_template % (relation_type, reaction_id)
 
     return set(graph.run(query).data()[0]["io_ids"])
-
-#disregard these lines nect 2 lines
-#input_ids = get_reaction_input_output_ids(reaction_id, "input")
-#output_ids = get_reaction_input_output_ids(reaction_id, "output")
-
-#original
-#def get_reaction_input_ids(reaction_id):
-    #query_reaction_inputs_template = """
       
 
 def break_apart_entity(entity_id):
