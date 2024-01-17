@@ -108,7 +108,8 @@ def break_apart_entity(entity_id):
                 broken_apart_members.append(member)
 
         return broken_apart_members if broken_apart_members else [[entity_id]]
-    elif "EntityWithAccessionedSequence" in labels or "SimpleEntity" in labels or "OtherEntity" in labels or "GenomeEncodedEntity" in labels or "Polymer" in labels or "ChemicalDrug" in labels or "Drug" in labels:
+    elif any(entity_label in labels for entity_label in ["EntityWithAccessionedSequence", "SimpleEntity", "OtherEntity", "GenomeEncodedEntity", "Polymer", "ChemicalDrug", "Drug"]):
+
         return [[entity_id]]
     else:
         print("labels not handled")
