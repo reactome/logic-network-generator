@@ -102,70 +102,7 @@ def get_reaction_input_output_ids(reaction_id, input_or_output):
 #original
 #def get_reaction_input_ids(reaction_id):
     #query_reaction_inputs_template = """
-       #MATCH (reaction)-[:input]-(input)
-           #WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) AND reaction.dbId=%s
-       #RETURN COLLECT(input.dbId) AS inputs
-    #"""
-    #query = query_reaction_inputs_template % (reaction_id)
-
-    #return set(graph.run(query).data()[0]["inputs"])
-
-#original
-#def get_reaction_output_ids(reaction_id):
-    #query_reaction_outputs_template = """
-       #MATCH (reaction)-[:output]-(output)
-            #WHERE (reaction:Reaction or reaction:ReactionLikeEvent) AND reaction.dbId=%s
-       #RETURN COLLECT(output.dbId) AS outputs
-    #"""
-    #query = query_reaction_outputs_template % (reaction_id)
-
-    #return set(graph.run(query).data()[0]["outputs"])
-
-#original
-#def add_entity_to_members(members, entity_id):
-    #broken_apart_members = []
-    #for member in members:
-        #member.append(entity_id)
-        #broken_apart_members.append(member)
-
-    #return broken_apart_members
-
-#original
-#def break_apart_complex(entity_id):
-    #component_ids = get_complex_components(entity_id)
-
-    #broken_apart_members = []
-    #for component_id in component_ids:
-        #members = break_apart_entity_based_on_sets(component_id)
-        #if not broken_apart_members:
-            #broken_apart_members = members
-        #else:
-            #current_members = broken_apart_members
-            #broken_apart_members = []
-            #for current_member in current_members:
-                #for member in members:
-                    #new_member_combination = current_member + member
-                    #broken_apart_members.append(new_member_combination)
-    #pp.pprint(component_ids)
-    #pp.pprint(broken_apart_members)
-    #exit()
-    #if len(broken_apart_members) == 1:
-       #return [[entity_id]]
-    #else:
-       #return broken_apart_members
-
-#original
-#def break_apart_set(entity_id):
-    #member_ids = get_set_members(entity_id)
-    #broken_apart_members = []
-    #for member_id in member_ids:
-        #members = break_apart_entity_based_on_sets(member_id)
-        #for member in members:
-            #broken_apart_members.append(member)
-
-    #return broken_apart_members
-    
-# ... (Previous code)
+      
 
 def break_apart_entity(entity_id):
     labels = get_labels(entity_id)
@@ -193,31 +130,6 @@ def break_apart_entity(entity_id):
 
 def break_apart_entity_based_on_sets(entity_id):
     return break_apart_entity(entity_id)
-    #labels = get_labels(entity_id)
-    #if "Complex" in labels:
-        #return break_apart_complex(entity_id)
-    #elif "EntitySet" in labels:
-        #return break_apart_set(entity_id)
-    #elif "EntityWithAccessionedSequence" in labels:
-        #return [[entity_id]]
-   # elif "SimpleEntity" in labels:
-        #return [[entity_id]]
-    #elif "OtherEntity" in labels:
-        #return [[entity_id]]
-    #elif "GenomeEncodedEntity" in labels:
-        #return [[entity_id]]
-    #elif "Polymer" in labels:
-        #return [[entity_id]]
-    #elif "ChemicalDrug" in labels:
-        #return [[entity_id]]
-    #elif "Drug" in labels:
-        #return [[entity_id]]
-    #else:
-      #print("labels not handled")
-      #print(labels)
-      #print("for entity")
-      #print(entity_id)
-      #exit()
 
 def add_outputs_for_reaction():
     print("adding output_reactions")
@@ -235,9 +147,6 @@ def generate_combinations(entity_ids):
     for entity_id in entity_ids:
         decomposed_entities.append(break_apart_entity_based_on_sets(entity_id))
     return list(itertools.product(*decomposed_entities))
-#take a list of entity IDs
-# breaks each entity apart based on sets
-#generates all possible combinations of these decomposed entities using itertools.product.
 
 def create_entity_combinations_dict(combinations):
     entity_combinations = {}
@@ -245,8 +154,6 @@ def create_entity_combinations_dict(combinations):
         key = "-".join(map(str, sorted(list(np.concatenate(combination)))))
         entity_combinations[key] = combination
     return entity_combinations
-#creates a dictionary where the keys = unique strings representing combinations of decomposed entities
-#the values are the corresponding combinations.
 
 def create_rows(reaction_id, decomposed_combinations, input_or_output):
     rows = []
@@ -281,38 +188,8 @@ def match_input_to_output(input_combination_key, input_combination_key_parts, ou
 #calculate the number of common elements between input and output combination keys
 #select the output combination with the highest number of common elements.
 
-#def get_reaction_inputs_and_outputs(reaction_ids):
-    #print("Create reaction inputs and outputs dataframe")
-    #rows = []
 
-    #for reaction_id in reaction_ids:
-        #print(reaction_id)
-        #input_ids = get_reaction_input_ids(reaction_id)
-
-        #broken_apart_input_id_set = [break_apart_entity_based_on_sets(input_id) for input_id in input_ids]
-        #iterproduct_inputs = generate_combinations(broken_apart_input_id_set)
-        #input_combinations = create_entity_combinations_dict(iterproduct_inputs)
-
-        #output_ids = get_reaction_output_ids(reaction_id)
-        #broken_apart_output_id_set = [break_apart_entity_based_on_sets(output_id) for output_id in output_ids]
-        #iterproduct_outputs = generate_combinations(broken_apart_output_id_set)
-        #output_combinations = create_entity_combinations_dict(iterproduct_outputs)
-
-        #for input_combination_key, input_entities in input_combinations.items():
-            #rows.extend(create_rows(reaction_id, {"input": input_entities}, "input"))
-
-            #if len(output_combinations) == 1:
-                #output_entities = list(output_combinations.values())[0]
-            #elif input_combination_key in output_combinations:
-                #output_entities = output_combinations[input_combination_key]
-            #else:
-                #input_combination_key_parts = input_combination_key.split("-")
-                #output_entities = match_input_to_output(input_combination_key, input_combination_key_parts, output_combinations)
-
-            #for output_entity in output_entities:
-                #rows.extend(create_rows(reaction_id, {"output": output_entity}, "output"))
-
-    #return pd.DataFrame.from_records(rows)
+           
 #retrieve input and output IDs for each reaction.
 #Decompose input and output entities and generates all possible combinations.
 #Create dictionaries for input and output combinations.
@@ -352,8 +229,6 @@ def get_reaction_inputs_and_outputs(reaction_ids):
                 rows.extend(create_rows(reaction_id, {"output": output_entity}, "output"))
 
     return pd.DataFrame.from_records(rows)
-
-
 
 
 def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df):
