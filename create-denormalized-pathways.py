@@ -118,15 +118,8 @@ def break_apart_entity(entity_id):
         print(entity_id)
         exit()
 
-
-
-
-def break_apart_entity_based_on_sets(entity_id):
-    return break_apart_entity(entity_id)
-
 def add_outputs_for_reaction():
     print("adding output_reactions")
-
 
 def add_reaction_pair(pathway_pi_df, reaction_pair):
     print("adding reaction pair")
@@ -134,11 +127,10 @@ def add_reaction_pair(pathway_pi_df, reaction_pair):
     exit()
     add_outputs_for_reaction(reaction_pair["parent_reaction_id"], )
 
-
 def generate_combinations(entity_ids):
     decomposed_entities = []
     for entity_id in entity_ids:
-        decomposed_entities.append(break_apart_entity_based_on_sets(entity_id))
+        decomposed_entities.append(break_apart_entity(entity_id))
     return list(itertools.product(*decomposed_entities))
 
 def create_entity_combinations_dict(combinations):
@@ -160,7 +152,7 @@ def create_rows(reaction_id, decomposed_combinations, input_or_output):
             }
             rows.append(row)
     return rows
-#take a rxn ID, a dictionary of decomposed combinations (input or output),andtype of input or output. 
+#take an rxn ID, a dictionary of decomposed combinations (input or output), and type of input or output. 
 #creates a list of dictionaries (rows) representing the data for the final DataFrame.
 
 def match_input_to_output(input_combination_key, input_combination_key_parts, output_combinations):
@@ -179,12 +171,9 @@ def match_input_to_output(input_combination_key, input_combination_key_parts, ou
 
 #match input combinations to output combinations. 
 #calculate the number of common elements between input and output combination keys
-#select the output combination with the highest number of common elements.
-
-
-           
+#select the output combination with the highest number of common elements.          
 #retrieve input and output IDs for each reaction.
-#Decompose input and output entities and generates all possible combinations.
+#Decompose input and output entities and generate all possible combinations.
 #Create dictionaries for input and output combinations.
 #Extend the rows list with data for input and output entities.
 #Match input combinations to output combinations and extend the rows list accordingly
@@ -197,12 +186,12 @@ def get_reaction_inputs_and_outputs(reaction_ids):
         print(reaction_id)
         input_ids = get_reaction_input_output_ids(reaction_id, "input")
 
-        broken_apart_input_id_set = [break_apart_entity_based_on_sets(input_id) for input_id in input_ids]
+        broken_apart_input_id_set = [break_apart_entity(input_id) for input_id in input_ids]
         iterproduct_inputs = generate_combinations(broken_apart_input_id_set)
         input_combinations = create_entity_combinations_dict(iterproduct_inputs)
 
         output_ids = get_reaction_input_output_ids(reaction_id, "output")
-        broken_apart_output_id_set = [break_apart_entity_based_on_sets(output_id) for output_id in output_ids]
+        broken_apart_output_id_set = [break_apart_entity(output_id) for output_id in output_ids]
         iterproduct_outputs = generate_combinations(broken_apart_output_id_set)
         output_combinations = create_entity_combinations_dict(iterproduct_outputs)
 
