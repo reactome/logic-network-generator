@@ -1,19 +1,23 @@
-"""
-Created on Wed Jan 17 11:43:39 2024
-
-@author: thomasbarbazuk
-"""
-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import os
+import logging
+import itertools
 from py2neo import Graph
 import pandas as pd
 import numpy as np
 import pprint
-import itertools
+
 pp = pprint.PrettyPrinter(indent=4)
+
+# Configure the logging settings
+logging.basicConfig(filename='debug_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 uri = "bolt://localhost:7687"
 graph = Graph(uri, auth=('neo4j', 'test'))
+
+# Define a logger
+logger = logging.getLogger(__name__)
 
 
 def get_reaction_connections(pathway_id):
@@ -24,10 +28,14 @@ def get_reaction_connections(pathway_id):
            WHERE pathway.dbId = %s
        RETURN r1.dbId AS parent_reaction_id, r2.dbId AS child_reaction_id
     """ % (pathway_id, pathway_id)
-    df = pd.DataFrame(graph.run(query).data())
-    df = df.astype({'parent_reaction_id': 'Int64',
-                    'child_reaction_id': 'Int64'})
-    return df
+
+    try:
+        df = pd.DataFrame(graph.run(query).data())
+        df = df.astype({'parent_reaction_id': 'Int64', 'child_reaction_id': 'Int64'})
+        return df
+    except Exception:
+        logger.error("Error in get_reaction_connections", exc_info=True)
+        raise
 
 
 def get_all_pathways():
@@ -39,7 +47,12 @@ def get_all_pathways():
             p.name[0] AS name
         LIMIT 10
         """
-    return graph.run(query).data()
+
+    try:
+        return graph.run(query).data()
+    except Exception:
+        logger.error("Error in get_all_pathways", exc_info=True)
+        raise
 
 
 def get_labels(entity_id):
@@ -49,7 +62,12 @@ def get_labels(entity_id):
        RETURN labels(e) AS labels
        """
     query = query_get_labels_template % entity_id
-    return graph.run(query).data()[0]["labels"]
+
+    try:
+        return graph.run(query).data()[0]["labels"]
+    except Exception:
+        logger.error("Error in get_labels", exc_info=True)
+        raise
 
 
 def get_complex_components(entity_id):
@@ -60,18 +78,26 @@ def get_complex_components(entity_id):
        """
     query = query_get_components_template % entity_id
 
-    return set(graph.run(query).data()[0]["component_ids"])
+    try:
+        return set(graph.run(query).data()[0]["component_ids"])
+    except Exception:
+        logger.error("Error in get_complex_components", exc_info=True)
+        raise
 
 
 def get_set_members(entity_id):
     query_get_members_template = """
         MATCH (entity)-[:hasCandidate|hasMember]->(member)
-            where entity.dbId = %s
+            WHERE entity.dbId = %s
         RETURN collect(member.dbId) as member_ids
         """
     query = query_get_members_template % entity_id
 
-    return set(graph.run(query).data()[0]["member_ids"])
+    try:
+        return set(graph.run(query).data()[0]["member_ids"])
+    except Exception:
+        logger.error("Error in get_set_members", exc_info=True)
+        raise
 
 
 def get_reactions(pathway_id, taxon_id):
@@ -83,7 +109,11 @@ def get_reactions(pathway_id, taxon_id):
     """
     query = query_reaction_template % (pathway_id, taxon_id)
 
-    return graph.run(query).data()[0]["reaction_ids"]
+    try:
+        return graph.run(query).data()[0]["reaction_ids"]
+    except Exception:
+        logger.error("Error in get_reactions", exc_info=True)
+        raise
 
 
 def get_reaction_input_output_ids(reaction_id, input_or_output):
@@ -95,7 +125,11 @@ def get_reaction_input_output_ids(reaction_id, input_or_output):
     relation_type = "input" if input_or_output == "input" else "output"
     query = query_template % (relation_type, reaction_id)
 
-    return set(graph.run(query).data()[0]["io_ids"])
+    try:
+        return set(graph.run(query).data()[0]["io_ids"])
+    except Exception:
+        logger.error("Error in get_reaction_input_output_ids", exc_info=True)
+        raise
 
 
 def break_apart_entity(entity_id):
@@ -108,6 +142,9 @@ def break_apart_entity(entity_id):
             members = break_apart_entity(member_id)
             for member in members:
                 broken_apart_members.append(member)
+        logger.debug(f"Debugging: break_apart_entity - entity_id: {entity_id}")
+        logger.debug(f"Debugging: break_apart_entity - labels: {labels}")
+        logger.debug(f"Debugging: break_apart_entity - broken_apart_members: {broken_apart_members}")
 
         return broken_apart_members if broken_apart_members else [[entity_id]]
     elif any(entity_label in labels for entity_label in [
@@ -120,20 +157,19 @@ def break_apart_entity(entity_id):
           "SimpleEntity"]):
         return [[entity_id]]
     else:
-        print("labels not handled")
-        print(labels)
-        print("for entity")
-        print(entity_id)
-        exit()
+        logger.error("Labels not handled")
+        logger.error(f"Labels: {labels}")
+        logger.error(f"For entity: {entity_id}")
+        raise ValueError("Labels not handled for entity")
 
 
 def add_outputs_for_reaction():
-    print("adding output_reactions")
+    logger.debug("Adding output_reactions")
 
 
 def add_reaction_pair(pathway_pi_df, reaction_pair):
-    print("adding reaction pair")
-    print(reaction_pair)
+    logger.debug("Adding reaction pair")
+    logger.debug(reaction_pair)
     exit()
     add_outputs_for_reaction(reaction_pair["parent_reaction_id"], )
 
@@ -165,8 +201,6 @@ def create_rows(reaction_id, decomposed_combinations, input_or_output):
             }
             rows.append(row)
     return rows
-# take an rxn ID, a dictionary of decomposed combinations (input or output), and type of input or output.
-# creates a list of dictionaries (rows) representing the data for the final DataFrame.
 
 
 def match_input_to_output(input_combination_key, input_combination_key_parts, output_combinations):
@@ -181,18 +215,20 @@ def match_input_to_output(input_combination_key, input_combination_key_parts, ou
             output_entities = output_combination_value
             best_match_count = elements_in_common
 
+    logger.debug(f"Debugging: match_input_to_output - input_combination_key: {input_combination_key}")
+    logger.debug(f"Debugging: match_input_to_output - input_combination_key_parts: {input_combination_key_parts}")
+    logger.debug(f"Debugging: match_input_to_output - best_match_count: {best_match_count}")
+    logger.debug(f"Debugging: match_input_to_output - output_entities: {output_entities}")
+
     return output_entities
 
 
-# match input combinations to output combinations.
-# calculate the number of common elements between input and output combination keys
-# select the output combination with the highest number of common elements.
 def get_reaction_inputs_and_outputs(reaction_ids):
-    print("Create reaction inputs and outputs dataframe")
+    logger.debug("Creating reaction inputs and outputs dataframe")
     rows = []
 
     for reaction_id in reaction_ids:
-        print(reaction_id)
+        logger.debug(reaction_id)
         input_ids = get_reaction_input_output_ids(reaction_id, "input")
 
         broken_apart_input_id_set = [break_apart_entity(input_id) for input_id in input_ids]
@@ -223,7 +259,7 @@ def get_reaction_inputs_and_outputs(reaction_ids):
 
 
 def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df):
-    print("Add reaction pairs to pathway_pi_df")
+    logger.debug("Adding reaction pairs to pathway_pi_df")
 
     columns = {"parent_id": pd.Series(dtype='Int64'),
                "parent_reaction_id": pd.Series(dtype='Int64'),
@@ -232,15 +268,15 @@ def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df
                "child_reaction_id": pd.Series(dtype='Int64'),
                "child_decomposed_reaction_id": pd.Series(dtype='str')}
     pathway_pi_df = pd.DataFrame(columns)
-
+    logger.debug(f"Debugging: create_pathway_pi_df - reaction_connections_df: {reaction_connections_df}")
     for idx, reaction_connection in reaction_connections_df.iterrows():
-        print("reaction_connection")
-        print(reaction_connection)
+        logger.debug("reaction_connection")
+        logger.debug(reaction_connection)
         exit()
 
 
 def generate_pathway_file(pathway_id, taxon_id, pathway_name):
-    print("Generating " + pathway_id + " " + pathway_name)
+    logger.debug(f"Generating {pathway_id} {pathway_name}")
     reaction_connections_df = get_reaction_connections(pathway_id)
     reaction_ids = pd.unique(reaction_connections_df[['parent_reaction_id', 'child_reaction_id']].values.ravel('K'))
     reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
@@ -276,4 +312,5 @@ def main():
         generate_pathway_file(pathway_id, taxon_id, pathway_name)
 
 
-main()
+if __name__ == "__main__":
+    main()
