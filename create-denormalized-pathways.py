@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import argparse
 import logging
 import itertools
 from py2neo import Graph
@@ -10,8 +11,6 @@ import pprint
 
 pp = pprint.PrettyPrinter(indent=4)
 
-# Configure the logging settings
-logging.basicConfig(filename='debug_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 uri = "bolt://localhost:7687"
 graph = Graph(uri, auth=('neo4j', 'test'))
@@ -19,6 +18,29 @@ graph = Graph(uri, auth=('neo4j', 'test'))
 # Define a logger
 logger = logging.getLogger(__name__)
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='pathway_creation')
+    parser.add_argument('--debug', action='store_true', help='Enable debugging')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--decompose', action='store_true', help='Decompose sets')
+    parser.add_argument('--input_file', type=str, help='Input file containing pathway information')
+
+	
+
+    return parser.parse_args()
+
+
+# Configure the logging settings
+def configure_logging(debug_flag, verbose_flag):
+    if verbose_flag:
+        log_level = logging.DEBUG
+    elif debug_flag:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+    logging.basicConfig(filename='debug_log.txt', level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
+    
 
 def get_reaction_connections(pathway_id):
     query = """
@@ -98,6 +120,13 @@ def get_set_members(entity_id):
     except Exception:
         logger.error("Error in get_set_members", exc_info=True)
         raise
+
+
+def decompose_sets(entity_ids):
+    decomposed_entities = []
+    for entity_id in entity_ids:
+        decomposed_entities.append(break_apart_entity(entity_id))
+    return list(itertools.product(*decomposed_entities))
 
 
 def get_reactions(pathway_id, taxon_id):
@@ -275,7 +304,7 @@ def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df
         exit()
 
 
-def generate_pathway_file(pathway_id, taxon_id, pathway_name):
+def generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=False):
     logger.debug(f"Generating {pathway_id} {pathway_name}")
     reaction_connections_df = get_reaction_connections(pathway_id)
     reaction_ids = pd.unique(reaction_connections_df[['parent_reaction_id', 'child_reaction_id']].values.ravel('K'))
@@ -285,32 +314,43 @@ def generate_pathway_file(pathway_id, taxon_id, pathway_name):
     if os.path.isfile(reaction_inputs_and_outputs_filename):
         reaction_inputs_and_outputs_df = pd.read_table(reaction_inputs_and_outputs_filename, delimiter="\t")
     else:
+        if decompose:
+            decomposed_combinations = decompose_sets(reaction_ids)
+	# Can add further processing using decompsoed combinations
+
         reaction_inputs_and_outputs_df = get_reaction_inputs_and_outputs(reaction_ids)
         reaction_inputs_and_outputs_df.to_csv(reaction_inputs_and_outputs_filename, sep="\t")
-    return
+    
     pathway_pi_df = create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df)
     exit()
 
-
 def main():
+    # parse command line arguments
+    args = parse_args()
+
+    # configure logging based on debug flag
+    configure_logging(args.debug, args.verbose)
+
     taxon_id = "9606"
-    # pathways = get_all_pathways()
-    pathways = {"69620": "Cell_Cycle_Checkpoints",
-                "5693567": "HDR_through_Homologous_Recombination_HRR_or_Single_Strand_Annealing_SSA_",
-                "453274": "Mitotic_G2-G2_M_phases",
-                "68875": "Mitotic_Prophase",
-                "453279": "Mitotic_G1-G1_S_phases",
-                "1257604": "PIP3_activates_AKT_signaling",
-                "5673001": "RAF_MAP_kinase_cascade",
-                "1227986": "Signaling_by_ERBB2",
-                "195721": "Signaling_by_WNT",
-                "69242": "S_Phase",
-                "3700989": "Transcriptional_Regulation_by_TP53"
-                }
+
+    if args.input_file:
+        # Read pathways from the input file
+        try:
+            pathways_df = pd.read_csv(args.input_file, sep='\t')
+            pathways = dict(zip(pathways_df['ID'], pathways_df['PathwayName']))
+        except Exception as e:
+            logger.error(f"Error reading input file: {e}")
+            return
+    else:
+        logger.error("Input file (--input_file) is required.")
+        return
+
+    # create a .tsv file for pathways list
+    pathways_list_df = pd.DataFrame(list(pathways.items()), columns=['ID', 'PathwayName'])
+    pathways_list_df.to_csv(args.output, sep='\t', index=False)
 
     for pathway_id, pathway_name in pathways.items():
-        generate_pathway_file(pathway_id, taxon_id, pathway_name)
-
+        generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=args.decompose)
 
 if __name__ == "__main__":
     main()
