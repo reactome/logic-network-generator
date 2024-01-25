@@ -8,9 +8,11 @@ from py2neo import Graph
 import pandas as pd
 import numpy as np
 import pprint
+import uuid
 
 pp = pprint.PrettyPrinter(indent=4)
 
+decomposed_entity_uid_mapping = pd.DataFrame(columns=['uid', 'components', 'complex_id'])
 
 uri = "bolt://localhost:7687"
 graph = Graph(uri, auth=('neo4j', 'test'))
@@ -23,10 +25,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='pathway_creation')
     parser.add_argument('--debug', action='store_true', help='Enable debugging')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
-    parser.add_argument('--decompose', action='store_true', help='Decompose sets')
     parser.add_argument('--input_file', type=str, help='Input file containing pathway information')
-
-	
 
     return parser.parse_args()
 
@@ -40,7 +39,7 @@ def configure_logging(debug_flag, verbose_flag):
     else:
         log_level = logging.INFO
     logging.basicConfig(filename='debug_log.txt', level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
-    
+
 
 def get_reaction_connections(pathway_id):
     query = """
@@ -122,11 +121,11 @@ def get_set_members(entity_id):
         raise
 
 
-def decompose_sets(entity_ids):
-    decomposed_entities = []
-    for entity_id in entity_ids:
-        decomposed_entities.append(break_apart_entity(entity_id))
-    return list(itertools.product(*decomposed_entities))
+# def decompose_sets(entity_ids):
+# decomposed_entities = []
+# for entity_id in entity_ids:
+# decomposed_entities.append(break_apart_entity(entity_id))
+# return list(itertools.product(*decomposed_entities))
 
 
 def get_reactions(pathway_id, taxon_id):
@@ -161,35 +160,87 @@ def get_reaction_input_output_ids(reaction_id, input_or_output):
         raise
 
 
+def get_components_from_list(broken_apart_members):
+    global decomposed_entity_uid_mapping
+
+    # Initialize an empty list to store components
+    components = []
+
+    # Iterate over members in the list
+    for member in broken_apart_members:
+        # Check if the member is a UID in the DataFrame
+        if member in decomposed_entity_uid_mapping['uid'].values:
+            # If yes, append the components from the DataFrame
+            member_components = decomposed_entity_uid_mapping.loc[
+                decomposed_entity_uid_mapping['uid'] == member, 'components'].iloc[0]
+            components += get_components_from_list(member_components)
+        else:
+            # If not, it's a leaf component, so append it
+            components.append(member)
+
+    return components
+
+
 def break_apart_entity(entity_id):
+    global decomposed_entity_uid_mapping
     labels = get_labels(entity_id)
-    if "Complex" in labels or "EntitySet" in labels:
-        member_ids = get_set_members(entity_id) if "EntitySet" in labels else get_complex_components(entity_id)
+
+    if "EntitySet" in labels:
+        member_ids = get_set_members(entity_id)
         broken_apart_members = []
 
         for member_id in member_ids:
             members = break_apart_entity(member_id)
             for member in members:
                 broken_apart_members.append(member)
+
         logger.debug(f"Debugging: break_apart_entity - entity_id: {entity_id}")
         logger.debug(f"Debugging: break_apart_entity - labels: {labels}")
         logger.debug(f"Debugging: break_apart_entity - broken_apart_members: {broken_apart_members}")
 
-        return broken_apart_members if broken_apart_members else [[entity_id]]
+        return broken_apart_members
+
+    elif "Complex" in labels:
+        member_ids = get_complex_components(entity_id)
+        broken_apart_members = []
+
+        for member_id in member_ids:
+            members = break_apart_entity(member_id)
+            for member in members:
+                broken_apart_members.append(member)
+
+        logger.debug(f"Debugging: break_apart_entity - entity_id: {entity_id}")
+        logger.debug(f"Debugging: break_apart_entity - labels: {labels}")
+        logger.debug(f"Debugging: break_apart_entity - broken_apart_members: {broken_apart_members}")
+
+        if set(broken_apart_members) == set(member_ids):
+            return [[entity_id]]
+        else:
+            uid = str(uuid.uuid4())
+            logger.debug(
+                f"Generated UID {uid} for entity with different broken_apart_members: {entity_id}")
+
+            components = get_components_from_list(broken_apart_members)
+            decomposed_entity_uid_mapping = decomposed_entity_uid_mapping.append({
+                'uid': uid,
+                'components': components,
+                'complex_id': entity_id  # Assuming entity_id is the complex Reactome ID
+            }, ignore_index=True)
+
+            return [[uid]]
+
     elif any(entity_label in labels for entity_label in [
-          "ChemicalDrug",
-          "Drug",
-          "EntityWithAccessionedSequence",
-          "GenomeEncodedEntity",
-          "OtherEntity",
-          "Polymer",
-          "SimpleEntity"]):
+            "ChemicalDrug",
+            "Drug",
+            "EntityWithAccessionedSequence",
+            "GenomeEncodedEntity",
+            "OtherEntity",
+            "Polymer",
+            "SimpleEntity"]):
         return [[entity_id]]
     else:
-        logger.error("Labels not handled")
-        logger.error(f"Labels: {labels}")
-        logger.error(f"For entity: {entity_id}")
-        raise ValueError("Labels not handled for entity")
+        logger.error(f"Not handling labels correctly for: {entity_id}")
+        exit(1)
 
 
 def add_outputs_for_reaction():
@@ -210,23 +261,27 @@ def generate_combinations(entity_ids):
     return list(itertools.product(*decomposed_entities))
 
 
-def create_entity_combinations_dict(combinations):
+def create_entity_combinations_dict(reactions_entities):
     entity_combinations = {}
-    for combination in combinations:
-        key = "-".join(map(str, sorted(list(np.concatenate(combination)))))
-        entity_combinations[key] = combination
+    for entities in reactions_entities:
+        uid = str(uuid.uuid4())
+        components = []
+        for entity in entities:
+            components += get_components_from_list(entity)
+        entity_combinations[uid] = components
     return entity_combinations
 
 
 def create_rows(reaction_id, decomposed_combinations, input_or_output):
     rows = []
-    for key, entities in decomposed_combinations.items():
+    for entities in decomposed_combinations():
         for entity in entities:
             row = {
                 "reaction_id": reaction_id,
-                "decomposed_reaction_id": key,
+                "decomposed_reaction_id": str(uuid.uuid4()),
                 "input_or_output": input_or_output,
-                "decomposed_entity_id": "-".join(map(str, sorted(list(entity))))
+                "decomposed_entity_id": "-".join(map(str, sorted(list(entity['reactome_id'])))),
+                "reactome_id": entity['reactome_id'],
             }
             rows.append(row)
     return rows
@@ -238,18 +293,74 @@ def match_input_to_output(input_combination_key, input_combination_key_parts, ou
 
     for output_combination_key, output_combination_value in output_combinations.items():
         output_combination_key_parts = output_combination_key.split("-")
-        elements_in_common = len(set(output_combination_key_parts) & set(input_combination_key_parts))
+        elements_in_common = len(
+            set(output_combination_key_parts) & set(input_combination_key_parts))
 
         if elements_in_common > best_match_count:
             output_entities = output_combination_value
             best_match_count = elements_in_common
 
-    logger.debug(f"Debugging: match_input_to_output - input_combination_key: {input_combination_key}")
-    logger.debug(f"Debugging: match_input_to_output - input_combination_key_parts: {input_combination_key_parts}")
-    logger.debug(f"Debugging: match_input_to_output - best_match_count: {best_match_count}")
-    logger.debug(f"Debugging: match_input_to_output - output_entities: {output_entities}")
+    logger.debug(
+        f"Debugging: match_input_to_output - input_combination_key: {input_combination_key}")
+    logger.debug(
+        f"Debugging: match_input_to_output - input_combination_key_parts: {input_combination_key_parts}")
+    logger.debug(
+        f"Debugging: match_input_to_output - best_match_count: {best_match_count}")
+    logger.debug(
+        f"Debugging: match_input_to_output - output_entities: {output_entities}")
 
     return output_entities
+
+
+def matching_input_and_output_decomposed_reactions(reaction_id, input_combinations, output_combinations):
+    best_match_stats = {
+        'num_inputs': None,
+        'num_outputs': None,
+        'num_matches': 0,
+        'match_percentage': 0.0
+    }
+
+    match_stats_list = []
+
+    for input_combination_key, input_entities in input_combinations.items():
+        for output_combination_key, output_entities in output_combinations.items():
+            # Compare input_entities and output_entities to see how well they match
+            common_ids = set(input_entities) & set(output_entities)
+            num_matches = len(common_ids)
+            num_inputs = len(input_entities)
+            num_outputs = len(output_entities)
+
+            # Create a table with the number of inputs, number of outputs, and number of matches
+            match_stats = {
+                'input_combination_key': input_combination_key,
+                'output_combination_key': output_combination_key,
+                'num_inputs': num_inputs,
+                'num_outputs': num_outputs,
+                'num_matches': num_matches,
+                'match_percentage': num_matches / max(num_inputs, num_outputs) * 100 if max(num_inputs, num_outputs) > 0 else 0.0
+            }
+
+            match_stats_list.append(match_stats)
+
+            # Update best_match_stats if the current match is better
+            if num_matches > best_match_stats['num_matches']:
+                best_match_stats = {
+                    'input_combination_key': input_combination_key,
+                    'output_combination_key': output_combination_key,
+                    'num_inputs': num_inputs,
+                    'num_outputs': num_outputs,
+                    'num_matches': num_matches,
+                    'match_percentage': match_stats['match_percentage']
+                }
+
+    # Create a DataFrame of match statistics
+    match_stats_df = pd.DataFrame(match_stats_list)
+
+    # Now you can use match_stats_df for further analysis or export to a file
+    match_stats_df.to_csv(
+        f'match_stats_{reaction_id}.csv', index=False)
+
+    return best_match_stats
 
 
 def get_reaction_inputs_and_outputs(reaction_ids):
@@ -258,50 +369,109 @@ def get_reaction_inputs_and_outputs(reaction_ids):
 
     for reaction_id in reaction_ids:
         logger.debug(reaction_id)
-        input_ids = get_reaction_input_output_ids(reaction_id, "input")
+        input_ids = get_reaction_input_output_ids(
+            reaction_id, "input")
 
-        broken_apart_input_id_set = [break_apart_entity(input_id) for input_id in input_ids]
-        iterproduct_inputs = generate_combinations(broken_apart_input_id_set)
-        input_combinations = create_entity_combinations_dict(iterproduct_inputs)
+        broken_apart_input_id_set = [
+            break_apart_entity(input_id) for input_id in input_ids]
+        iterproduct_inputs = generate_combinations(
+            broken_apart_input_id_set)
+        input_combinations = create_entity_combinations_dict(
+            iterproduct_inputs)
 
-        output_ids = get_reaction_input_output_ids(reaction_id, "output")
-        broken_apart_output_id_set = [break_apart_entity(output_id) for output_id in output_ids]
-        iterproduct_outputs = generate_combinations(broken_apart_output_id_set)
-        output_combinations = create_entity_combinations_dict(iterproduct_outputs)
+        output_ids = get_reaction_input_output_ids(
+            reaction_id, "output")
+        broken_apart_output_id_set = [
+            break_apart_entity(output_id) for output_id in output_ids]
+        iterproduct_outputs = generate_combinations(
+            broken_apart_output_id_set)
+        output_combinations = create_entity_combinations_dict(
+            iterproduct_outputs)
 
-        for input_combination_key, input_entities in input_combinations.items():
-            rows.extend(create_rows(reaction_id, {"input": input_entities}, "input"))
-
-            if len(output_combinations) == 1:
-                output_entities = list(output_combinations.values())[0]
-            elif input_combination_key in output_combinations:
-                output_entities = output_combinations[input_combination_key]
-            else:
-                input_combination_key_parts = input_combination_key.split("-")
-                output_entities = match_input_to_output(input_combination_key, input_combination_key_parts,
-                                                        output_combinations)
-
-            for output_entity in output_entities:
-                rows.extend(create_rows(reaction_id, {"output": output_entity}, "output"))
-
+        reaction_rows = matching_input_and_output_decomposed_reactions(
+            reaction_id, input_combinations, output_combinations)
+        rows.append(reaction_rows)
     return pd.DataFrame.from_records(rows)
 
 
 def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df):
     logger.debug("Adding reaction pairs to pathway_pi_df")
 
-    columns = {"parent_id": pd.Series(dtype='Int64'),
-               "parent_reaction_id": pd.Series(dtype='Int64'),
-               "parent_decomposed_reaction_id": pd.Series(dtype='str'),
-               "child_id": pd.Series(dtype='Int64'),
-               "child_reaction_id": pd.Series(dtype='Int64'),
-               "child_decomposed_reaction_id": pd.Series(dtype='str')}
+    columns = {
+        "parent_id": pd.Series(dtype='Int64'),
+        "parent_reaction_id": pd.Series(dtype='Int64'),
+        "parent_decomposed_reaction_id": pd.Series(dtype='str'),
+        "child_id": pd.Series(dtype='Int64'),
+        "child_reaction_id": pd.Series(dtype='Int64'),
+        "child_decomposed_reaction_id": pd.Series(dtype='str'),
+        "common_ids": pd.Series(dtype='str'),  # Common IDs between inputs and outputs
+        "unmatched_inputs": pd.Series(dtype='str'),  # Unmatched input IDs
+        "unmatched_outputs": pd.Series(dtype='str')  # Unmatched output IDs
+    }
     pathway_pi_df = pd.DataFrame(columns)
-    logger.debug(f"Debugging: create_pathway_pi_df - reaction_connections_df: {reaction_connections_df}")
+
     for idx, reaction_connection in reaction_connections_df.iterrows():
-        logger.debug("reaction_connection")
-        logger.debug(reaction_connection)
-        exit()
+        parent_reaction_id = reaction_connection['parent_reaction_id']
+        child_reaction_id = reaction_connection['child_reaction_id']
+
+        parent_inputs = reaction_inputs_and_outputs_df[
+            (reaction_inputs_and_outputs_df['reaction_id'] == parent_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'input')
+        ]['decomposed_entity_id'].values
+
+        parent_outputs = reaction_inputs_and_outputs_df[
+            (reaction_inputs_and_outputs_df['reaction_id'] == parent_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'output')
+        ]['decomposed_entity_id'].values
+
+        child_inputs = reaction_inputs_and_outputs_df[
+            (reaction_inputs_and_outputs_df['reaction_id'] == child_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'input')
+        ]['decomposed_entity_id'].values
+
+        child_outputs = reaction_inputs_and_outputs_df[
+            (reaction_inputs_and_outputs_df['reaction_id'] == child_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'output')
+        ]['decomposed_entity_id'].values
+
+        common_ids = set(parent_inputs) & set(child_outputs)
+        unmatched_inputs = set(parent_inputs) - common_ids
+        unmatched_outputs = set(child_outputs) - common_ids
+
+        row = {
+            "parent_id": reaction_connection['parent_reaction_id'],
+            "parent_reaction_id": parent_reaction_id,
+            "parent_decomposed_reaction_id": reaction_connection['parent_decomposed_reaction_id'],
+            "child_id": reaction_connection['child_reaction_id'],
+            "child_reaction_id": child_reaction_id,
+            "child_decomposed_reaction_id": reaction_connection['child_decomposed_reaction_id'],
+            "common_ids": '-'.join(map(str, sorted(list(common_ids)))),
+            "unmatched_inputs": '-'.join(map(str, sorted(list(unmatched_inputs)))),
+            "unmatched_outputs": '-'.join(map(str, sorted(list(unmatched_outputs))))
+        }
+
+        pathway_pi_df = pathway_pi_df.append(row, ignore_index=True)
+
+    return pathway_pi_df
+
+
+def decompose_unmatched_entities(unmatched_entities):
+    decomposed_entities = []
+    for entity_id in unmatched_entities:
+        decomposed_entities.extend(break_apart_entity(entity_id))
+    return decomposed_entities
+
+
+def decompose_unmatched_ids(pathway_pi_df):
+    for idx, row in pathway_pi_df.iterrows():
+        unmatched_inputs = row['unmatched_inputs'].split('-') if row['unmatched_inputs'] else []
+        unmatched_outputs = row['unmatched_outputs'].split('-') if row['unmatched_outputs'] else []
+
+        decomposed_unmatched_inputs = decompose_unmatched_entities(unmatched_inputs)
+        decomposed_unmatched_outputs = decompose_unmatched_entities(unmatched_outputs)
+        common_reference_entities = set(decomposed_unmatched_inputs) & set(decomposed_unmatched_outputs)
+
+        pathway_pi_df.at[idx, 'decomposed_unmatched_inputs'] = '-'.join(map(str, sorted(list(decomposed_unmatched_inputs))))
+        pathway_pi_df.at[idx, 'decomposed_unmatched_outputs'] = '-'.join(map(str, sorted(list(decomposed_unmatched_outputs))))
+        pathway_pi_df.at[idx, 'common_reference_entities'] = '-'.join(map(str, sorted(list(common_reference_entities))))
+
+    return pathway_pi_df
 
 
 def generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=False):
@@ -313,16 +483,13 @@ def generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=False):
     reaction_inputs_and_outputs_filename = 'reaction_inputs_and_outputs_df_' + pathway_id + '.tsv'
     if os.path.isfile(reaction_inputs_and_outputs_filename):
         reaction_inputs_and_outputs_df = pd.read_table(reaction_inputs_and_outputs_filename, delimiter="\t")
-    else:
-        if decompose:
-            decomposed_combinations = decompose_sets(reaction_ids)
-	# Can add further processing using decompsoed combinations
 
         reaction_inputs_and_outputs_df = get_reaction_inputs_and_outputs(reaction_ids)
         reaction_inputs_and_outputs_df.to_csv(reaction_inputs_and_outputs_filename, sep="\t")
-    
+
     pathway_pi_df = create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df)
     exit()
+
 
 def main():
     # parse command line arguments
@@ -351,6 +518,25 @@ def main():
 
     for pathway_id, pathway_name in pathways.items():
         generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=args.decompose)
+
+        reaction_connections_df = get_reaction_connections(pathway_id)
+        reaction_ids = reaction_connections_df['reaction_id'].unique()
+        reaction_inputs_and_outputs_df = get_reaction_inputs_and_outputs(reaction_ids)
+
+        pathway_pi_df = create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df)
+        pathway_pi_df = decompose_unmatched_ids(pathway_pi_df)
+
+        print(f"Unmatched IDs for Pathway {pathway_id}:")
+        for idx, row in pathway_pi_df.iterrows():
+            unmatched_inputs = row['unmatched_inputs'].split('-') if row['unmatched_inputs'] else []
+            unmatched_outputs = row['unmatched_outputs'].split('-') if row['unmatched_outputs'] else []
+
+            print(f"Pathway {pathway_id} - Unmatched Inputs: {unmatched_inputs}")
+            print(f"Pathway {pathway_id} - Unmatched Outputs: {unmatched_outputs}")
+
+        # Now you can use pathway_pi_df for further analysis or export to a file
+        pathway_pi_df.to_csv('pathway_pi_df.csv', index=False)
+
 
 if __name__ == "__main__":
     main()
