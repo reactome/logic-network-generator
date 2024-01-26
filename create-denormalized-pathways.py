@@ -362,6 +362,33 @@ def matching_input_and_output_decomposed_reactions(reaction_id, input_combinatio
 
     return best_match_stats
 
+def get_reference_entities(entity_id):
+    query = """
+        MATCH (e:Entity {entity_id: %s})-[:HAS_REFERENCE_ENTITY]->(ref:Entity)
+        RETURN ref.entity_id AS reference_entity_id
+    """ % entity_id
+
+    try:
+        df = pd.DataFrame(graph.run(query).data())
+        df = df.astype({'reference_entity_id': 'str'})
+        return df
+    except Exception:
+        logger.error("Error in get_reference_entities", exc_info=True)
+        raise
+        
+        
+def decompose_unmatched_entities_with_references(unmatched_entities, neo4j_connector):
+    decomposed_entities = []
+    reference_entities = []
+
+    for entity_id in unmatched_entities:
+        decomposed_entities.extend(break_apart_entity(entity_id))
+
+        # Query Neo4j for reference entities
+        reference_df = get_reference_entities(entity_id)
+        reference_entities.extend(reference_df['reference_entity_id'].tolist())
+
+    return decomposed_entities, reference_entities
 
 def get_reaction_inputs_and_outputs(reaction_ids):
     logger.debug("Creating reaction inputs and outputs dataframe")
