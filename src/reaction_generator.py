@@ -71,7 +71,7 @@ def break_apart_entity(entity_id):
         logger.debug(f"Debugging: break_apart_entity - labels: {labels}")
         logger.debug(f"Debugging: break_apart_entity - broken_apart_members: {broken_apart_members}")
 
-        if set(broken_apart_members) == set(member_ids):
+        if set(tuple(broken_apart_members)) == set(tuple(member_ids)):
             return [[entity_id]]
         else:
             uid = str(uuid.uuid4())
@@ -270,10 +270,12 @@ def get_reactions_df(pathway_id):
     reaction_ids = pd.unique(reaction_connections_df[['parent_reaction_id', 'child_reaction_id']].values.ravel('K'))
     reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
 
-    reaction_inputs_and_outputs_filename = 'reaction_inputs_and_outputs_df_' + pathway_id + '.tsv'
+    reaction_inputs_and_outputs_df = None
+
+    reaction_inputs_and_outputs_filename = 'reaction_inputs_and_outputs_df_' + str(pathway_id) + '.tsv'
     if os.path.isfile(reaction_inputs_and_outputs_filename):
         reaction_inputs_and_outputs_df = pd.read_table(reaction_inputs_and_outputs_filename, delimiter="\t")
-
+    else:
         reaction_inputs_and_outputs_df = get_reaction_inputs_and_outputs(reaction_ids)
         reaction_inputs_and_outputs_df.to_csv(reaction_inputs_and_outputs_filename, sep="\t")
 
