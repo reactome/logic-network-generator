@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "poetry add py2neo pandas numpy"
+name = "mp-biopath-pathway-generator"
 version = "0.1.0"
 description = "Generator of pairwise interaction files from Reactome Graph database"
 authors = ["Adam Wright <adam.wright@wormbase.org>"]
