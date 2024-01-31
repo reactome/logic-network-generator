@@ -1,20 +1,11 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
-import logging
 import itertools
 from py2neo import Graph
 import pandas as pd
-import numpy as np
 import pprint
 import uuid
 
-
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from src.argument_parser import parse_args, configure_logging
+from src.argument_parser import logger
 
 pp = pprint.PrettyPrinter(indent=4)
 
@@ -22,9 +13,6 @@ decomposed_entity_uid_mapping = pd.DataFrame(columns=['uid', 'components', 'comp
 
 uri = "bolt://localhost:7687"
 graph = Graph(uri, auth=('neo4j', 'test'))
-
-# Define a logger
-logger = logging.getLogger(__name__)
 
 
 def get_reaction_connections(pathway_id):
@@ -316,6 +304,9 @@ def matching_input_and_output_decomposed_reactions(reaction_id, input_combinatio
             num_inputs = len(input_entities)
             num_outputs = len(output_entities)
 
+            match_percentage = num_matches / max(num_inputs, num_outputs) * 100 \
+                if max(num_inputs, num_outputs) > 0 else 0.0
+
             # Create a table with the number of inputs, number of outputs, and number of matches
             match_stats = {
                 'input_combination_key': input_combination_key,
@@ -323,8 +314,8 @@ def matching_input_and_output_decomposed_reactions(reaction_id, input_combinatio
                 'num_inputs': num_inputs,
                 'num_outputs': num_outputs,
                 'num_matches': num_matches,
-                'match_percentage': num_matches / max(num_inputs, num_outputs) * 100 if max(num_inputs, num_outputs) > 0 else 0.0
-            }
+                'match_percentage': match_percentage
+                }
 
             match_stats_list.append(match_stats)
 
@@ -348,6 +339,7 @@ def matching_input_and_output_decomposed_reactions(reaction_id, input_combinatio
 
     return best_match_stats
 
+
 def get_reference_entities(entity_id):
     query = """
         MATCH (e:Entity {entity_id: %s})-[:HAS_REFERENCE_ENTITY]->(ref:Entity)
@@ -361,8 +353,8 @@ def get_reference_entities(entity_id):
     except Exception:
         logger.error("Error in get_reference_entities", exc_info=True)
         raise
-        
-        
+
+
 def decompose_unmatched_entities_with_references(unmatched_entities, neo4j_connector):
     decomposed_entities = []
     reference_entities = []
@@ -375,6 +367,7 @@ def decompose_unmatched_entities_with_references(unmatched_entities, neo4j_conne
         reference_entities.extend(reference_df['reference_entity_id'].tolist())
 
     return decomposed_entities, reference_entities
+
 
 def get_reaction_inputs_and_outputs(reaction_ids):
     logger.debug("Creating reaction inputs and outputs dataframe")
@@ -428,19 +421,13 @@ def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df
         child_reaction_id = reaction_connection['child_reaction_id']
 
         parent_inputs = reaction_inputs_and_outputs_df[
-            (reaction_inputs_and_outputs_df['reaction_id'] == parent_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'input')
-        ]['decomposed_entity_id'].values
-
-        parent_outputs = reaction_inputs_and_outputs_df[
-            (reaction_inputs_and_outputs_df['reaction_id'] == parent_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'output')
-        ]['decomposed_entity_id'].values
-
-        child_inputs = reaction_inputs_and_outputs_df[
-            (reaction_inputs_and_outputs_df['reaction_id'] == child_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'input')
+            (reaction_inputs_and_outputs_df['reaction_id'] == parent_reaction_id)
+            & (reaction_inputs_and_outputs_df['input_or_output'] == 'input')
         ]['decomposed_entity_id'].values
 
         child_outputs = reaction_inputs_and_outputs_df[
-            (reaction_inputs_and_outputs_df['reaction_id'] == child_reaction_id) & (reaction_inputs_and_outputs_df['input_or_output'] == 'output')
+            (reaction_inputs_and_outputs_df['reaction_id'] == child_reaction_id)
+            & (reaction_inputs_and_outputs_df['input_or_output'] == 'output')
         ]['decomposed_entity_id'].values
 
         common_ids = set(parent_inputs) & set(child_outputs)
@@ -471,22 +458,6 @@ def decompose_unmatched_entities(unmatched_entities):
     return decomposed_entities
 
 
-def decompose_unmatched_ids(pathway_pi_df):
-    for idx, row in pathway_pi_df.iterrows():
-        unmatched_inputs = row['unmatched_inputs'].split('-') if row['unmatched_inputs'] else []
-        unmatched_outputs = row['unmatched_outputs'].split('-') if row['unmatched_outputs'] else []
-
-        decomposed_unmatched_inputs = decompose_unmatched_entities(unmatched_inputs)
-        decomposed_unmatched_outputs = decompose_unmatched_entities(unmatched_outputs)
-        common_reference_entities = set(decomposed_unmatched_inputs) & set(decomposed_unmatched_outputs)
-
-        pathway_pi_df.at[idx, 'decomposed_unmatched_inputs'] = '-'.join(map(str, sorted(list(decomposed_unmatched_inputs))))
-        pathway_pi_df.at[idx, 'decomposed_unmatched_outputs'] = '-'.join(map(str, sorted(list(decomposed_unmatched_outputs))))
-        pathway_pi_df.at[idx, 'common_reference_entities'] = '-'.join(map(str, sorted(list(common_reference_entities))))
-
-    return pathway_pi_df
-
-
 def generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=False):
     logger.debug(f"Generating {pathway_id} {pathway_name}")
     reaction_connections_df = get_reaction_connections(pathway_id)
@@ -501,55 +472,5 @@ def generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=False):
         reaction_inputs_and_outputs_df.to_csv(reaction_inputs_and_outputs_filename, sep="\t")
 
     pathway_pi_df = create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df)
+    pathway_pi_df.to_csv('pathway_pi_' + pathway_id + '.csv', index=False)
     exit()
-
-
-def main():
-    # parse command line arguments
-    args = parse_args()
-
-    # configure logging based on debug flag
-    configure_logging(args.debug, args.verbose)
-
-    taxon_id = "9606"
-
-    if args.input_file:
-        # Read pathways from the input file
-        try:
-            pathways_df = pd.read_csv(args.input_file, sep='\t')
-            pathways = dict(zip(pathways_df['ID'], pathways_df['PathwayName']))
-        except Exception as e:
-            logger.error(f"Error reading input file: {e}")
-            return
-    else:
-        logger.error("Input file (--input_file) is required.")
-        return
-
-    # create a .tsv file for pathways list
-    pathways_list_df = pd.DataFrame(list(pathways.items()), columns=['ID', 'PathwayName'])
-    pathways_list_df.to_csv(args.output, sep='\t', index=False)
-
-    for pathway_id, pathway_name in pathways.items():
-        generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=args.decompose)
-
-        reaction_connections_df = get_reaction_connections(pathway_id)
-        reaction_ids = reaction_connections_df['reaction_id'].unique()
-        reaction_inputs_and_outputs_df = get_reaction_inputs_and_outputs(reaction_ids)
-
-        pathway_pi_df = create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df)
-        pathway_pi_df = decompose_unmatched_ids(pathway_pi_df)
-
-        print(f"Unmatched IDs for Pathway {pathway_id}:")
-        for idx, row in pathway_pi_df.iterrows():
-            unmatched_inputs = row['unmatched_inputs'].split('-') if row['unmatched_inputs'] else []
-            unmatched_outputs = row['unmatched_outputs'].split('-') if row['unmatched_outputs'] else []
-
-            print(f"Pathway {pathway_id} - Unmatched Inputs: {unmatched_inputs}")
-            print(f"Pathway {pathway_id} - Unmatched Outputs: {unmatched_outputs}")
-
-        # Now you can use pathway_pi_df for further analysis or export to a file
-        pathway_pi_df.to_csv('pathway_pi_df.csv', index=False)
-
-
-if __name__ == "__main__":
-    main()
