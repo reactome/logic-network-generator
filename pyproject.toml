@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "poetry add py2neo pandas numpy"
+version = "0.1.0"
+description = "Generator of pairwise interaction files from Reactome Graph database"
+authors = ["Adam Wright <adam.wright@wormbase.org>"]
+license = "Apache 2.0"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+py2neo = "^2021.2.4"
+pandas = "^2.2.0"
+numpy = "^1.26.3"
+
+
+[tool.poetry.group.dev.dependencies]
+flake8 = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
