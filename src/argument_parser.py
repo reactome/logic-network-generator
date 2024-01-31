@@ -6,7 +6,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='pathway_creation')
     parser.add_argument('--debug', action='store_true', help='Enable debugging')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
-    parser.add_argument('--input_file', type=str, help='Input file containing pathway information')
+    parser.add_argument('--pathway-list', type=str, help='Input file containing pathway information')
+    parser.add_argument('--output-dir', type=str, default='output', help='Output folder (default: output)')
 
     return parser.parse_args()
 

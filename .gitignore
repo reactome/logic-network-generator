@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+
+#output folder of results
+output
