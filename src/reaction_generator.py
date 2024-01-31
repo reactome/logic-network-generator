@@ -1,7 +1,6 @@
 import os
 import itertools
 import pandas as pd
-import pyarrow
 import pprint
 import uuid
 
