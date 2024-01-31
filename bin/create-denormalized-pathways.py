@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import argparse
 import logging
 import itertools
 from py2neo import Graph
@@ -10,6 +9,12 @@ import pandas as pd
 import numpy as np
 import pprint
 import uuid
+
+
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.argument_parser import parse_args, configure_logging
 
 pp = pprint.PrettyPrinter(indent=4)
 
@@ -20,26 +25,6 @@ graph = Graph(uri, auth=('neo4j', 'test'))
 
 # Define a logger
 logger = logging.getLogger(__name__)
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='pathway_creation')
-    parser.add_argument('--debug', action='store_true', help='Enable debugging')
-    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
-    parser.add_argument('--input_file', type=str, help='Input file containing pathway information')
-
-    return parser.parse_args()
-
-
-# Configure the logging settings
-def configure_logging(debug_flag, verbose_flag):
-    if verbose_flag:
-        log_level = logging.DEBUG
-    elif debug_flag:
-        log_level = logging.DEBUG
-    else:
-        log_level = logging.INFO
-    logging.basicConfig(filename='debug_log.txt', level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 def get_reaction_connections(pathway_id):
