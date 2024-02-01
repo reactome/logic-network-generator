@@ -71,11 +71,12 @@ def break_apart_entity(entity_id):
         logger.debug(f"Debugging: break_apart_entity - labels: {labels}")
         logger.debug(f"Debugging: break_apart_entity - broken_apart_members: {broken_apart_members}")
 
-        if set(tuple(broken_apart_members)) == set(tuple(member_ids)):
-            return [[entity_id]]
-        else:
-            uid = str(uuid.uuid4())
-            logger.debug(
+        if any(isinstance(member, list) for member in broken_apart_members):
+    	    # If there is an array within an array, no match
+    	    return [[entity_id]]
+	else:
+    	    uid = str(uuid.uuid4())
+    	    logger.debug(
                 f"Generated UID {uid} for entity with different broken_apart_members: {entity_id}")
 
             components = get_components_from_list(broken_apart_members)
