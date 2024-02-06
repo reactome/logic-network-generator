@@ -50,10 +50,7 @@ def get_labels(entity_id):
     query = query_get_labels_template % entity_id
 
     try:
-
-        data =  graph.run(query).data()
-        print(entity_id)
-        print (data[0])
+        data = graph.run(query).data()
         return graph.run(query).data()[0]["labels"]
     except Exception:
         logger.error("Error in get_labels", exc_info=True)

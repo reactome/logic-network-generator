@@ -16,6 +16,7 @@ pp = pprint.PrettyPrinter(indent=4)
 
 decomposed_uid_mapping = pd.DataFrame(columns=['uid', 'component_id', 'input_or_output_id', 'reactome_id'])
 
+
 def is_valid_uuid(value):
     try:
         uuid_obj = uuid.UUID(str(value), version=4)
@@ -33,7 +34,7 @@ def get_broken_apart_ids(broken_apart_members, reactome_id):
 
         return get_uid_for_iterproduct_components(iterproduct_components, reactome_id)
     else:
-        return entity_id
+        return reactome_id
 
 
 def get_or_assign_uid(input_or_output_ids):
@@ -136,7 +137,6 @@ def break_apart_entity(entity_id):
 
         return get_broken_apart_ids(broken_apart_members, entity_id)
 
-
     elif any(entity_label in labels for entity_label in [
             "ChemicalDrug",
             "Drug",
@@ -145,7 +145,9 @@ def break_apart_entity(entity_id):
             "OtherEntity",
             "Polymer",
             "SimpleEntity"]):
+
         return entity_id
+
     else:
         logger.error(f"Not handling labels correctly for: {entity_id}")
         exit(1)
