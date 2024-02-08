@@ -2,6 +2,7 @@ import pandas as pd
 
 from src.argument_parser import logger
 
+
 def create_pathway_pi(decomposed_uid_mapping, reaction_connections, best_matches):
     logger.debug("Adding reaction pairs to pathway_pi")
 
@@ -30,6 +31,5 @@ def create_pathway_pi(decomposed_uid_mapping, reaction_connections, best_matches
         print(parent_rows)
         print(child_rows)
         print(best_matches)
-
 
     return pathway_pi

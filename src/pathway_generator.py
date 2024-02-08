@@ -8,7 +8,7 @@ def generate_pathway_file(pathway_id, taxon_id, pathway_name, decompose=False):
     logger.debug(f"Generating {pathway_id} {pathway_name}")
 
     reaction_connections = get_reaction_connections(pathway_id)
-    [decomposed_uid_mapping, best_matches] = get_decomposed_uid_mapping(pathway_id, reaction_connections.iloc[2].to_frame().T)
-    pathway_pi = create_pathway_pi(decomposed_uid_mapping, reaction_connections.iloc[2].to_frame().T, best_matches)
- #   pathway_pi.to_csv('pathway_pi_' + pathway_id + '.csv', index=False)
+    [decomposed_uid_mapping, best_matches] = get_decomposed_uid_mapping(pathway_id,
+                                                                        reaction_connections.iloc[2].to_frame().T)
+    create_pathway_pi(decomposed_uid_mapping, reaction_connections.iloc[2].to_frame().T, best_matches)
     exit()
