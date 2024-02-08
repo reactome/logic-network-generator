@@ -1,7 +1,5 @@
-import os
 import itertools
 import pandas as pd
-import pprint
 import uuid
 
 from src.argument_parser import logger
@@ -10,8 +8,6 @@ from src.neo4j_connector import get_complex_components
 from src.neo4j_connector import get_set_members
 from src.neo4j_connector import get_reaction_input_output_ids
 from src.best_reaction_match import find_best_reaction_match
-
-pp = pprint.PrettyPrinter(indent=4)
 
 decomposed_uid_mapping = pd.DataFrame(columns=['uid', 'component_id', 'input_or_output_id', 'reactome_id'])
 
@@ -27,24 +23,21 @@ def is_valid_uuid(value):
 def get_broken_apart_ids(broken_apart_members, reactome_id):
     global decomposed_uid_mapping
 
+    uid = ""
     if any(isinstance(member, set) for member in broken_apart_members):
         for i in range(len(broken_apart_members)):
             if not isinstance(broken_apart_members[i], set):
                 broken_apart_members[i] = {broken_apart_members[i]}
         iterproduct_components = list(itertools.product(*broken_apart_members))
 
-        return get_uid_for_iterproduct_components(iterproduct_components, reactome_id)
+        uid = get_uid_for_iterproduct_components(iterproduct_components, reactome_id)
     else:
         uid = str(uuid.uuid4())
         rows = []
         for broken_apart_member in broken_apart_members:
             if is_valid_uuid(broken_apart_member):
-                print(decomposed_uid_mapping.loc)
                 component_ids = decomposed_uid_mapping.loc[decomposed_uid_mapping['uid']
                                                            == broken_apart_member, 'component_id'].tolist()
-                print("component_ids")
-                print(component_ids)
-
                 for component_id in component_ids:
                     row = {'uid': uid,
                            'component_id': component_id,
@@ -61,9 +54,8 @@ def get_broken_apart_ids(broken_apart_members, reactome_id):
                 rows.append(row)
 
         decomposed_uid_mapping = pd.concat([decomposed_uid_mapping, pd.DataFrame(rows)])
-        print(decomposed_uid_mapping)
 
-        return uid
+    return uid
 
 
 def get_or_assign_uid(input_or_output_ids):
@@ -171,10 +163,12 @@ def break_apart_entity(entity_id):
         exit(1)
 
 
-def decompose_reactions(reaction_ids):
+def decompose_by_reactions(reaction_ids):
     global decomposed_uid_mapping
 
     logger.debug("Decomposing reactions")
+
+    all_best_matches = []
 
     match_total = 0
     for reaction_id in reaction_ids:
@@ -200,24 +194,20 @@ def decompose_reactions(reaction_ids):
         [best_matches, match_counts] = find_best_reaction_match(
             input_combinations, output_combinations, decomposed_uid_mapping)
 
+        all_best_matches += best_matches
         match_total += sum(match_counts)
-        print("match_total")
-        print(match_total)
-    rows = []
-    return pd.DataFrame.from_records(rows)
+
+    return all_best_matches
 
 
-def get_reactions(pathway_id, reaction_connections_df):
-    reaction_ids = pd.unique(reaction_connections_df[['parent_reaction_id', 'child_reaction_id']].values.ravel('K'))
+def get_decomposed_uid_mapping(pathway_id, reaction_connections):
+    global decomposed_uid_mapping
+
+    decomposed_uid_mapping.drop(decomposed_uid_mapping.index, inplace=True)
+
+    reaction_ids = pd.unique(reaction_connections[['parent_reaction_id', 'child_reaction_id']].values.ravel('K'))
+
     reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
+    best_matches = decompose_by_reactions(reaction_ids)
 
-    reaction_df = None
-
-    reaction_filename = 'reaction_df_' + str(pathway_id) + '.tsv'
-    if os.path.isfile(reaction_filename):
-        reaction_df = pd.read_table(reaction_filename, delimiter="\t")
-    else:
-        reaction_df = decompose_reactions(reaction_ids)
-        reaction_df.to_csv(reaction_filename, sep="\t")
-
-    return reaction_df
+    return [decomposed_uid_mapping, best_matches]
