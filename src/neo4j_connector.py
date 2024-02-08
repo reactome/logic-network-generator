@@ -118,16 +118,20 @@ def get_reaction_input_output_ids(reaction_id, input_or_output):
         raise
 
 
-def get_reference_entities(entity_id):
+def do_entities_have_same_reference_entity(entity_id, entity_id2):
     query = """
-        MATCH (e:Entity {entity_id: %s})-[:HAS_REFERENCE_ENTITY]->(ref:Entity)
-        RETURN ref.entity_id AS reference_entity_id
-    """ % entity_id
+        MATCH (reference_database:ReferenceDatabase)<-[:referenceDatabase]-(reference_entity:ReferenceEntity)<-[:referenceGene]-(reference_entity_2:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
+        WHERE reference_database.displayName = "HGNC"
+            AND (pe.dbId = $entity_id1 OR pe.dbId = $entity_id2)
+        WITH reference_entity, count(DISTINCT pe) AS num_entities
+        WHERE num_entities = 2
+        RETURN count(reference_entity) > 0 AS result
+        LIMIT 1
+    """ # noqa
 
     try:
-        df = pd.DataFrame(graph.run(query).data())
-        df = df.astype({'reference_entity_id': 'str'})
-        return df
+        df = pd.DataFrame(graph.run(query, entity_id1=entity_id, entity_id2=entity_id2).data())
+        return df['result'].iloc[0]
     except Exception:
-        logger.error("Error in get_reference_entities", exc_info=True)
+        logger.error("Error in do_entities_have_same_reference_entity", exc_info=True)
         raise
