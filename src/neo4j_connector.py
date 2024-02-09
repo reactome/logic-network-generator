@@ -1,13 +1,13 @@
 from py2neo import Graph
 import pandas as pd
 from src.argument_parser import logger
-from typing import Any, Set
+from typing import Any, List, Dict, Set
 
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=('neo4j', 'test'))
 
 
-def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
+def get_reaction_connections(pathway_id: int) -> pd.DataFrame:
     query: str = """
        MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
            WHERE pathway.dbId = %s
@@ -25,7 +25,7 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
         raise
 
 
-def get_all_pathways() -> pd.DataFrame:
+def get_all_pathways() -> List[Dict[str, Any]]:
     query: str = """
         MATCH (p:Pathway)
         WHERE p.speciesName='Homo sapiens'
@@ -36,13 +36,13 @@ def get_all_pathways() -> pd.DataFrame:
         """
 
     try:
-        return pd.DataFrame(graph.run(query).data())
+        return graph.run(query).data()
     except Exception:
         logger.error("Error in get_all_pathways", exc_info=True)
         raise
 
 
-def get_labels(entity_id: str) -> list:
+def get_labels(entity_id: int) -> List[str]:
     query_get_labels_template: str = """
        MATCH (e)
           WHERE e.dbId = %s
@@ -57,7 +57,7 @@ def get_labels(entity_id: str) -> list:
         raise
 
 
-def get_complex_components(entity_id: str) -> Set[int]:
+def get_complex_components(entity_id: int) -> Set[int]:
     query_get_components_template: str = """
        MATCH (entity)-[:hasComponent]->(component)
            WHERE entity.dbId = %s
@@ -72,7 +72,7 @@ def get_complex_components(entity_id: str) -> Set[int]:
         raise
 
 
-def get_set_members(entity_id: str) -> Set[int]:
+def get_set_members(entity_id: int) -> Set[int]:
     query_get_members_template: str = """
         MATCH (entity)-[:hasCandidate|hasMember]->(member)
             WHERE entity.dbId = %s
@@ -87,7 +87,7 @@ def get_set_members(entity_id: str) -> Set[int]:
         raise
 
 
-def get_reactions(pathway_id: str, taxon_id: str) -> list:
+def get_reactions(pathway_id: int, taxon_id: str) -> List[int]:
     query_reaction_template: str = """
         MATCH (reaction)<-[:hasEvent*]-(pathway:Pathway)-[:species]->(species:Species)
              WHERE (reaction:Reaction OR reaction:ReactionLikeEvent)
@@ -103,7 +103,7 @@ def get_reactions(pathway_id: str, taxon_id: str) -> list:
         raise
 
 
-def get_reaction_input_output_ids(reaction_id: str, input_or_output: str) -> Set[int]:
+def get_reaction_input_output_ids(reaction_id: int, input_or_output: str) -> Set[int]:
     query_template: str = """
        MATCH (reaction)-[:%s]-(io)
            WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) AND reaction.dbId=%s
@@ -119,17 +119,20 @@ def get_reaction_input_output_ids(reaction_id: str, input_or_output: str) -> Set
         raise
 
 
-def get_reference_entities(entity_id: str) -> pd.DataFrame:
+def do_entities_have_same_reference_entity(entity_id: int, entity_id2: int) -> bool:
     query: str = """
-        MATCH (e:Entity {entity_id: %s})-[:HAS_REFERENCE_ENTITY]->(ref:Entity)
-        RETURN ref.entity_id AS reference_entity_id
-    """ % entity_id
+        MATCH (reference_database:ReferenceDatabase)<-[:referenceDatabase]-(reference_entity:ReferenceEntity)<-[:referenceGene]-(reference_entity_2:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
+        WHERE reference_database.displayName = "HGNC"
+            AND (pe.dbId = $entity_id1 OR pe.dbId = $entity_id2)
+        WITH reference_entity, count(DISTINCT pe) AS num_entities
+        WHERE num_entities = 2
+        RETURN count(reference_entity) > 0 AS result
+        LIMIT 1
+    """ # noqa
 
     try:
-        df: pd.DataFrame = pd.DataFrame(graph.run(query).data())
-        df = df.astype({'reference_entity_id': 'str'})
-        return df
+        df: pd.DataFrame = pd.DataFrame(graph.run(query, entity_id1=entity_id, entity_id2=entity_id2).data())
+        return df['result'].iloc[0]
     except Exception:
-        logger.error("Error in get_reference_entities", exc_info=True)
+        logger.error("Error in do_entities_have_same_reference_entity", exc_info=True)
         raise
-

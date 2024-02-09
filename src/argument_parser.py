@@ -1,7 +1,6 @@
 import argparse
 import logging
 from argparse import Namespace
-from typing import Tuple
 
 
 def parse_args() -> Namespace:
@@ -26,4 +25,3 @@ def configure_logging(debug_flag: bool, verbose_flag: bool) -> None:
 
 
 logger: logging.Logger = logging.getLogger(__name__)
-
