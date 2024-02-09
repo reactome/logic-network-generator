@@ -1,13 +1,14 @@
 from py2neo import Graph
 import pandas as pd
 from src.argument_parser import logger
+from typing import Any, Set
 
-uri = "bolt://localhost:7687"
-graph = Graph(uri, auth=('neo4j', 'test'))
+uri: str = "bolt://localhost:7687"
+graph: Graph = Graph(uri, auth=('neo4j', 'test'))
 
 
-def get_reaction_connections(pathway_id):
-    query = """
+def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
+    query: str = """
        MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
            WHERE pathway.dbId = %s
        OPTIONAL MATCH (r1:ReactionLikeEvent)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway:Pathway)
@@ -16,7 +17,7 @@ def get_reaction_connections(pathway_id):
     """ % (pathway_id, pathway_id)
 
     try:
-        df = pd.DataFrame(graph.run(query).data())
+        df: pd.DataFrame = pd.DataFrame(graph.run(query).data())
         df = df.astype({'parent_reaction_id': 'Int64', 'child_reaction_id': 'Int64'})
         return df
     except Exception:
@@ -24,8 +25,8 @@ def get_reaction_connections(pathway_id):
         raise
 
 
-def get_all_pathways():
-    query = """
+def get_all_pathways() -> pd.DataFrame:
+    query: str = """
         MATCH (p:Pathway)
         WHERE p.speciesName='Homo sapiens'
         RETURN
@@ -35,19 +36,19 @@ def get_all_pathways():
         """
 
     try:
-        return graph.run(query).data()
+        return pd.DataFrame(graph.run(query).data())
     except Exception:
         logger.error("Error in get_all_pathways", exc_info=True)
         raise
 
 
-def get_labels(entity_id):
-    query_get_labels_template = """
+def get_labels(entity_id: str) -> list:
+    query_get_labels_template: str = """
        MATCH (e)
           WHERE e.dbId = %s
        RETURN labels(e) AS labels
        """
-    query = query_get_labels_template % entity_id
+    query: str = query_get_labels_template % entity_id
 
     try:
         return graph.run(query).data()[0]["labels"]
@@ -56,13 +57,13 @@ def get_labels(entity_id):
         raise
 
 
-def get_complex_components(entity_id):
-    query_get_components_template = """
+def get_complex_components(entity_id: str) -> Set[int]:
+    query_get_components_template: str = """
        MATCH (entity)-[:hasComponent]->(component)
            WHERE entity.dbId = %s
        RETURN collect(component.dbId) AS component_ids
        """
-    query = query_get_components_template % entity_id
+    query: str = query_get_components_template % entity_id
 
     try:
         return set(graph.run(query).data()[0]["component_ids"])
@@ -71,13 +72,13 @@ def get_complex_components(entity_id):
         raise
 
 
-def get_set_members(entity_id):
-    query_get_members_template = """
+def get_set_members(entity_id: str) -> Set[int]:
+    query_get_members_template: str = """
         MATCH (entity)-[:hasCandidate|hasMember]->(member)
             WHERE entity.dbId = %s
         RETURN collect(member.dbId) as member_ids
         """
-    query = query_get_members_template % entity_id
+    query: str = query_get_members_template % entity_id
 
     try:
         return set(graph.run(query).data()[0]["member_ids"])
@@ -86,14 +87,14 @@ def get_set_members(entity_id):
         raise
 
 
-def get_reactions(pathway_id, taxon_id):
-    query_reaction_template = """
+def get_reactions(pathway_id: str, taxon_id: str) -> list:
+    query_reaction_template: str = """
         MATCH (reaction)<-[:hasEvent*]-(pathway:Pathway)-[:species]->(species:Species)
              WHERE (reaction:Reaction OR reaction:ReactionLikeEvent)
                    AND pathway.dbId=%s AND species.taxId="%s"
         RETURN COLLECT(reaction.dbId) AS reaction_ids
     """
-    query = query_reaction_template % (pathway_id, taxon_id)
+    query: str = query_reaction_template % (pathway_id, taxon_id)
 
     try:
         return graph.run(query).data()[0]["reaction_ids"]
@@ -102,14 +103,14 @@ def get_reactions(pathway_id, taxon_id):
         raise
 
 
-def get_reaction_input_output_ids(reaction_id, input_or_output):
-    query_template = """
+def get_reaction_input_output_ids(reaction_id: str, input_or_output: str) -> Set[int]:
+    query_template: str = """
        MATCH (reaction)-[:%s]-(io)
            WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) AND reaction.dbId=%s
        RETURN COLLECT(io.dbId) AS io_ids
     """
-    relation_type = "input" if input_or_output == "input" else "output"
-    query = query_template % (relation_type, reaction_id)
+    relation_type: str = "input" if input_or_output == "input" else "output"
+    query: str = query_template % (relation_type, reaction_id)
 
     try:
         return set(graph.run(query).data()[0]["io_ids"])
@@ -118,16 +119,17 @@ def get_reaction_input_output_ids(reaction_id, input_or_output):
         raise
 
 
-def get_reference_entities(entity_id):
-    query = """
+def get_reference_entities(entity_id: str) -> pd.DataFrame:
+    query: str = """
         MATCH (e:Entity {entity_id: %s})-[:HAS_REFERENCE_ENTITY]->(ref:Entity)
         RETURN ref.entity_id AS reference_entity_id
     """ % entity_id
 
     try:
-        df = pd.DataFrame(graph.run(query).data())
+        df: pd.DataFrame = pd.DataFrame(graph.run(query).data())
         df = df.astype({'reference_entity_id': 'str'})
         return df
     except Exception:
         logger.error("Error in get_reference_entities", exc_info=True)
         raise
+

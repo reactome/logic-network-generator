@@ -1,12 +1,13 @@
 import pandas as pd
 import pprint
+from typing import Any
 
 from src.argument_parser import logger
 
 pp = pprint.PrettyPrinter(indent=4)
 
 
-def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df):
+def create_pathway_pi_df(reaction_inputs_and_outputs_df: pd.DataFrame, reaction_connections_df: pd.DataFrame) -> pd.DataFrame:
     logger.debug("Adding reaction pairs to pathway_pi_df")
 
     columns = {
@@ -20,11 +21,11 @@ def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df
         "unmatched_inputs": pd.Series(dtype='str'),  # Unmatched input IDs
         "unmatched_outputs": pd.Series(dtype='str')  # Unmatched output IDs
     }
-    pathway_pi_df = pd.DataFrame(columns)
+    pathway_pi_df: pd.DataFrame = pd.DataFrame(columns)
 
     for idx, reaction_connection in reaction_connections_df.iterrows():
-        parent_reaction_id = reaction_connection['parent_reaction_id']
-        child_reaction_id = reaction_connection['child_reaction_id']
+        parent_reaction_id: int = reaction_connection['parent_reaction_id']
+        child_reaction_id: int = reaction_connection['child_reaction_id']
 
         parent_inputs = reaction_inputs_and_outputs_df[
             (reaction_inputs_and_outputs_df['reaction_id'] == parent_reaction_id)
@@ -40,7 +41,7 @@ def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df
         unmatched_inputs = set(parent_inputs) - common_ids
         unmatched_outputs = set(child_outputs) - common_ids
 
-        row = {
+        row: Any = {
             "parent_id": reaction_connection['parent_reaction_id'],
             "parent_reaction_id": parent_reaction_id,
             "parent_decomposed_reaction_id": reaction_connection['parent_decomposed_reaction_id'],
@@ -55,3 +56,4 @@ def create_pathway_pi_df(reaction_inputs_and_outputs_df, reaction_connections_df
         pathway_pi_df = pathway_pi_df.append(row, ignore_index=True)
 
     return pathway_pi_df
+

@@ -1,9 +1,11 @@
 import argparse
 import logging
+from argparse import Namespace
+from typing import Tuple
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='pathway_creation')
+def parse_args() -> Namespace:
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description='pathway_creation')
     parser.add_argument('--debug', action='store_true', help='Enable debugging')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     parser.add_argument('--pathway-list', type=str, help='Input file containing pathway information')
@@ -13,14 +15,15 @@ def parse_args():
 
 
 # Configure the logging settings
-def configure_logging(debug_flag, verbose_flag):
+def configure_logging(debug_flag: bool, verbose_flag: bool) -> None:
     if verbose_flag:
-        log_level = logging.DEBUG
+        log_level: int = logging.DEBUG
     elif debug_flag:
-        log_level = logging.DEBUG
+        log_level: int = logging.DEBUG
     else:
-        log_level = logging.INFO
+        log_level: int = logging.INFO
     logging.basicConfig(filename='debug_log.txt', level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-logger = logging.getLogger(__name__)
+logger: logging.Logger = logging.getLogger(__name__)
+
