@@ -1,7 +1,7 @@
 import pandas as pd
 from src.argument_parser import logger
-from typing import Any, Dict, DataFrame
-
+from typing import Any, Dict
+from pandas import DataFrame
 
 def create_pathway_pi(
     decomposed_uid_mapping: DataFrame,

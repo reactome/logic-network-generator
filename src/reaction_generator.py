@@ -34,7 +34,7 @@ def get_broken_apart_ids(broken_apart_members: List[Union[Set[str], str]], react
     """Get broken apart IDs."""
     global decomposed_uid_mapping
 
-    uid: UID = ""
+    uid: UID
     if any(isinstance(member, set) for member in broken_apart_members):
         for i in range(len(broken_apart_members)):
             if not isinstance(broken_apart_members[i], set):
@@ -45,25 +45,26 @@ def get_broken_apart_ids(broken_apart_members: List[Union[Set[str], str]], react
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
+        row: DataFrameRow
         for broken_apart_member in broken_apart_members:
             if is_valid_uuid(broken_apart_member):
                 component_ids = decomposed_uid_mapping.loc[
                     decomposed_uid_mapping['uid'] == broken_apart_member,
                     'component_id'
                 ].tolist()
-            for component_id in component_ids:
-                row: DataFrameRow = {'uid': uid,
-                                     'component_id': component_id,
-                                     'input_or_output_id': broken_apart_member,
-                                     'reactome_id': reactome_id
-                                     }
-                rows.append(row)
+                for component_id in component_ids:
+                    row = {'uid': uid,
+                           'component_id': component_id,
+                           'input_or_output_id': broken_apart_member,
+                           'reactome_id': reactome_id
+                           }
+                    rows.append(row)
             else:
-                row: DataFrameRow = {'uid': uid,
-                                     'component_id': broken_apart_member,
-                                     'input_or_output_id': broken_apart_member,
-                                     'reactome_id': reactome_id
-                                     }
+                row = {'uid': uid,
+                       'component_id': broken_apart_member,
+                       'input_or_output_id': broken_apart_member,
+                       'reactome_id': reactome_id
+                       }
                 rows.append(row)
 
         decomposed_uid_mapping = pd.concat([decomposed_uid_mapping, pd.DataFrame(rows)])
@@ -85,7 +86,7 @@ def get_or_assign_uid(input_or_output_ids: Set[InputOutputID]) -> UID:
         else:
             uid_to_input_or_output[uid] = {input_or_output_id}
 
-    matching_uid: UID = None
+    matching_uid: UID
     for uid, input_or_output_set in uid_to_input_or_output.items():
         if input_or_output_set == input_or_output_ids:
             matching_uid = uid
@@ -128,7 +129,7 @@ def get_uid_for_iterproduct_components(iterproduct_components: List[Set[Componen
     return uids
 
 
-def break_apart_entity(entity_id: str) -> Union[str, Set[str]]:
+def break_apart_entity(entity_id: int) -> Union[str, Set[str]]:
     """Break apart entity."""
     global decomposed_uid_mapping
     labels = get_labels(entity_id)
@@ -157,7 +158,7 @@ def break_apart_entity(entity_id: str) -> Union[str, Set[str]]:
 
         for member_id in member_ids:
             members = break_apart_entity(member_id)
-            broken_apart_members.append(members)
+            broken_apart_members.extend(members)
 
         logger.debug(f"Debugging: break_apart_entity - entity_id: {entity_id}")
         logger.debug(f"Debugging: break_apart_entity - labels: {labels}")
@@ -198,14 +199,14 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
 
         input_ids = get_reaction_input_output_ids(
             reaction_id, "input")
-        broken_apart_input_id = [
+        broken_apart_input_id: List[Set[str]] = [
             break_apart_entity(input_id) for input_id in input_ids]
         input_combinations = get_broken_apart_ids(
             broken_apart_input_id, reaction_id)
 
         output_ids = get_reaction_input_output_ids(
             reaction_id, "output")
-        broken_apart_output_id = [
+        broken_apart_output_id: List[Set[str]] = [
             break_apart_entity(output_id) for output_id in output_ids]
         output_combinations = get_broken_apart_ids(
             broken_apart_output_id, reaction_id)
@@ -231,6 +232,7 @@ def get_decomposed_uid_mapping(
     reaction_ids = pd.unique(reaction_connections[['parent_reaction_id', 'child_reaction_id']].values.ravel('K'))
 
     reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
+    reaction_ids = reaction_ids.tolist()
     best_matches = decompose_by_reactions(reaction_ids)
 
     return (decomposed_uid_mapping, best_matches)

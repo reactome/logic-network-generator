@@ -7,7 +7,7 @@ uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=('neo4j', 'test'))
 
 
-def get_reaction_connections(pathway_id: int) -> pd.DataFrame:
+def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     query: str = """
        MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
            WHERE pathway.dbId = %s

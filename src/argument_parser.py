@@ -15,12 +15,13 @@ def parse_args() -> Namespace:
 
 # Configure the logging settings
 def configure_logging(debug_flag: bool, verbose_flag: bool) -> None:
+    log_level: int
     if verbose_flag:
-        log_level: int = logging.DEBUG
+        log_level = logging.DEBUG
     elif debug_flag:
-        log_level: int = logging.DEBUG
+        log_level = logging.DEBUG
     else:
-        log_level: int = logging.INFO
+        log_level = logging.INFO
     logging.basicConfig(filename='debug_log.txt', level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
