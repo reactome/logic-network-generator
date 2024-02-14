@@ -185,7 +185,7 @@ def break_apart_entity(entity_id: int) -> Union[str, Set[str]]:
                 broken_apart_members.append(members)
         x = broken_apart_members
         print("x")
-        print(x) 
+        print(x)
         return set(broken_apart_members)
 
     elif "Complex" in labels:
