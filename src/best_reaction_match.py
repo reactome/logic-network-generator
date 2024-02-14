@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+
 from src.neo4j_connector import do_entities_have_same_reference_entity
 
 
@@ -11,11 +12,15 @@ def create_raw_counts_matrix(input_reactions, output_reactions, decomposed_uid_m
     m = len(output_reactions)
     reaction_to_reaction_counts = np.zeros((n, m))
     for i, input_reaction in enumerate(input_reactions):
-        input_rows = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == input_reaction]
-        input_component_ids = set(input_rows['component_id'])
+        input_rows = decomposed_uid_mapping[
+            decomposed_uid_mapping["uid"] == input_reaction
+        ]
+        input_component_ids = set(input_rows["component_id"])
         for j, output_reaction in enumerate(output_reactions):
-            output_rows = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == output_reaction]
-            output_component_ids = set(output_rows['component_id'])
+            output_rows = decomposed_uid_mapping[
+                decomposed_uid_mapping["uid"] == output_reaction
+            ]
+            output_component_ids = set(output_rows["component_id"])
             matching_components = input_component_ids.intersection(output_component_ids)
             non_matching_input_components = input_component_ids - matching_components
             non_matching_output_components = output_component_ids - matching_components
@@ -23,7 +28,9 @@ def create_raw_counts_matrix(input_reactions, output_reactions, decomposed_uid_m
             # Check if non-matching components share the same reference entity
             for input_component_id in non_matching_input_components:
                 for output_component_id in non_matching_output_components:
-                    if do_entities_have_same_reference_entity(input_component_id, output_component_id):
+                    if do_entities_have_same_reference_entity(
+                        input_component_id, output_component_id
+                    ):
                         matching_components.add(input_component_id)
                         matching_components.add(output_component_id)
 
@@ -31,8 +38,12 @@ def create_raw_counts_matrix(input_reactions, output_reactions, decomposed_uid_m
     return reaction_to_reaction_counts
 
 
-def find_best_match_both_decomposed_reactions(input_reactions, output_reactions, decomposed_uid_mapping):
-    counts = create_raw_counts_matrix(input_reactions, output_reactions, decomposed_uid_mapping)
+def find_best_match_both_decomposed_reactions(
+    input_reactions, output_reactions, decomposed_uid_mapping
+):
+    counts = create_raw_counts_matrix(
+        input_reactions, output_reactions, decomposed_uid_mapping
+    )
     num_rows, num_cols = counts.shape
 
     if num_rows != num_cols:
@@ -47,7 +58,11 @@ def find_best_match_both_decomposed_reactions(input_reactions, output_reactions,
     costs = -padded_counts
     row_indices, col_indices = linear_sum_assignment(costs)
 
-    matched_pairs = [(i, j) for i, j in zip(row_indices, col_indices) if i < num_rows and j < num_cols]
+    matched_pairs = [
+        (i, j)
+        for i, j in zip(row_indices, col_indices)
+        if i < num_rows and j < num_cols
+    ]
     matched_counts = [counts[i][j] for i, j in matched_pairs]
 
     reaction_matches = []
@@ -67,4 +82,6 @@ def find_best_reaction_match(input_reactions, output_reactions, decomposed_uid_m
     if isinstance(output_reactions, str):
         output_reactions = {output_reactions}
 
-    return find_best_match_both_decomposed_reactions(input_reactions, output_reactions, decomposed_uid_mapping)
+    return find_best_match_both_decomposed_reactions(
+        input_reactions, output_reactions, decomposed_uid_mapping
+    )

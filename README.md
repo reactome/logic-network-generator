@@ -20,4 +20,16 @@ Generate denormalized pathways for MP Biopath.
 2. Generate the files:
    ```bash
    poetry run python create-denormalized-pathways.py
-   ```
+  ```
+
+### Run Mypy
+
+```bash
+poetry run mypy --ignore-missing-imports .
+```
+
+### Run fake8
+
+```bash
+poetry run flake8 .
+```
