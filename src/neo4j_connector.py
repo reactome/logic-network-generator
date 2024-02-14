@@ -1,24 +1,29 @@
-from py2neo import Graph
+from typing import Any, Dict, List, Set
+
 import pandas as pd
+from py2neo import Graph
+
 from src.argument_parser import logger
-from typing import Any, List, Dict, Set
 
 uri: str = "bolt://localhost:7687"
-graph: Graph = Graph(uri, auth=('neo4j', 'test'))
+graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
 
 def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
-    query: str = """
+    query: str = (
+        """
        MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
            WHERE pathway.dbId = %s
        OPTIONAL MATCH (r1:ReactionLikeEvent)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway:Pathway)
            WHERE pathway.dbId = %s
        RETURN r1.dbId AS parent_reaction_id, r2.dbId AS child_reaction_id
-    """ % (pathway_id, pathway_id)
+    """
+        % (pathway_id, pathway_id)
+    )
 
     try:
         df: pd.DataFrame = pd.DataFrame(graph.run(query).data())
-        df = df.astype({'parent_reaction_id': 'Int64', 'child_reaction_id': 'Int64'})
+        df = df.astype({"parent_reaction_id": "Int64", "child_reaction_id": "Int64"})
         return df
     except Exception:
         logger.error("Error in get_reaction_connections", exc_info=True)
@@ -128,11 +133,13 @@ def do_entities_have_same_reference_entity(entity_id: int, entity_id2: int) -> b
         WHERE num_entities = 2
         RETURN count(reference_entity) > 0 AS result
         LIMIT 1
-    """ # noqa
+    """  # noqa
 
     try:
-        df: pd.DataFrame = pd.DataFrame(graph.run(query, entity_id1=entity_id, entity_id2=entity_id2).data())
-        return df['result'].iloc[0]
+        df: pd.DataFrame = pd.DataFrame(
+            graph.run(query, entity_id1=entity_id, entity_id2=entity_id2).data()
+        )
+        return df["result"].iloc[0]
     except Exception:
         logger.error("Error in do_entities_have_same_reference_entity", exc_info=True)
         raise
