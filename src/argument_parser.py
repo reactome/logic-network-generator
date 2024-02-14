@@ -1,3 +1,4 @@
+import sys
 import argparse
 import logging
 from argparse import Namespace
@@ -36,6 +37,12 @@ def configure_logging(debug_flag: bool, verbose_flag: bool) -> None:
         level=log_level,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(console_handler)
 
 
 logger: logging.Logger = logging.getLogger(__name__)
