@@ -1,14 +1,40 @@
 import itertools
 import uuid
 from typing import Any, Dict, List, Set, Tuple, Union
-
+import sqlite3
 import pandas as pd
+from py2neo import Graph
 
 from src.argument_parser import logger
 from src.best_reaction_match import find_best_reaction_match
 from src.neo4j_connector import (get_complex_components, get_labels,
                                  get_reaction_input_output_ids,
                                  get_set_members)
+
+
+conn = sqlite3.connect('your_database.db')
+
+def convert_df_to_sqlite_table(df: pd.DataFrame, table_name: str, schema: str):
+    cursor = conn.cursor()
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({schema})")
+    df.to_sql(table_name, conn, if_exists='replace', index=False)
+    conn.commit()
+
+# Define your schema
+table_schema = "uid TEXT, component_id TEXT, input_or_output_uid TEXT, input_or_output_reactome_id INT, reactome_id INT"
+
+# Print debug information
+print("Checking if table exists:")
+cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='decomposed_uid_mapping';")
+if cursor.fetchone():
+    print("Table 'decomposed_uid_mapping' exists.")
+else:
+    print("Table 'decomposed_uid_mapping' does not exist.")
+
+
+uri: str = "bolt://localhost:7687"
+graph: Graph = Graph(uri, auth=("neo4j", "test"))
+
 
 # Define types
 UID = str
@@ -248,6 +274,23 @@ def decompose_by_reactions(reaction_ids: List[int]) -> List[Any]:
         all_best_matches += best_matches
 
     return all_best_matches
+
+# Use the modified function to convert DataFrame to SQLite table
+convert_df_to_sqlite_table(decomposed_uid_mapping, 'decomposed_uid_mapping', table_schema)
+
+print("Contents of decomposed_uid_mapping SQLite table:")
+cursor = conn.execute("SELECT * FROM decomposed_uid_mapping")
+for row in cursor.fetchall():
+    print(row)
+
+# Print debug information
+print("Checking if table exists:")
+cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='decomposed_uid_mapping';")
+if cursor.fetchone():
+    print("Table 'decomposed_uid_mapping' exists.")
+else:
+    print("Table 'decomposed_uid_mapping' does not exist.")
+
 
 
 def get_decomposed_uid_mapping(
