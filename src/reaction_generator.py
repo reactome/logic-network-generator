@@ -43,30 +43,15 @@ InputOutputID = str
 ReactomeID = str
 DataFrameRow = Dict[str, Any]
 
-# Dataframe type
-DecomposedUIDDataFrame = pd.DataFrame
 column_types = {
     "uid": str,
+    "reactome_id": int,
     "component_id": str,
     "input_or_output_uid": str,
     "input_or_output_reactome_id": int,
-    "reactome_id": int,
 }
 
-decomposed_uid_mapping: DecomposedUIDDataFrame = pd.DataFrame(
-    columns=["uid", "component_id", "input_or_output_id", "reactome_id"]
-)
-
-# Create new columns for 'input_or_output_uid' and 'input_or_output_reactome_id'
-decomposed_uid_mapping["input_or_output_uid"] = decomposed_uid_mapping[
-    "input_or_output_id"
-].apply(lambda x: str(x) if not x.isdigit() else None)
-decomposed_uid_mapping["input_or_output_reactome_id"] = decomposed_uid_mapping[
-    "input_or_output_id"
-].apply(lambda x: int(x) if x.isdigit() else None)
-
-# Drop the original 'input_or_output_id' column
-decomposed_uid_mapping.drop(columns=["input_or_output_id"], inplace=True)
+decomposed_uid_mapping = pd.DataFrame(columns=list(column_types.keys()))
 
 
 def is_valid_uuid(value: Any) -> bool:
@@ -79,12 +64,12 @@ def is_valid_uuid(value: Any) -> bool:
 
 
 def get_broken_apart_ids(
-    broken_apart_members: List[Union[Set[str], str]], reactome_id: ReactomeID
-) -> UID:
+    broken_apart_members: list[set[str]], reactome_id: ReactomeID
+) -> Set[UID]:
     """Get broken apart IDs."""
     global decomposed_uid_mapping
 
-    uid: UID
+    uids: Set[UID]
     if any(isinstance(member, set) for member in broken_apart_members):
         new_broken_apart_members = []
         for member in broken_apart_members:
@@ -94,44 +79,39 @@ def get_broken_apart_ids(
                 new_broken_apart_members.append({member})
 
         iterproduct_components = list(itertools.product(*new_broken_apart_members))
-
-        uid = get_uid_for_iterproduct_components(iterproduct_components, reactome_id)
+        iterproduct_components_as_sets = [set(map(str, item)) for item in iterproduct_components]
+        uids = get_uids_for_iterproduct_components(iterproduct_components_as_sets, reactome_id)
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
         row: DataFrameRow
-        for broken_apart_member in broken_apart_members:
-            if is_valid_uuid(broken_apart_member):
+        for member in broken_apart_members:
+            if is_valid_uuid(member):
                 component_ids = decomposed_uid_mapping.loc[
-                    decomposed_uid_mapping["uid"] == broken_apart_member, "component_id"
+                    decomposed_uid_mapping["uid"] == member, "component_id"
                 ].tolist()
                 for component_id in component_ids:
                     row = {
                         "uid": uid,
                         "component_id": component_id,
                         "reactome_id": reactome_id,
-                        "input_or_output_uid": broken_apart_member,
+                        "input_or_output_uid": member,
                         "input_or_output_reactome_id": None,
                     }
                     rows.append(row)
             else:
-                broken_apart_member = next(iter(broken_apart_member))
                 row = {
                     "uid": uid,
-                    "component_id": broken_apart_member,
+                    "component_id": member,
                     "reactome_id": reactome_id,
                     "input_or_output_uid": None,
-                    "input_or_output_reactome_id": (
-                        int(broken_apart_member)
-                        if broken_apart_member.isdigit()
-                        else None
-                    ),
+                    "input_or_output_reactome_id": member,
                 }
                 rows.append(row)
-
+        uids = {uid}
         decomposed_uid_mapping = pd.concat([decomposed_uid_mapping, pd.DataFrame(rows)])
 
-    return uid
+    return uids
 
 
 def get_or_assign_uid(input_or_output_ids: Set[InputOutputID]) -> UID:
@@ -141,12 +121,21 @@ def get_or_assign_uid(input_or_output_ids: Set[InputOutputID]) -> UID:
     uid_to_input_or_output: Dict[UID, Set[InputOutputID]] = {}
     for index, row in decomposed_uid_mapping.iterrows():
         uid = row["uid"]
-        input_or_output_id = row["input_or_output_id"]
+        input_or_output_uid = row["input_or_output_uid"]
+        input_or_output_reactome_id = row["input_or_output_reactome_id"]
 
         if uid in uid_to_input_or_output:
-            uid_to_input_or_output[uid].add(input_or_output_id)
+            if input_or_output_uid:
+                uid_to_input_or_output[uid].add(input_or_output_uid)
+            if input_or_output_reactome_id:
+                uid_to_input_or_output[uid].add(input_or_output_reactome_id)
         else:
-            uid_to_input_or_output[uid] = {input_or_output_id}
+            if input_or_output_uid:
+                uid_to_input_or_output[uid] = {input_or_output_uid}
+                if input_or_output_reactome_id:
+                    uid_to_input_or_output[uid].add(input_or_output_reactome_id)
+            elif input_or_output_reactome_id:
+                uid_to_input_or_output[uid] = {input_or_output_reactome_id}
 
     matching_uid: UID = ""
     for uid, input_or_output_set in uid_to_input_or_output.items():
@@ -157,11 +146,12 @@ def get_or_assign_uid(input_or_output_ids: Set[InputOutputID]) -> UID:
     return matching_uid if matching_uid else str(uuid.uuid4())
 
 
-def get_uid_for_iterproduct_components(
+def get_uids_for_iterproduct_components(
     iterproduct_components: List[Set[ComponentID]], reactome_id: ReactomeID
 ) -> Set[UID]:
     """Get UID for iterproduct components."""
     global decomposed_uid_mapping
+
     uids: Set[UID] = set()
     for component in iterproduct_components:
         component_to_input_or_output: Dict[ComponentID, InputOutputID] = {}
@@ -180,10 +170,13 @@ def get_uid_for_iterproduct_components(
 
         rows: List[DataFrameRow] = []
         for component_id, input_or_output_id in component_to_input_or_output.items():
+            input_or_output_uid = input_or_output_id if is_valid_uuid(input_or_output_id) else None
+            input_or_output_reactome_id = input_or_output_id if not is_valid_uuid(input_or_output_id) else None
             row: DataFrameRow = {
                 "uid": uid,
                 "component_id": component_id,
-                "input_or_output_id": input_or_output_id,
+                "input_or_output_uid": input_or_output_uid,
+                "input_or_output_reactome_id": input_or_output_reactome_id,
                 "reactome_id": reactome_id,
             }
             rows.append(row)
@@ -194,35 +187,35 @@ def get_uid_for_iterproduct_components(
     return uids
 
 
-def break_apart_entity(entity_id: int) -> Union[str, Set[str]]:
+def break_apart_entity(entity_id: int) -> Set[str]:
     """Break apart entity."""
     global decomposed_uid_mapping
-    labels = get_labels(entity_id)
 
+
+    labels = get_labels(entity_id)
     if "EntitySet" in labels:
         member_ids = get_set_members(entity_id)
-        broken_apart_members: List[Union[Set[str], str]] = []
 
+        member_list: List[str] = []
         for member_id in member_ids:
             members = break_apart_entity(member_id)
+
             if isinstance(members, set):
-                broken_apart_members.extend(members)
+                member_list.extend(members)
             else:
-                broken_apart_members.append(members)
-        x = broken_apart_members
-        print("x")
-        print(x)
-        return set(broken_apart_members)
+                member_list.extend(set(members))
+
+        return set(member_list)
 
     elif "Complex" in labels:
+        broken_apart_members: List[Set[str]] = []
         member_ids = get_complex_components(entity_id)
-        broken_apart_members = []
 
         for member_id in member_ids:
             members = break_apart_entity(member_id)
-            broken_apart_members.extend(members)
+            broken_apart_members.append(members)
 
-        return get_broken_apart_ids(list(set(broken_apart_members)), str(entity_id))
+        return get_broken_apart_ids(broken_apart_members, str(entity_id))
 
     elif any(
         entity_label in labels
@@ -237,7 +230,7 @@ def break_apart_entity(entity_id: int) -> Union[str, Set[str]]:
         ]
     ):
 
-        return str(entity_id)
+        return {str(entity_id)}
 
     else:
         logger.error(f"Not handling labels correctly for: {entity_id}")
@@ -295,7 +288,7 @@ else:
 
 def get_decomposed_uid_mapping(
     pathway_id: str, reaction_connections: pd.DataFrame
-) -> Tuple[DecomposedUIDDataFrame, List[Any]]:
+) -> Tuple[pd.DataFrame, List[Any]]:
     """Get decomposed UID mapping."""
     global decomposed_uid_mapping
 

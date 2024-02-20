@@ -23,7 +23,13 @@ def main() -> None:
     taxon_id: str = "9606"
 
     if args.pathway_list:
-        # Read pathways from the input file
+        if not os.path.exists(args.pathway_list):
+            logger.error(f"Pathway list file '{args.pathway_list}' does not exist.")
+            return
+        elif not os.access(args.pathway_list, os.R_OK):
+            logger.error(f"Pathway list file '{args.pathway_list}' is not readable.")
+            return
+
         try:
             pathways_df: pd.DataFrame = pd.read_csv(args.pathway_list, sep="\t")
             pathways: Dict[str, str] = dict(
