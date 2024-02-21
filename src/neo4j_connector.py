@@ -1,40 +1,12 @@
-import sqlite3
+from typing import Any, Dict, List, Set
+
 import pandas as pd
 from py2neo import Graph
-from src.argument_parser import logger
-from typing import List, Dict, Any, Set
 
-# Establish SQLite connection
-conn = sqlite3.connect('your_database.db')
+from src.argument_parser import logger
 
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
-
-
-def convert_df_to_sqlite_table(df: pd.DataFrame, table_name: str):
-    df.to_sql(table_name, conn, if_exists='replace', index=False)
-    # Print the first few rows of the table
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM {table_name} LIMIT 5")
-    rows = cursor.fetchall()
-    print(f"Contents of {table_name}:")
-    for row in rows:
-        print(row)
-
-
-def get_reaction_connections_from_sqlite(pathway_id: str) -> pd.DataFrame:
-    query: str = f"""
-        SELECT parent_reaction_id, child_reaction_id
-        FROM reaction_connections
-        WHERE pathway_id = '{pathway_id}'
-    """
-
-    try:
-        df: pd.DataFrame = pd.read_sql(query, conn)
-        return df
-    except Exception:
-        logger.error("Error in get_reaction_connections_from_sqlite", exc_info=True)
-        raise
 
 
 def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
@@ -56,10 +28,6 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     except Exception:
         logger.error("Error in get_reaction_connections", exc_info=True)
         raise
-
-
-# Close the SQLite connection
-conn.close()
 
 
 def get_all_pathways() -> List[Dict[str, Any]]:

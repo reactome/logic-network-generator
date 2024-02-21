@@ -1,40 +1,17 @@
 import itertools
 import uuid
-from typing import Any, Dict, List, Set, Tuple, Union
-import sqlite3
+from typing import Any, Dict, List, Set, Tuple
+
 import pandas as pd
-from py2neo import Graph
 
 from src.argument_parser import logger
 from src.best_reaction_match import find_best_reaction_match
-from src.neo4j_connector import (get_complex_components, get_labels,
-                                 get_reaction_input_output_ids,
-                                 get_set_members)
-
-
-conn = sqlite3.connect('your_database.db')
-
-def convert_df_to_sqlite_table(df: pd.DataFrame, table_name: str, schema: str):
-    cursor = conn.cursor()
-    cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({schema})")
-    df.to_sql(table_name, conn, if_exists='replace', index=False)
-    conn.commit()
-
-# Define your schema
-table_schema = "uid TEXT, component_id TEXT, input_or_output_uid TEXT, input_or_output_reactome_id INT, reactome_id INT"
-
-# Print debug information
-print("Checking if table exists:")
-cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='decomposed_uid_mapping';")
-if cursor.fetchone():
-    print("Table 'decomposed_uid_mapping' exists.")
-else:
-    print("Table 'decomposed_uid_mapping' does not exist.")
-
-
-uri: str = "bolt://localhost:7687"
-graph: Graph = Graph(uri, auth=("neo4j", "test"))
-
+from src.neo4j_connector import (
+    get_complex_components,
+    get_labels,
+    get_reaction_input_output_ids,
+    get_set_members,
+)
 
 # Define types
 UID = str
@@ -79,8 +56,12 @@ def get_broken_apart_ids(
                 new_broken_apart_members.append({member})
 
         iterproduct_components = list(itertools.product(*new_broken_apart_members))
-        iterproduct_components_as_sets = [set(map(str, item)) for item in iterproduct_components]
-        uids = get_uids_for_iterproduct_components(iterproduct_components_as_sets, reactome_id)
+        iterproduct_components_as_sets = [
+            set(map(str, item)) for item in iterproduct_components
+        ]
+        uids = get_uids_for_iterproduct_components(
+            iterproduct_components_as_sets, reactome_id
+        )
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
@@ -170,8 +151,12 @@ def get_uids_for_iterproduct_components(
 
         rows: List[DataFrameRow] = []
         for component_id, input_or_output_id in component_to_input_or_output.items():
-            input_or_output_uid = input_or_output_id if is_valid_uuid(input_or_output_id) else None
-            input_or_output_reactome_id = input_or_output_id if not is_valid_uuid(input_or_output_id) else None
+            input_or_output_uid = (
+                input_or_output_id if is_valid_uuid(input_or_output_id) else None
+            )
+            input_or_output_reactome_id = (
+                input_or_output_id if not is_valid_uuid(input_or_output_id) else None
+            )
             row: DataFrameRow = {
                 "uid": uid,
                 "component_id": component_id,
@@ -190,7 +175,6 @@ def get_uids_for_iterproduct_components(
 def break_apart_entity(entity_id: int) -> Set[str]:
     """Break apart entity."""
     global decomposed_uid_mapping
-
 
     labels = get_labels(entity_id)
     if "EntitySet" in labels:
@@ -267,23 +251,6 @@ def decompose_by_reactions(reaction_ids: List[int]) -> List[Any]:
         all_best_matches += best_matches
 
     return all_best_matches
-
-# Use the modified function to convert DataFrame to SQLite table
-convert_df_to_sqlite_table(decomposed_uid_mapping, 'decomposed_uid_mapping', table_schema)
-
-print("Contents of decomposed_uid_mapping SQLite table:")
-cursor = conn.execute("SELECT * FROM decomposed_uid_mapping")
-for row in cursor.fetchall():
-    print(row)
-
-# Print debug information
-print("Checking if table exists:")
-cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='decomposed_uid_mapping';")
-if cursor.fetchone():
-    print("Table 'decomposed_uid_mapping' exists.")
-else:
-    print("Table 'decomposed_uid_mapping' does not exist.")
-
 
 
 def get_decomposed_uid_mapping(
