@@ -15,18 +15,10 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
         "output_hash": pd.Series(dtype="str"),
     }
     reaction_id_map: DataFrame = pd.DataFrame(columns)
-    print("reactome_ids")
-    print(reactome_ids)
 
-    print(decomposed_uid_mapping)
     rows = []
     for reactome_id in reactome_ids:
-        print("reactome_id")
-        print(reactome_id)
-        print(type(reactome_id))
         associated_hashes = decomposed_uid_mapping[decomposed_uid_mapping['reactome_id'] == str(reactome_id)]['uid'].unique().tolist()
-        print("associated_hashes")
-        print(associated_hashes)
         row = {
                 "uid": str(uuid.uuid4()),
                 "reactome_id": reactome_id,
@@ -41,7 +33,6 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
 def create_pathway_pi(
     decomposed_uid_mapping: DataFrame,
     reaction_connections: DataFrame,
-    best_matches: Any,
 ) -> DataFrame:
     """
     Create pathway_pi DataFrame based on decomposed_uid_mapping, reaction_connections, and best_matches.
@@ -75,7 +66,9 @@ def create_pathway_pi(
     reaction_id_map = create_reaction_id_map(reaction_ids, decomposed_uid_mapping)
     print("reaction_id_map")
     print(reaction_id_map)
+
     for reaction_id in reaction_ids:
+
         rows = decomposed_uid_mapping[
             decomposed_uid_mapping["reactome_id"] == str(reaction_id)
         ]
