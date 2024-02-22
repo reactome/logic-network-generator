@@ -5,6 +5,9 @@ from src.reaction_generator import get_decomposed_uid_mapping
 import os
 import pandas as pd
 
+from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
+
+
 def generate_pathway_file(
     pathway_id: str, taxon_id: str, pathway_name: str, decompose: bool = False
 ) -> None:
@@ -27,7 +30,7 @@ def generate_pathway_file(
         reaction_connections = reaction_connections.iloc[:number_of_reaction_connections]
 
     if os.path.exists(decomposed_uid_mapping_file):
-        decomposed_uid_mapping = pd.read_csv(decomposed_uid_mapping_file)
+        decomposed_uid_mapping = pd.read_csv(decomposed_uid_mapping_file, dtype=decomposed_uid_mapping_column_types)
     else:
         [decomposed_uid_mapping, best_matches] = get_decomposed_uid_mapping(
             pathway_id, reaction_connections

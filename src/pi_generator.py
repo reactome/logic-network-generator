@@ -8,20 +8,23 @@ from src.argument_parser import logger
 
 
 def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
-    columns: Dict[str, pd.Series] = {
-        "uid": pd.Series(dtype="str"),
-        "reactome_id": pd.Series(dtype="int"),
-        "input_hash": pd.Series(dtype="str"),
-        "output_hash": pd.Series(dtype="str"),
+    reaction_id_map_column_types = {
+        'uid': str,
+        'reactome_id': pd.Int64Dtype(),
+        'input_hash': str,
+        'output_hash': str,
     }
-    reaction_id_map: DataFrame = pd.DataFrame(columns)
+    reaction_id_map = (
+        pd.DataFrame(columns=reaction_id_map_column_types.keys())
+        .astype(reaction_id_map_column_types)
+    )
 
     rows = []
     for reactome_id in reactome_ids:
-        associated_hashes = decomposed_uid_mapping[decomposed_uid_mapping['reactome_id'] == str(reactome_id)]['uid'].unique().tolist()
+        associated_hashes = decomposed_uid_mapping[decomposed_uid_mapping['reactome_id'] == reactome_id]['uid'].unique().tolist()
         row = {
                 "uid": str(uuid.uuid4()),
-                "reactome_id": reactome_id,
+                "reactome_id": int(reactome_id),
                 "input_hash": associated_hashes[0],
                 "output_hash": associated_hashes[1],
                 }
@@ -70,7 +73,7 @@ def create_pathway_pi(
     for reaction_id in reaction_ids:
 
         rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["reactome_id"] == str(reaction_id)
+            decomposed_uid_mapping["reactome_id"] == reaction_id
         ]
         print(rows)
 

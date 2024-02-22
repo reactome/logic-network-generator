@@ -8,10 +8,12 @@ import pandas as pd
 
 from src.argument_parser import logger
 from src.best_reaction_match import find_best_reaction_match
+from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.neo4j_connector import (
     contains_reference_gene_product_molecule_or_isoform,
     get_complex_components, get_labels, get_reaction_input_output_ids,
     get_reference_entity_id, get_set_members)
+
 
 warnings.filterwarnings(
     "ignore",
@@ -26,16 +28,10 @@ InputOutputID = str
 ReactomeID = str
 DataFrameRow = Dict[str, Any]
 
-column_types = {
-    "uid": str,
-    "reactome_id": int,
-    "component_id": str,
-    "component_id_or_reference_entity_id": "Int64",
-    "input_or_output_uid": str,
-    "input_or_output_reactome_id": int,
-}
-
-decomposed_uid_mapping = pd.DataFrame(columns=list(column_types.keys()))
+decomposed_uid_mapping = (
+    pd.DataFrame(columns=decomposed_uid_mapping_column_types.keys())
+    .astype(decomposed_uid_mapping_column_types)
+)
 
 reference_entity_dict: Dict[str, str] = {}
 
