@@ -71,10 +71,28 @@ def create_pathway_pi(
     print(reaction_id_map)
 
     for reaction_id in reaction_ids:
+        input_hash = reaction_id_map.loc[reaction_id_map['reactome_id'] == reaction_id, 'input_hash'].iloc[0]
+        print("input_hash")
+        print(input_hash)
+        filtered_rows = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == input_hash]
+        input_or_output_uid_values = filtered_rows['input_or_output_uid'].tolist()
+        input_or_output_uid_values = [value for value in input_or_output_uid_values if pd.notna(value)]
+        input_or_output_reactome_id_values = filtered_rows['input_or_output_reactome_id'].tolist()
+        input_or_output_reactome_id_values = [value for value in input_or_output_reactome_id_values if pd.notna(value)]
+        print("input_or_output_uid_values")
+        print(input_or_output_uid_values)
+        print("input_or_output_reactome_id_values")
+        print(input_or_output_reactome_id_values)
+        exit()
 
-        rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["reactome_id"] == reaction_id
-        ]
-        print(rows)
+
+        preceding_reaction_ids = reaction_connections[reaction_connections['following_reaction_id'] == reaction_id]['preceding_reaction_id'].tolist()
+        for preceding_reaction_id in preceding_reaction_ids:
+            output_hash = reaction_id_map.loc[reaction_id_map['reactome_id'] == preceding_reaction_id, 'output_hash'].iloc[0]
+            filtered_rows = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == output_hash]
+            input_or_output_uid_values = filtered_rows['input_or_output_uid'].tolist()
+            input_or_output_uid_values = [value for value in input_or_output_uid_values if pd.notna(value)]
+            input_or_output_reactome_id_values = filtered_rows['input_or_output_reactome_id'].tolist()
+            input_or_output_reactome_id_values = [value for value in input_or_output_reactome_id_values if pd.notna(value)]
 
     return pathway_pi
