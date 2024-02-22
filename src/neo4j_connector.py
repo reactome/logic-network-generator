@@ -16,14 +16,16 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
            WHERE pathway.dbId = %s
        OPTIONAL MATCH (r1:ReactionLikeEvent)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway:Pathway)
            WHERE pathway.dbId = %s
-       RETURN r1.dbId AS parent_reaction_id, r2.dbId AS child_reaction_id
+       RETURN r1.dbId AS preceding_reaction_id, r2.dbId AS following_reaction_id
     """
         % (pathway_id, pathway_id)
     )
 
     try:
         df: pd.DataFrame = pd.DataFrame(graph.run(query).data())
-        df = df.astype({"parent_reaction_id": "Int64", "child_reaction_id": "Int64"})
+        df = df.astype(
+            {"preceding_reaction_id": "Int64", "following_reaction_id": "Int64"}
+        )
         return df
     except Exception:
         logger.error("Error in get_reaction_connections", exc_info=True)

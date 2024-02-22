@@ -1,11 +1,8 @@
 import hashlib
 import itertools
-
-import warnings
-warnings.filterwarnings("ignore", message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.", category=FutureWarning)
-
 import uuid
-from typing import Any, Dict, List, Set, Tuple, Union
+import warnings
+from typing import Any, Dict, List, Set, Tuple
 
 import pandas as pd
 
@@ -13,11 +10,13 @@ from src.argument_parser import logger
 from src.best_reaction_match import find_best_reaction_match
 from src.neo4j_connector import (
     contains_reference_gene_product_molecule_or_isoform,
-    get_complex_components,
-    get_labels,
-    get_reaction_input_output_ids,
-    get_reference_entity_id,
-    get_set_members,
+    get_complex_components, get_labels, get_reaction_input_output_ids,
+    get_reference_entity_id, get_set_members)
+
+warnings.filterwarnings(
+    "ignore",
+    message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.",
+    category=FutureWarning,
 )
 
 # Define types
@@ -36,8 +35,7 @@ column_types = {
     "input_or_output_reactome_id": int,
 }
 
-decomposed_uid_mapping = pd.DataFrame(columns=column_types.keys())
-decomposed_uid_mapping = decomposed_uid_mapping.astype(column_types)
+decomposed_uid_mapping = pd.DataFrame(columns=list(column_types.keys()))
 
 reference_entity_dict: Dict[str, str] = {}
 
@@ -46,11 +44,14 @@ def get_component_id_or_reference_entity_id(reactome_id):
     global reference_entity_dict
 
     if reactome_id in reference_entity_dict:
-        return reference_entity_dict[reactome_id]
+        component_id = reference_entity_dict[reactome_id]
+        return component_id
 
     reference_entity_id = get_reference_entity_id(reactome_id)
 
-    reference_entity_dict[reactome_id] = reference_entity_id if reference_entity_id else reactome_id
+    reference_entity_dict[reactome_id] = (
+        reference_entity_id if reference_entity_id else reactome_id
+    )
 
     return reference_entity_dict[reactome_id]
 
@@ -157,7 +158,9 @@ def get_uids_for_iterproduct_components(
                 "uid": uid,
                 "component_id": component_id,
                 "reactome_id": reactome_id,
-                "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(component_id),
+                "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(
+                    component_id
+                ),
                 "input_or_output_uid": input_or_output_uid,
                 "input_or_output_reactome_id": input_or_output_reactome_id,
             }
@@ -277,9 +280,9 @@ def get_decomposed_uid_mapping(
     decomposed_uid_mapping.drop(decomposed_uid_mapping.index, inplace=True)
 
     reaction_ids = pd.unique(
-        reaction_connections[["parent_reaction_id", "child_reaction_id"]].values.ravel(
-            "K"
-        )
+        reaction_connections[
+            ["preceding_reaction_id", "following_reaction_id"]
+        ].values.ravel("K")
     )
 
     reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list

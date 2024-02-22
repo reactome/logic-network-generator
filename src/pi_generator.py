@@ -25,8 +25,8 @@ def create_pathway_pi(
     logger.debug("Adding reaction pairs to pathway_pi")
 
     columns: Dict[str, pd.Series] = {
-        "parent_id": pd.Series(dtype="str"),
-        "child_id": pd.Series(dtype="str"),
+        "source_id": pd.Series(dtype="str"),
+        "target_id": pd.Series(dtype="str"),
         "pos_neg": pd.Series(dtype="str"),
         "and_or": pd.Series(dtype="str"),
     }
@@ -35,24 +35,24 @@ def create_pathway_pi(
     print(reaction_connections)
 
     for idx, reaction_connection in reaction_connections.iterrows():
-        parent_reaction_id = reaction_connection["parent_reaction_id"]
-        child_reaction_id = reaction_connection["child_reaction_id"]
+        preceding_reaction_id = reaction_connection["preceding_reaction_id"]
+        following_reaction_id = reaction_connection["following_reaction_id"]
 
-        print("parent_reaction_id")
-        print(parent_reaction_id)
-        print("child_reaction_id")
-        print(child_reaction_id)
+        print("preceding_reaction_id")
+        print(preceding_reaction_id)
+        print("following_reaction_id")
+        print(following_reaction_id)
         print("fdsfsdfsf")
         print(decomposed_uid_mapping)
-        # Assuming parent_reaction_id is a variable containing the value to filter by
-        parent_rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["reactome_id"] == str(parent_reaction_id)
+        # Assuming preceding_reaction_id is a variable containing the value to filter by
+        preceding_rows = decomposed_uid_mapping[
+            decomposed_uid_mapping["reactome_id"] == str(preceding_reaction_id)
         ]
-        child_rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["reactome_id"] == str(child_reaction_id)
+        following_rows = decomposed_uid_mapping[
+            decomposed_uid_mapping["reactome_id"] == str(following_reaction_id)
         ]
-        print(parent_rows)
-        print(child_rows)
+        print(preceding_rows)
+        print(following_rows)
         print(best_matches)
 
     return pathway_pi

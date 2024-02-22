@@ -33,7 +33,7 @@ def main() -> None:
         try:
             pathways_df: pd.DataFrame = pd.read_csv(args.pathway_list, sep="\t")
             pathways: Dict[str, str] = dict(
-                zip(pathways_df["ID"], pathways_df["PathwayName"])
+                zip(pathways_df["id"], pathways_df["pathway_name"])
             )
         except Exception as e:
             logger.error(f"Error reading pathway list file: {e}")
@@ -44,7 +44,7 @@ def main() -> None:
 
     # create a .tsv file for pathways list
     pathways_list_df: pd.DataFrame = pd.DataFrame(
-        list(pathways.items()), columns=["ID", "PathwayName"]
+        list(pathways.items()), columns=["id", "pathway_name"]
     )
     pathways_list_df.to_csv(args.output_dir, sep="\t", index=False)
 
