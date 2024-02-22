@@ -1,7 +1,11 @@
 import hashlib
 import itertools
+
+import warnings
+warnings.filterwarnings("ignore", message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.", category=FutureWarning)
+
 import uuid
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple, Union
 
 import pandas as pd
 
@@ -27,12 +31,13 @@ column_types = {
     "uid": str,
     "reactome_id": int,
     "component_id": str,
-    "component_id_or_reference_entity_id": str,
+    "component_id_or_reference_entity_id": "Int64",
     "input_or_output_uid": str,
     "input_or_output_reactome_id": int,
 }
 
-decomposed_uid_mapping = pd.DataFrame(columns=list(column_types.keys()))
+decomposed_uid_mapping = pd.DataFrame(columns=column_types.keys())
+decomposed_uid_mapping = decomposed_uid_mapping.astype(column_types)
 
 reference_entity_dict: Dict[str, str] = {}
 
@@ -44,12 +49,10 @@ def get_component_id_or_reference_entity_id(reactome_id):
         return reference_entity_dict[reactome_id]
 
     reference_entity_id = get_reference_entity_id(reactome_id)
-    reference_entity_dict[reactome_id] = reference_entity_id
 
-    if reference_entity_id:
-        return reference_entity_id
+    reference_entity_dict[reactome_id] = reference_entity_id if reference_entity_id else reactome_id
 
-    return reactome_id
+    return reference_entity_dict[reactome_id]
 
 
 def is_valid_uuid(identifier: Any) -> bool:
@@ -154,7 +157,7 @@ def get_uids_for_iterproduct_components(
                 "uid": uid,
                 "component_id": component_id,
                 "reactome_id": reactome_id,
-                "reference_entity_id": get_reference_entity_id(component_id),
+                "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(component_id),
                 "input_or_output_uid": input_or_output_uid,
                 "input_or_output_reactome_id": input_or_output_reactome_id,
             }
