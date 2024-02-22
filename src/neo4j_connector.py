@@ -1,7 +1,7 @@
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Union
 
 import pandas as pd
-from py2neo import Graph
+from py2neo import Graph  # type: ignore
 
 from src.argument_parser import logger
 
@@ -124,22 +124,40 @@ def get_reaction_input_output_ids(reaction_id: int, input_or_output: str) -> Set
         raise
 
 
-def do_entities_have_same_reference_entity(entity_id: int, entity_id2: int) -> bool:
-    query: str = """
-        MATCH (reference_database:ReferenceDatabase)<-[:referenceDatabase]-(reference_entity:ReferenceEntity)<-[:referenceGene]-(reference_entity_2:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
+def get_reference_entity_id(entity_id: int) -> Union[str, None]:
+    query_template: str = """
+        MATCH (reference_database:ReferenceDatabase)<-[:referenceDatabase]-(reference_entity_gene:ReferenceEntity)<-[:referenceGene]-(reference_entity:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
         WHERE reference_database.displayName = "HGNC"
-            AND (pe.dbId = $entity_id1 OR pe.dbId = $entity_id2)
-        WITH reference_entity, count(DISTINCT pe) AS num_entities
-        WHERE num_entities = 2
-        RETURN count(reference_entity) > 0 AS result
-        LIMIT 1
+            AND pe.dbId = %s
+        RETURN reference_entity.dbId as id
     """  # noqa
+    query: str = query_template % entity_id
 
     try:
-        df: pd.DataFrame = pd.DataFrame(
-            graph.run(query, entity_id1=entity_id, entity_id2=entity_id2).data()
-        )
-        return df["result"].iloc[0]
+        data = graph.run(query).data()
+        if len(data) == 0:
+            return None
+        return data[0]["id"]
     except Exception:
-        logger.error("Error in do_entities_have_same_reference_entity", exc_info=True)
+        logger.error("Error in get_reaction_input_output_ids", exc_info=True)
         raise
+
+
+def contains_reference_gene_product_molecule_or_isoform(entity_id: int) -> bool:
+    query_template = """
+        MATCH (es:EntitySet)-[:hasCandidate|hasMember]->(pe:PhysicalEntity)
+        WHERE es.dbId = %s
+            AND pe.referenceType IN ["ReferenceGeneProduct", "ReferenceIsoform", "ReferenceMolecule"]
+        RETURN COUNT(pe) > 0 AS contains_reference
+        """
+    query = query_template % entity_id
+
+    try:
+        result = graph.run(query).data()
+        return result[0]["contains_reference"]
+    except Exception as e:
+        logger.error(
+            "Error in contains_reference_gene_product_molecule_or_isoform",
+            exc_info=True,
+        )
+        raise e

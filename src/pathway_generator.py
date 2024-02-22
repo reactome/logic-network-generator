@@ -14,11 +14,14 @@ def generate_pathway_file(
     print(pathway_id)
     reaction_connections = get_reaction_connections(pathway_id)
 
-    number_of_reaction_connections: int = 1
+    number_of_reaction_connections: int = -1
     if number_of_reaction_connections > 0:
-        reaction_connections = reaction_connections.iloc[:number_of_reaction_connections]
+        reaction_connections = reaction_connections.iloc[
+            :number_of_reaction_connections
+        ]
 
     [decomposed_uid_mapping, best_matches] = get_decomposed_uid_mapping(
-        pathway_id, reaction_connections)
+        pathway_id, reaction_connections
+    )
     create_pathway_pi(decomposed_uid_mapping, reaction_connections, best_matches)
     exit()

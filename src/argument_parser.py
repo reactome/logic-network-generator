@@ -1,6 +1,6 @@
-import sys
 import argparse
 import logging
+import sys
 from argparse import Namespace
 
 
