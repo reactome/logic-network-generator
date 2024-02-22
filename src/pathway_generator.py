@@ -12,7 +12,7 @@ def generate_pathway_file(
     print(pathway_id)
     reaction_connections = get_reaction_connections(pathway_id)
 
-    number_of_reaction_connections: int = -1
+    number_of_reaction_connections: int = 2
     if number_of_reaction_connections > 0:
         reaction_connections = reaction_connections.iloc[
             :number_of_reaction_connections

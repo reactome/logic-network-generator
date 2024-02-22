@@ -1,9 +1,41 @@
+import uuid
 from typing import Any, Dict
 
 import pandas as pd
 from pandas import DataFrame
 
 from src.argument_parser import logger
+
+
+def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
+    columns: Dict[str, pd.Series] = {
+        "uid": pd.Series(dtype="str"),
+        "reactome_id": pd.Series(dtype="int"),
+        "input_hash": pd.Series(dtype="str"),
+        "output_hash": pd.Series(dtype="str"),
+    }
+    reaction_id_map: DataFrame = pd.DataFrame(columns)
+    print("reactome_ids")
+    print(reactome_ids)
+
+    print(decomposed_uid_mapping)
+    rows = []
+    for reactome_id in reactome_ids:
+        print("reactome_id")
+        print(reactome_id)
+        print(type(reactome_id))
+        associated_hashes = decomposed_uid_mapping[decomposed_uid_mapping['reactome_id'] == str(reactome_id)]['uid'].unique().tolist()
+        print("associated_hashes")
+        print(associated_hashes)
+        row = {
+                "uid": str(uuid.uuid4()),
+                "reactome_id": reactome_id,
+                "input_hash": associated_hashes[0],
+                "output_hash": associated_hashes[1],
+                }
+        rows.append(row)
+
+    return pd.DataFrame(rows)
 
 
 def create_pathway_pi(
@@ -17,7 +49,6 @@ def create_pathway_pi(
     Args:
         decomposed_uid_mapping (DataFrame): DataFrame containing decomposed UID mapping.
         reaction_connections (DataFrame): DataFrame containing reaction connections.
-        best_matches (Any): Data representing best matches.
 
     Returns:
         DataFrame: The created pathway_pi DataFrame.
@@ -32,27 +63,22 @@ def create_pathway_pi(
     }
     pathway_pi: DataFrame = pd.DataFrame(columns)
 
+    print("reaction_connetions")
     print(reaction_connections)
 
-    for idx, reaction_connection in reaction_connections.iterrows():
-        preceding_reaction_id = reaction_connection["preceding_reaction_id"]
-        following_reaction_id = reaction_connection["following_reaction_id"]
+    reaction_ids = pd.unique(
+        reaction_connections[["preceding_reaction_id", "following_reaction_id"]]
+        .stack()  # Stack the columns to convert them into a single series
+        .dropna()  # Drop NaN values
+    )
 
-        print("preceding_reaction_id")
-        print(preceding_reaction_id)
-        print("following_reaction_id")
-        print(following_reaction_id)
-        print("fdsfsdfsf")
-        print(decomposed_uid_mapping)
-        # Assuming preceding_reaction_id is a variable containing the value to filter by
-        preceding_rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["reactome_id"] == str(preceding_reaction_id)
+    reaction_id_map = create_reaction_id_map(reaction_ids, decomposed_uid_mapping)
+    print("reaction_id_map")
+    print(reaction_id_map)
+    for reaction_id in reaction_ids:
+        rows = decomposed_uid_mapping[
+            decomposed_uid_mapping["reactome_id"] == str(reaction_id)
         ]
-        following_rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["reactome_id"] == str(following_reaction_id)
-        ]
-        print(preceding_rows)
-        print(following_rows)
-        print(best_matches)
+        print(rows)
 
     return pathway_pi
