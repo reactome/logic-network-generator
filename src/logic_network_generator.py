@@ -44,7 +44,11 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
         }
         rows.append(row)
 
-    return pd.DataFrame(rows)
+    if rows:
+        new_rows_df = pd.DataFrame(rows)
+        reaction_id_map = pd.concat([reaction_id_map, new_rows_df], ignore_index=True)
+
+    return reaction_id_map
 
 
 def get_entities_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:

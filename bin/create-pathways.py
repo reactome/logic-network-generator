@@ -3,12 +3,10 @@
 
 import os
 import sys
-import argparse
 from dotenv import dotenv_values
-from typing import Dict, Tuple, List
+from typing import Tuple, List
 
 import pandas as pd
-from dotenv import load_dotenv
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
