@@ -1,6 +1,6 @@
 from src.argument_parser import logger
 from src.neo4j_connector import get_reaction_connections
-from src.pi_generator import create_pathway_pi
+from src.logic_network_generator import create_pathway_logic_network
 from src.reaction_generator import get_decomposed_uid_mapping
 import os
 import pandas as pd
@@ -37,5 +37,5 @@ def generate_pathway_file(
         )
         decomposed_uid_mapping.to_csv(decomposed_uid_mapping_file, index=False)
 
-    create_pathway_pi(decomposed_uid_mapping, reaction_connections)
+    create_pathway_logic_network(decomposed_uid_mapping, reaction_connections)
     exit()

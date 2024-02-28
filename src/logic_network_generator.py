@@ -55,7 +55,7 @@ def get_entities_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataF
         print("reaction_id")
         print(reaction_id)
         query = (
-            f"MATCH (reaction:ReactionLikeEvent{{dbId: '{reactome_id}'}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
+            f"MATCH (reaction:ReactionLikeEvent{{dbId: '{reaction_id}'}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
             f"RETURN reaction.dbId AS reaction_id, catalyst.dbId AS catalyst_id, 'catalyst' AS edge_type"
         )
         print("query")
@@ -70,21 +70,21 @@ def get_entities_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataF
     return pd.DataFrame(entities_list)
 
 
-def create_pathway_pi(
+def create_pathway_logic_network(
     decomposed_uid_mapping: DataFrame,
     reaction_connections: DataFrame,
 ) -> DataFrame:
     """
-    Create pathway_pi DataFrame based on decomposed_uid_mapping, reaction_connections, and best_matches.
+    Create pathway_logic_network DataFrame based on decomposed_uid_mapping, reaction_connections, and best_matches.
 
     Args:
         decomposed_uid_mapping (DataFrame): DataFrame containing decomposed UID mapping.
         reaction_connections (DataFrame): DataFrame containing reaction connections.
 
     Returns:
-        DataFrame: The created pathway_pi DataFrame.
+        DataFrame: The created pathway_logic_network DataFrame.
     """
-    logger.debug("Adding reaction pairs to pathway_pi")
+    logger.debug("Adding reaction pairs to pathway_logic_network")
 
     columns: Dict[str, pd.Series] = {
         "source_id": pd.Series(dtype="str"),
@@ -92,7 +92,7 @@ def create_pathway_pi(
         "pos_neg": pd.Series(dtype="str"),
         "and_or": pd.Series(dtype="str"),
     }
-    pathway_pi_data = []
+    pathway_logic_network_data = []
 
     print("reaction_connections")
     print(reaction_connections)
@@ -129,7 +129,7 @@ def create_pathway_pi(
             input_or_output_uid_values_output = [value for value in input_or_output_uid_values_output if pd.notna(value)]
             input_or_output_reactome_id_values_output = filtered_rows_output['input_or_output_reactome_id'].tolist()
             input_or_output_reactome_id_values_output = [value for value in input_or_output_reactome_id_values_output if pd.notna(value)]
-            
+
             for reactome_id, uid in assigned_uids.items():
                 reactome_id_tuple = tuple(sorted([input_or_output_reactome_id_values_input, input_or_output_reactome_id_values_output]))
                 if reactome_id_tuple in assigned_uids:
@@ -148,14 +148,14 @@ def create_pathway_pi(
             else:
                 and_or = "or"
 
-            pathway_pi_data.append({
+            pathway_logic_network_data.append({
                 "source_id": input_or_output_reactome_id_values_input[0] if input_or_output_reactome_id_values_input else None,
                 "target_id": input_or_output_reactome_id_values_output[0] if input_or_output_reactome_id_values_output else None,
                 "pos_neg": "pos",  # replace with actual value
                 "and_or": and_or
             })
 
-    pathway_pi = pd.DataFrame(pathway_pi_data, columns=columns.keys())
-    print("pathway_pi")
-    print(pathway_pi) 
-    return pathway_pi
+    pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=columns.keys())
+    print("pathway_logic_network")
+    print(pathway_logic_network)
+    return pathway_logic_network

@@ -17,6 +17,7 @@ mypy = "^1.8.0"
 isort = "^5.13.2"
 ruff = "^0.2.1"
 click = "^8.1.7"
+python-dotenv = "^1.0.1"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.8.0"

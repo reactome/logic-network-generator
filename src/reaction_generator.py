@@ -29,7 +29,7 @@ ReactomeID = str
 DataFrameRow = Dict[str, Any]
 
 decomposed_uid_mapping = (
-    pd.DataFrame(columns=decomposed_uid_mapping_column_types.keys())
+    pd.DataFrame(columns=decomposed_uid_mapping_column_types.keys())  # type: ignore
     .astype(decomposed_uid_mapping_column_types)
 )
 
