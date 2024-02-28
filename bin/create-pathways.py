@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# flake8: noqa
-
 import os
 import sys
-from typing import Dict
+from dotenv import dotenv_values
+from typing import Tuple, List
 
 import pandas as pd
 
@@ -16,41 +15,39 @@ from src.pathway_generator import generate_pathway_file
 
 
 def main() -> None:
+    dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+    env_vars = dotenv_values(dotenv_path)
     args = parse_args()
-
     configure_logging(args.debug, args.verbose)
 
-    taxon_id: str = "9606"
-
-    if args.pathway_list:
-        if not os.path.exists(args.pathway_list):
-            logger.error(f"Pathway list file '{args.pathway_list}' does not exist.")
+    pathway_list_file = args.pathway_list if args.pathway_list else env_vars.get('PATHWAY_LIST_FILE', None)
+    if pathway_list_file:
+        if not os.path.exists(pathway_list_file):
+            logger.error(f"Pathway list file '{pathway_list_file}' does not exist.")
             return
-        elif not os.access(args.pathway_list, os.R_OK):
-            logger.error(f"Pathway list file '{args.pathway_list}' is not readable.")
+        elif not os.access(pathway_list_file, os.R_OK):
+            logger.error(f"Pathway list file '{pathway_list_file}' is not readable.")
             return
+    elif not args.pathway_list and not args.pathway_id:
+        logger.error("Either '--pathway-list', '--pathway-id', or 'PATHWAY_LIST_FILE' environment variable is required.")
+        return
 
+    taxon_id = "9606"
+
+    pathway_list: List[Tuple[str, str]] = []
+
+    if args.pathway_id:
+        pathway_list = [(args.pathway_id, '')]
+    elif pathway_list_file:
         try:
-            pathways_df: pd.DataFrame = pd.read_csv(args.pathway_list, sep="\t")
-            pathways: Dict[str, str] = dict(
-                zip(pathways_df["id"], pathways_df["pathway_name"])
-            )
+            pathways_df: pd.DataFrame = pd.read_csv(pathway_list_file, sep="\t")
+            pathway_list = list(zip(pathways_df["id"], pathways_df["pathway_name"]))
         except Exception as e:
             logger.error(f"Error reading pathway list file: {e}")
             return
-    else:
-        logger.error("Pathway file (--pathway-list) is required.")
-        return
 
-    # create a .tsv file for pathways list
-    pathways_list_df: pd.DataFrame = pd.DataFrame(
-        list(pathways.items()), columns=["id", "pathway_name"]
-    )
-    pathways_list_df.to_csv(args.output_dir, sep="\t", index=False)
-
-    for pathway_id, pathway_name in pathways.items():
+    for pathway_id, pathway_name in pathway_list:
         generate_pathway_file(pathway_id, taxon_id, pathway_name)
-
 
 if __name__ == "__main__":
     main()
