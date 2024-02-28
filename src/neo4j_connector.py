@@ -8,7 +8,6 @@ from src.argument_parser import logger
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
-
 def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     query: str = (
         """

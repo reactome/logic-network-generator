@@ -1,11 +1,14 @@
 import uuid
-from typing import Any, Dict
+from typing import Dict
+from py2neo import Graph  # type: ignore
 
 import pandas as pd
 from pandas import DataFrame
 
 from src.argument_parser import logger
 
+uri: str = "bolt://localhost:7687"
+graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
 def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
     reaction_id_map_column_types = {
@@ -19,18 +22,52 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
         .astype(reaction_id_map_column_types)
     )
 
+    # Dictionary to store assigned UUIDs for each Reactome ID within each reaction
+    assigned_uids = {}
+
     rows = []
     for reactome_id in reactome_ids:
         associated_hashes = decomposed_uid_mapping[decomposed_uid_mapping['reactome_id'] == reactome_id]['uid'].unique().tolist()
+
+        # Check if the Reactome ID is already assigned a UUID within the same reaction
+        if reactome_id in assigned_uids:
+            uid = assigned_uids[reactome_id]
+        else:
+            uid = str(uuid.uuid4())
+            assigned_uids[reactome_id] = uid
+
         row = {
-                "uid": str(uuid.uuid4()),
-                "reactome_id": int(reactome_id),
-                "input_hash": associated_hashes[0],
-                "output_hash": associated_hashes[1],
-                }
+            "uid": uid,
+            "reactome_id": int(reactome_id),
+            "input_hash": associated_hashes[0],
+            "output_hash": associated_hashes[1],
+        }
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def get_entities_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:
+    entities_list = []
+
+    for _, row in reaction_id_map.iterrows():
+        reaction_id = row['reactome_id']
+        print("reaction_id")
+        print(reaction_id)
+        query = (
+            f"MATCH (reaction:ReactionLikeEvent{{dbId: '{reactome_id}'}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
+            f"RETURN reaction.dbId AS reaction_id, catalyst.dbId AS catalyst_id, 'catalyst' AS edge_type"
+        )
+        print("query")
+        print(query)
+        try:
+            data = graph.run(query).data()
+            entities_list.extend(data)
+        except Exception as e:
+            logger.error("Error in get_entities_for_reaction", exc_info=True)
+            raise e
+
+    return pd.DataFrame(entities_list)
 
 
 def create_pathway_pi(
@@ -55,9 +92,9 @@ def create_pathway_pi(
         "pos_neg": pd.Series(dtype="str"),
         "and_or": pd.Series(dtype="str"),
     }
-    pathway_pi: DataFrame = pd.DataFrame(columns)
+    pathway_pi_data = []
 
-    print("reaction_connetions")
+    print("reaction_connections")
     print(reaction_connections)
 
     reaction_ids = pd.unique(
@@ -66,7 +103,11 @@ def create_pathway_pi(
         .dropna()  # Drop NaN values
     )
 
+    assigned_uids = {}
     reaction_id_map = create_reaction_id_map(reaction_ids, decomposed_uid_mapping)
+    entities_df = get_entities_for_reaction(reaction_id_map, graph)
+    print("entities_df")
+    print(entities_df)
     print("reaction_id_map")
     print(reaction_id_map)
 
@@ -74,25 +115,47 @@ def create_pathway_pi(
         input_hash = reaction_id_map.loc[reaction_id_map['reactome_id'] == reaction_id, 'input_hash'].iloc[0]
         print("input_hash")
         print(input_hash)
-        filtered_rows = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == input_hash]
-        input_or_output_uid_values = filtered_rows['input_or_output_uid'].tolist()
-        input_or_output_uid_values = [value for value in input_or_output_uid_values if pd.notna(value)]
-        input_or_output_reactome_id_values = filtered_rows['input_or_output_reactome_id'].tolist()
-        input_or_output_reactome_id_values = [value for value in input_or_output_reactome_id_values if pd.notna(value)]
-        print("input_or_output_uid_values")
-        print(input_or_output_uid_values)
-        print("input_or_output_reactome_id_values")
-        print(input_or_output_reactome_id_values)
-        exit()
-
+        filtered_rows_input = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == input_hash]
+        input_or_output_uid_values_input = filtered_rows_input['input_or_output_uid'].tolist()
+        input_or_output_uid_values_input = [value for value in input_or_output_uid_values_input if pd.notna(value)]
+        input_or_output_reactome_id_values_input = filtered_rows_input['input_or_output_reactome_id'].tolist()
+        input_or_output_reactome_id_values_input = [value for value in input_or_output_reactome_id_values_input if pd.notna(value)]
 
         preceding_reaction_ids = reaction_connections[reaction_connections['following_reaction_id'] == reaction_id]['preceding_reaction_id'].tolist()
         for preceding_reaction_id in preceding_reaction_ids:
             output_hash = reaction_id_map.loc[reaction_id_map['reactome_id'] == preceding_reaction_id, 'output_hash'].iloc[0]
-            filtered_rows = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == output_hash]
-            input_or_output_uid_values = filtered_rows['input_or_output_uid'].tolist()
-            input_or_output_uid_values = [value for value in input_or_output_uid_values if pd.notna(value)]
-            input_or_output_reactome_id_values = filtered_rows['input_or_output_reactome_id'].tolist()
-            input_or_output_reactome_id_values = [value for value in input_or_output_reactome_id_values if pd.notna(value)]
+            filtered_rows_output = decomposed_uid_mapping[decomposed_uid_mapping['uid'] == output_hash]
+            input_or_output_uid_values_output = filtered_rows_output['input_or_output_uid'].tolist()
+            input_or_output_uid_values_output = [value for value in input_or_output_uid_values_output if pd.notna(value)]
+            input_or_output_reactome_id_values_output = filtered_rows_output['input_or_output_reactome_id'].tolist()
+            input_or_output_reactome_id_values_output = [value for value in input_or_output_reactome_id_values_output if pd.notna(value)]
+            
+            for reactome_id, uid in assigned_uids.items():
+                reactome_id_tuple = tuple(sorted([input_or_output_reactome_id_values_input, input_or_output_reactome_id_values_output]))
+                if reactome_id_tuple in assigned_uids:
+                    input_uid = assigned_uids[reactome_id_tuple]
+                    output_uid = assigned_uids[reactome_id_tuple]
+                    break
+                else:
+                    input_uid = str(uuid.uuid4())
+                    output_uid = str(uuid.uuid4())
+                    assigned_uids[reactome_id_tuple] = input_uid
+                    assigned_uids[reactome_id_tuple] = output_uid
 
+            # Determine "and_or" value based on input or output
+            if input_or_output_reactome_id_values_input:
+                and_or = "and"
+            else:
+                and_or = "or"
+
+            pathway_pi_data.append({
+                "source_id": input_or_output_reactome_id_values_input[0] if input_or_output_reactome_id_values_input else None,
+                "target_id": input_or_output_reactome_id_values_output[0] if input_or_output_reactome_id_values_output else None,
+                "pos_neg": "pos",  # replace with actual value
+                "and_or": and_or
+            })
+
+    pathway_pi = pd.DataFrame(pathway_pi_data, columns=columns.keys())
+    print("pathway_pi")
+    print(pathway_pi) 
     return pathway_pi
