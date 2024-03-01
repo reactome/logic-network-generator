@@ -1,11 +1,12 @@
-from src.argument_parser import logger
-from src.neo4j_connector import get_reaction_connections
-from src.logic_network_generator import create_pathway_logic_network
-from src.reaction_generator import get_decomposed_uid_mapping
 import os
+
 import pandas as pd
 
+from src.argument_parser import logger
 from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
+from src.logic_network_generator import create_pathway_logic_network
+from src.neo4j_connector import get_reaction_connections
+from src.reaction_generator import get_decomposed_uid_mapping
 
 
 def generate_pathway_file(
@@ -27,10 +28,14 @@ def generate_pathway_file(
 
     number_of_reaction_connections: int = -1
     if number_of_reaction_connections > 0:
-        reaction_connections = reaction_connections.iloc[:number_of_reaction_connections]
+        reaction_connections = reaction_connections.iloc[
+            :number_of_reaction_connections
+        ]
 
     if os.path.exists(decomposed_uid_mapping_file):
-        decomposed_uid_mapping = pd.read_csv(decomposed_uid_mapping_file, dtype=decomposed_uid_mapping_column_types)
+        decomposed_uid_mapping = pd.read_csv(
+            decomposed_uid_mapping_file, dtype=decomposed_uid_mapping_column_types
+        )
     else:
         [decomposed_uid_mapping, best_matches] = get_decomposed_uid_mapping(
             pathway_id, reaction_connections

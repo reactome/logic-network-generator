@@ -1,6 +1,5 @@
 import pandas as pd
 
-
 decomposed_uid_mapping_column_types = {
     "uid": str,
     "reactome_id": int,

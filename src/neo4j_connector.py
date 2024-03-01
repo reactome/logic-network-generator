@@ -8,6 +8,7 @@ from src.argument_parser import logger
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
+
 def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     query: str = (
         """
@@ -22,8 +23,8 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
 
     try:
         df: pd.DataFrame = pd.DataFrame(graph.run(query).data())
-        df['preceding_reaction_id'] = df['preceding_reaction_id'].astype('Int64')
-        df['following_reaction_id'] = df['following_reaction_id'].astype('Int64')
+        df["preceding_reaction_id"] = df["preceding_reaction_id"].astype("Int64")
+        df["following_reaction_id"] = df["following_reaction_id"].astype("Int64")
         return df
     except Exception:
         logger.error("Error in get_reaction_connections", exc_info=True)
