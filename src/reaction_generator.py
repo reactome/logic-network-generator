@@ -14,7 +14,6 @@ from src.neo4j_connector import (
     get_complex_components, get_labels, get_reaction_input_output_ids,
     get_reference_entity_id, get_set_members)
 
-
 warnings.filterwarnings(
     "ignore",
     message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.",
@@ -28,9 +27,10 @@ InputOutputID = str
 ReactomeID = str
 DataFrameRow = Dict[str, Any]
 
-decomposed_uid_mapping = (
-    pd.DataFrame(columns=decomposed_uid_mapping_column_types.keys())  # type: ignore
-    .astype(decomposed_uid_mapping_column_types)
+decomposed_uid_mapping = pd.DataFrame(
+    columns=decomposed_uid_mapping_column_types.keys()
+).astype(  # type: ignore
+    decomposed_uid_mapping_column_types
 )
 
 reference_entity_dict: Dict[str, str] = {}

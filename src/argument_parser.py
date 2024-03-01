@@ -13,9 +13,7 @@ def parse_args() -> Namespace:
     parser.add_argument(
         "--pathway-list", type=str, help="Input file containing pathway information"
     )
-    parser.add_argument(
-        "--pathway-id", type=str, help="Single pathway ID to process"
-    )
+    parser.add_argument("--pathway-id", type=str, help="Single pathway ID to process")
     parser.add_argument(
         "--output-dir",
         type=str,
