@@ -57,46 +57,17 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
     return reaction_id_map
 
 
-def get_reactions_for_pathway(pathway_id: int, graph: Graph) -> pd.DataFrame:
-    query = (
-        f"MATCH (pathway:Pathway{{dbId: {pathway_id}}})-[:hasEvent]->(reaction:ReactionLikeEvent) "
-        "RETURN reaction.dbId AS reaction_id"
-    )
-    try:
-        result = graph.run(query)
-        pathway_reactions_list = [
-            {k: v for k, v in record.items()} for record in result
-        ]
-        return pd.DataFrame(pathway_reactions_list)
-    except Exception as e:
-        logger.error("Error in get_reactions_for_pathway", exc_info=True)
-        raise e
-
-
-# Usage example
-pathway_id = 1257604
-pathway_reactions_list = get_reactions_for_pathway(pathway_id, graph)
-print("pathway_reactions_list")
-print(pathway_reactions_list)
-
-
 def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:
     catalyst_list = []
 
     for _, row in reaction_id_map.iterrows():
         reaction_id = row["reactome_id"]
-        print("reaction_id")
-        print(reaction_id)
         query = (
             f"MATCH (reaction:ReactionLikeEvent{{dbId: {reaction_id}}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
             f"RETURN reaction.dbId AS reaction_id, catalyst.dbId AS catalyst_id, 'catalyst' AS edge_type"
         )
-        print("query")
-        print(query)
         try:
             data = graph.run(query).data()
-            print("data")
-            print(data)
             catalyst_list.extend(data)
         except Exception as e:
             logger.error("Error in get_catalysts_for_reaction", exc_info=True)
@@ -192,6 +163,16 @@ def create_pathway_logic_network(
 
     print("reaction_connections")
     print(reaction_connections)
+    # Count the number of reactions without preceding events
+    reactions_without_preceding_events = reaction_connections[
+        ~reaction_connections["following_reaction_id"].isin(
+            reaction_connections["preceding_reaction_id"]
+        )
+    ]
+    print(
+        "Number of reactions without preceding events:",
+        len(reactions_without_preceding_events),
+    )
 
     reaction_ids = pd.unique(
         reaction_connections[["preceding_reaction_id", "following_reaction_id"]]
@@ -208,21 +189,8 @@ def create_pathway_logic_network(
     positive_regulator_map = get_positive_regulators_for_reaction(
         reaction_id_map, graph
     )
-    print("negative_regulator_map")
-    print(negative_regulator_map)
-    print("positive_regulator_map")
-    print(positive_regulator_map)
-    print("catalyst_map")
-    print(catalyst_map)
     print("reaction_id_map")
     print(reaction_id_map)
-    missing_reactions = pathway_reactions_list[
-        ~pathway_reactions_list["reaction_id"].isin(reaction_id_map["reactome_id"])
-    ]
-
-    missing_reaction_ids = missing_reactions["reaction_id"].tolist()
-    print("missing_reaction_ids")
-    print(missing_reaction_ids)
 
     for reaction_id in reaction_ids:
         input_hash = reaction_id_map.loc[
@@ -356,20 +324,47 @@ def create_pathway_logic_network(
                         "edge_type": "regulator",
                     }
                 )
-        # Add missing reactions to pathway_logic_network_data
-    for reaction_id in missing_reaction_ids:
-        pathway_logic_network_data.append(
-            {
-                "source_id": None,  # Set this to the appropriate value if available
-                "target_id": reaction_id,
-                "pos_neg": None,  # Set this to the appropriate value if needed
-                "and_or": None,  # Set this to the appropriate value if needed
-                "edge_type": None,  # Set this to the appropriate value if needed
-            }
-        )
     pathway_logic_network = pd.DataFrame(
         pathway_logic_network_data, columns=columns.keys()
     )
     print("pathway_logic_network")
     print(pathway_logic_network)
+
+    # Determine root inputs
+    root_inputs = pathway_logic_network[
+        (pathway_logic_network["source_id"].notnull())
+        & (pathway_logic_network["target_id"].isnull())
+        & (~pathway_logic_network["source_id"].isin(pathway_logic_network["target_id"]))
+        & (
+            ~pathway_logic_network["source_id"].isin(
+                pathway_logic_network[
+                    pathway_logic_network["edge_type"].isin(["catalyst", "regulator"])
+                ]["source_id"]
+            )
+        )
+    ]
+
+    print("Root inputs:")
+    print(root_inputs)
+
+    # Determine terminal outputs
+    terminal_outputs = pathway_logic_network[
+        (pathway_logic_network["target_id"].notnull())
+        & (pathway_logic_network["source_id"].isnull())
+        & (~pathway_logic_network["target_id"].isin(pathway_logic_network["source_id"]))
+        & (
+            ~pathway_logic_network["target_id"].isin(
+                pathway_logic_network[
+                    pathway_logic_network["edge_type"].isin(["catalyst", "regulator"])
+                ]["target_id"]
+            )
+        )
+    ]
+
+    print("terminal_outputs:")
+    print(terminal_outputs)
+
     return pathway_logic_network
+
+    # Return the count of reactions without preceding events
+    return len(reactions_without_preceding_events)
