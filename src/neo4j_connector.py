@@ -12,12 +12,14 @@ graph: Graph = Graph(uri, auth=("neo4j", "test"))
 def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     query: str = (
         """
-       MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
-           WHERE pathway.dbId = %s
-       OPTIONAL MATCH (r1:ReactionLikeEvent)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway:Pathway)
-           WHERE pathway.dbId = %s
-       RETURN r1.dbId AS preceding_reaction_id, r2.dbId AS following_reaction_id
-    """
+        MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
+        WHERE pathway.dbId = %s
+        OPTIONAL MATCH (r1)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway)
+        WHERE pathway.dbId = %s
+        RETURN r1.dbId AS preceding_reaction_id,
+               r2.dbId AS following_reaction_id,
+               CASE WHEN r2 IS NULL THEN 'No Preceding Event' ELSE 'Has Preceding Event' END AS event_status
+        """
         % (pathway_id, pathway_id)
     )
 
