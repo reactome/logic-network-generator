@@ -51,7 +51,8 @@ def main() -> None:
         except Exception as e:
             logger.error(f"Error reading pathway list file: {e}")
             return
-
+    print("pathway_list")
+    print(pathway_list)
     for pathway_id, pathway_name in pathway_list:
         generate_pathway_file(pathway_id, taxon_id, pathway_name)
 

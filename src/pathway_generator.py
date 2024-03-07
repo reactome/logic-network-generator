@@ -43,4 +43,3 @@ def generate_pathway_file(
         decomposed_uid_mapping.to_csv(decomposed_uid_mapping_file, index=False)
 
     create_pathway_logic_network(decomposed_uid_mapping, reaction_connections)
-    exit()
