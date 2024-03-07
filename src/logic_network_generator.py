@@ -169,10 +169,21 @@ def create_pathway_logic_network(
             reaction_connections["preceding_reaction_id"]
         )
     ]
+    num_reactions_without_preceding_events = len(reactions_without_preceding_events)
+    num_total_reactions = len(reaction_connections)
     print(
         "Number of reactions without preceding events:",
         len(reactions_without_preceding_events),
     )
+    if num_total_reactions > 0:
+        percentage_reactions_without_preceding_events = (
+            num_reactions_without_preceding_events / num_total_reactions
+        ) * 100
+        print(
+            f"Percentage of reactions without preceding events: {percentage_reactions_without_preceding_events:.2f}%"
+        )
+    else:
+        print("Total number of reactions is zero, cannot calculate percentage.")
 
     reaction_ids = pd.unique(
         reaction_connections[["preceding_reaction_id", "following_reaction_id"]]
@@ -330,7 +341,7 @@ def create_pathway_logic_network(
     print("pathway_logic_network")
     print(pathway_logic_network)
 
-    # Determine root inputs
+    # Filter root inputs
     root_inputs = pathway_logic_network[
         (pathway_logic_network["source_id"].notnull())
         & (pathway_logic_network["target_id"].isnull())
@@ -344,14 +355,10 @@ def create_pathway_logic_network(
         )
     ]
 
-    print("Root inputs:")
-    print(root_inputs)
-
-    # Determine terminal outputs
+    # Filter terminal outputs
     terminal_outputs = pathway_logic_network[
         (pathway_logic_network["target_id"].notnull())
         & (pathway_logic_network["source_id"].isnull())
-        & (~pathway_logic_network["target_id"].isin(pathway_logic_network["source_id"]))
         & (
             ~pathway_logic_network["target_id"].isin(
                 pathway_logic_network[
@@ -361,10 +368,16 @@ def create_pathway_logic_network(
         )
     ]
 
-    print("terminal_outputs:")
+    print("Root inputs:")
+    print(root_inputs)
+
+    print("Terminal outputs:")
     print(terminal_outputs)
 
     return pathway_logic_network
 
     # Return the count of reactions without preceding events
-    return len(reactions_without_preceding_events)
+    return len(
+        reactions_without_preceding_events,
+        percentage_reactions_without_preceding_events,
+    )
