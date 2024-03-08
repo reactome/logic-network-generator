@@ -175,6 +175,7 @@ def create_pathway_logic_network(
         "Number of reactions without preceding events:",
         len(reactions_without_preceding_events),
     )
+    print("Total number of reactions:", num_total_reactions)
     if num_total_reactions > 0:
         percentage_reactions_without_preceding_events = (
             num_reactions_without_preceding_events / num_total_reactions
@@ -200,15 +201,23 @@ def create_pathway_logic_network(
     positive_regulator_map = get_positive_regulators_for_reaction(
         reaction_id_map, graph
     )
+
     print("reaction_id_map")
     print(reaction_id_map)
+
+    positive_regulator_count = len(positive_regulator_map)
+    negative_regulator_count = len(negative_regulator_map)
+
+    # Count the number of catalysts
+    num_catalysts = len(catalyst_map)
+    print("Number of catalysts:", num_catalysts)
+    print("Number of positive regulators:", positive_regulator_count)
+    print("Number of negative regulators:", negative_regulator_count)
 
     for reaction_id in reaction_ids:
         input_hash = reaction_id_map.loc[
             reaction_id_map["reactome_id"] == reaction_id, "input_hash"
         ].iloc[0]
-        print("input_hash")
-        print(input_hash)
         filtered_rows_input = decomposed_uid_mapping[
             decomposed_uid_mapping["uid"] == input_hash
         ]
