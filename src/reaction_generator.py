@@ -11,8 +11,12 @@ from src.best_reaction_match import find_best_reaction_match
 from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.neo4j_connector import (
     contains_reference_gene_product_molecule_or_isoform,
-    get_complex_components, get_labels, get_reaction_input_output_ids,
-    get_reference_entity_id, get_set_members)
+    get_complex_components,
+    get_labels,
+    get_reaction_input_output_ids,
+    get_reference_entity_id,
+    get_set_members,
+)
 
 warnings.filterwarnings(
     "ignore",
