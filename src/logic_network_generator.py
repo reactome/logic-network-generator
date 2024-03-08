@@ -353,36 +353,22 @@ def create_pathway_logic_network(
     # Filter root inputs
     root_inputs = pathway_logic_network[
         (pathway_logic_network["source_id"].notnull())
-        & (pathway_logic_network["target_id"].isnull())
         & (~pathway_logic_network["source_id"].isin(pathway_logic_network["target_id"]))
-        & (
-            ~pathway_logic_network["source_id"].isin(
-                pathway_logic_network[
-                    pathway_logic_network["edge_type"].isin(["catalyst", "regulator"])
-                ]["source_id"]
-            )
-        )
-    ]
+    ]["source_id"].tolist()
 
     # Filter terminal outputs
     terminal_outputs = pathway_logic_network[
-        (pathway_logic_network["target_id"].notnull())
-        & (pathway_logic_network["source_id"].isnull())
-        & (
-            ~pathway_logic_network["target_id"].isin(
-                pathway_logic_network[
-                    pathway_logic_network["edge_type"].isin(["catalyst", "regulator"])
-                ]["target_id"]
-            )
+        ~pathway_logic_network["target_id"].isin(
+            pathway_logic_network["source_id"].unique()
         )
-    ]
+    ]["target_id"].tolist()
 
-    print("Root inputs:")
-    print(root_inputs)
-
-    print("Terminal outputs:")
-    print(terminal_outputs)
-
+    root_inputs_set = set(root_inputs)
+    terminal_outputs_set = set(terminal_outputs)
+    root_input_count = len(root_inputs_set)
+    terminal_output_count = len(terminal_outputs_set)
+    print(root_input_count)
+    print(terminal_output_count)
     return pathway_logic_network
 
     # Return the count of reactions without preceding events
