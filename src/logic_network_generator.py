@@ -5,7 +5,10 @@ import pandas as pd
 from pandas import DataFrame
 from py2neo import Graph  # type: ignore
 
-from src.argument_parser import logger
+from src.argument_parser import logger, parse_args
+
+args = parse_args()
+pathway_id = args.pathway_id
 
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
@@ -46,7 +49,9 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
             "uid": uid,
             "reactome_id": int(reactome_id),
             "input_hash": associated_hashes[0],
-            "output_hash": associated_hashes[1],
+            "output_hash": (
+                associated_hashes[1] if len(associated_hashes) >= 2 else None
+            ),
         }
         rows.append(row)
 
@@ -153,8 +158,8 @@ def create_pathway_logic_network(
     logger.debug("Adding reaction pairs to pathway_logic_network")
 
     columns: Dict[str, pd.Series] = {
-        "source_id": pd.Series(dtype="str"),
-        "target_id": pd.Series(dtype="str"),
+        "source_id": pd.Series(dtype="Int64"),
+        "target_id": pd.Series(dtype="Int64"),
         "pos_neg": pd.Series(dtype="str"),
         "and_or": pd.Series(dtype="str"),
         "edge_type": pd.Series(dtype="str"),
@@ -350,25 +355,6 @@ def create_pathway_logic_network(
     print("pathway_logic_network")
     print(pathway_logic_network)
 
-    # Filter root inputs
-    root_inputs = pathway_logic_network[
-        (pathway_logic_network["source_id"].notnull())
-        & (~pathway_logic_network["source_id"].isin(pathway_logic_network["target_id"]))
-    ]["source_id"].tolist()
-
-    # Filter terminal outputs
-    terminal_outputs = pathway_logic_network[
-        ~pathway_logic_network["target_id"].isin(
-            pathway_logic_network["source_id"].unique()
-        )
-    ]["target_id"].tolist()
-
-    root_inputs_set = set(root_inputs)
-    terminal_outputs_set = set(terminal_outputs)
-    root_input_count = len(root_inputs_set)
-    terminal_output_count = len(terminal_outputs_set)
-    print(root_input_count)
-    print(terminal_output_count)
     return pathway_logic_network
 
     # Return the count of reactions without preceding events
@@ -376,3 +362,31 @@ def create_pathway_logic_network(
         reactions_without_preceding_events,
         percentage_reactions_without_preceding_events,
     )
+
+
+reaction_connections_file = f"reaction_connections_{pathway_id}.csv"
+decomposed_uid_mapping_file = f"decomposed_uid_mapping_{pathway_id}.csv"
+
+# Load the CSV files into DataFrames
+reaction_connections = pd.read_csv(reaction_connections_file)
+decomposed_uid_mapping = pd.read_csv(decomposed_uid_mapping_file)
+pathway_logic_network = create_pathway_logic_network(
+    decomposed_uid_mapping, reaction_connections
+)
+
+
+def find_root_inputs(pathway_logic_network):
+    root_inputs = pathway_logic_network[
+        (pathway_logic_network["source_id"].notnull())
+        & (~pathway_logic_network["source_id"].isin(pathway_logic_network["target_id"]))
+    ]["source_id"].tolist()
+    return root_inputs
+
+
+def find_terminal_outputs(pathway_logic_network):
+    terminal_outputs = pathway_logic_network[
+        ~pathway_logic_network["target_id"].isin(
+            pathway_logic_network["source_id"].unique()
+        )
+    ]["target_id"].tolist()
+    return terminal_outputs
