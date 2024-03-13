@@ -5,10 +5,7 @@ import pandas as pd
 from pandas import DataFrame
 from py2neo import Graph  # type: ignore
 
-from src.argument_parser import logger, parse_args
-
-args = parse_args()
-pathway_id = args.pathway_id
+from src.argument_parser import logger
 
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
@@ -355,24 +352,15 @@ def create_pathway_logic_network(
     print("pathway_logic_network")
     print(pathway_logic_network)
 
+    root_inputs = find_root_inputs(pathway_logic_network)
+    print("root_inputs")
+    print(root_inputs)
+
+    terminal_outputs = find_terminal_outputs(pathway_logic_network)
+    print("terminal_outputs")
+    print(terminal_outputs)
+
     return pathway_logic_network
-
-    # Return the count of reactions without preceding events
-    return len(
-        reactions_without_preceding_events,
-        percentage_reactions_without_preceding_events,
-    )
-
-
-reaction_connections_file = f"reaction_connections_{pathway_id}.csv"
-decomposed_uid_mapping_file = f"decomposed_uid_mapping_{pathway_id}.csv"
-
-# Load the CSV files into DataFrames
-reaction_connections = pd.read_csv(reaction_connections_file)
-decomposed_uid_mapping = pd.read_csv(decomposed_uid_mapping_file)
-pathway_logic_network = create_pathway_logic_network(
-    decomposed_uid_mapping, reaction_connections
-)
 
 
 def find_root_inputs(pathway_logic_network):
