@@ -46,7 +46,9 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
             "uid": uid,
             "reactome_id": int(reactome_id),
             "input_hash": associated_hashes[0],
-            "output_hash": associated_hashes[1],
+            "output_hash": (
+                associated_hashes[1] if len(associated_hashes) >= 2 else None
+            ),
         }
         rows.append(row)
 
@@ -153,8 +155,8 @@ def create_pathway_logic_network(
     logger.debug("Adding reaction pairs to pathway_logic_network")
 
     columns: Dict[str, pd.Series] = {
-        "source_id": pd.Series(dtype="str"),
-        "target_id": pd.Series(dtype="str"),
+        "source_id": pd.Series(dtype="Int64"),
+        "target_id": pd.Series(dtype="Int64"),
         "pos_neg": pd.Series(dtype="str"),
         "and_or": pd.Series(dtype="str"),
         "edge_type": pd.Series(dtype="str"),
@@ -350,29 +352,29 @@ def create_pathway_logic_network(
     print("pathway_logic_network")
     print(pathway_logic_network)
 
-    # Filter root inputs
+    root_inputs = find_root_inputs(pathway_logic_network)
+    print("root_inputs")
+    print(root_inputs)
+
+    terminal_outputs = find_terminal_outputs(pathway_logic_network)
+    print("terminal_outputs")
+    print(terminal_outputs)
+
+    return pathway_logic_network
+
+
+def find_root_inputs(pathway_logic_network):
     root_inputs = pathway_logic_network[
         (pathway_logic_network["source_id"].notnull())
         & (~pathway_logic_network["source_id"].isin(pathway_logic_network["target_id"]))
     ]["source_id"].tolist()
+    return root_inputs
 
-    # Filter terminal outputs
+
+def find_terminal_outputs(pathway_logic_network):
     terminal_outputs = pathway_logic_network[
         ~pathway_logic_network["target_id"].isin(
             pathway_logic_network["source_id"].unique()
         )
     ]["target_id"].tolist()
-
-    root_inputs_set = set(root_inputs)
-    terminal_outputs_set = set(terminal_outputs)
-    root_input_count = len(root_inputs_set)
-    terminal_output_count = len(terminal_outputs_set)
-    print(root_input_count)
-    print(terminal_output_count)
-    return pathway_logic_network
-
-    # Return the count of reactions without preceding events
-    return len(
-        reactions_without_preceding_events,
-        percentage_reactions_without_preceding_events,
-    )
+    return terminal_outputs
