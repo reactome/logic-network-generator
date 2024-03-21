@@ -11,7 +11,7 @@ uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
 
-def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
+def create_reaction_id_map(decomposed_uid_mapping, reaction_ids, best_matches):
     reaction_id_map_column_types = {
         "uid": str,
         "reactome_id": pd.Int64Dtype(),
@@ -22,39 +22,27 @@ def create_reaction_id_map(reactome_ids, decomposed_uid_mapping):
         reaction_id_map_column_types
     )
 
-    # Dictionary to store assigned UUIDs for each Reactome ID within each reaction
-    assigned_uids = {}
-
     rows = []
-    for reactome_id in reactome_ids:
-        associated_hashes = (
-            decomposed_uid_mapping[
-                decomposed_uid_mapping["reactome_id"] == reactome_id
-            ]["uid"]
-            .unique()
-            .tolist()
-        )
+    print("Checking best_matches contents:")
 
-        # Check if the Reactome ID is already assigned a UUID within the same reaction
-        if reactome_id in assigned_uids:
-            uid = assigned_uids[reactome_id]
-        else:
-            uid = str(uuid.uuid4())
-            assigned_uids[reactome_id] = uid
-
+    for index, match in best_matches.iterrows():
+        incomming_hash = match["incomming"]
+        outgoing_hash = match["outgoing"]
+        reactome_id = decomposed_uid_mapping.loc[
+            decomposed_uid_mapping["uid"] == incomming_hash, "reactome_id"
+        ].values[0]
         row = {
-            "uid": uid,
+            "uid": str(uuid.uuid4()),
             "reactome_id": int(reactome_id),
-            "input_hash": associated_hashes[0],
-            "output_hash": (
-                associated_hashes[1] if len(associated_hashes) >= 2 else None
-            ),
+            "input_hash": incomming_hash,
+            "output_hash": outgoing_hash,
         }
+        print("row")
+        print(row)
         rows.append(row)
 
-    if rows:
-        new_rows_df = pd.DataFrame(rows)
-        reaction_id_map = pd.concat([reaction_id_map, new_rows_df], ignore_index=True)
+    new_rows_df = pd.DataFrame(rows)
+    reaction_id_map = pd.concat([reaction_id_map, new_rows_df], ignore_index=True)
 
     return reaction_id_map
 
@@ -139,8 +127,7 @@ def get_negative_regulators_for_reaction(
 
 
 def create_pathway_logic_network(
-    decomposed_uid_mapping: DataFrame,
-    reaction_connections: DataFrame,
+    decomposed_uid_mapping: DataFrame, reaction_connections: DataFrame, best_matches
 ) -> DataFrame:
     """
     Create pathway_logic_network DataFrame based on decomposed_uid_mapping, reaction_connections, and best_matches.
@@ -195,7 +182,9 @@ def create_pathway_logic_network(
     )
 
     assigned_uids = {}
-    reaction_id_map = create_reaction_id_map(reaction_ids, decomposed_uid_mapping)
+    reaction_id_map = create_reaction_id_map(
+        decomposed_uid_mapping, reaction_ids, best_matches
+    )
     catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
     negative_regulator_map = get_negative_regulators_for_reaction(
         reaction_id_map, graph
