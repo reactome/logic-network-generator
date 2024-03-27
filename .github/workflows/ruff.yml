@@ -1,4 +1,4 @@
-name: Flake8 Check
+name: ruff Check
 
 on: [pull_request]
 
