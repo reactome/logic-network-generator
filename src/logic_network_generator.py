@@ -46,7 +46,10 @@ def create_reaction_id_map(decomposed_uid_mapping, reaction_ids, best_matches):
 
     return reaction_id_map
 
-def create_uid_reaction_connections(reaction_id_map: DataFrame, reaction_connections: DataFrame) -> DataFrame:
+
+def create_uid_reaction_connections(
+    reaction_id_map: DataFrame, reaction_connections: DataFrame
+) -> DataFrame:
     """
     Create uid_reaction_connections DataFrame based on reaction_id_map and reaction_connections.
 
@@ -59,7 +62,9 @@ def create_uid_reaction_connections(reaction_id_map: DataFrame, reaction_connect
     """
     uid_reaction_connections_data = []
     # Map Reactome IDs to UIDs
-    reactome_id_to_uid_mapping = dict(zip(reaction_id_map["reactome_id"], reaction_id_map["uid"]))
+    reactome_id_to_uid_mapping = dict(
+        zip(reaction_id_map["reactome_id"], reaction_id_map["uid"])
+    )
 
     for _, row in reaction_connections.iterrows():
         preceding_reaction_id = row["preceding_reaction_id"]
@@ -67,10 +72,9 @@ def create_uid_reaction_connections(reaction_id_map: DataFrame, reaction_connect
         preceding_uid = reactome_id_to_uid_mapping.get(preceding_reaction_id)
         following_uid = reactome_id_to_uid_mapping.get(following_reaction_id)
         if preceding_uid is not None and following_uid is not None:
-            uid_reaction_connections_data.append({
-                "preceding_uid": preceding_uid,
-                "following_uid": following_uid
-            })
+            uid_reaction_connections_data.append(
+                {"preceding_uid": preceding_uid, "following_uid": following_uid}
+            )
 
     uid_reaction_connections = pd.DataFrame(uid_reaction_connections_data)
     return uid_reaction_connections
@@ -97,11 +101,14 @@ def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> Data
             raise e
 
     return pd.DataFrame(
-        catalyst_list, columns=["reaction_id", "catalyst_id", "edge_type", "uuid", "reaction_uuid"]
+        catalyst_list,
+        columns=["reaction_id", "catalyst_id", "edge_type", "uuid", "reaction_uuid"],
     )
 
 
-def get_positive_regulators_for_reaction(reaction_id_mapping: DataFrame, graph: Graph) -> DataFrame:
+def get_positive_regulators_for_reaction(
+    reaction_id_mapping: DataFrame, graph: Graph
+) -> DataFrame:
     regulators_list = []
 
     for _, row in reaction_id_mapping.iterrows():
@@ -119,25 +126,30 @@ def get_positive_regulators_for_reaction(reaction_id_mapping: DataFrame, graph: 
         try:
             result = graph.run(query)
             for record in result:
-                regulator_id = record["PhysicalEntity"]
                 regulator_uuid = str(uuid.uuid4())  # Generate UUID for each entity
-                regulators_list.append({
-                    "reaction": reaction_uuid,
-                    "PhysicalEntity": regulator_uuid,
-                    "edge_type": "regulator",
-                    "uuid": regulator_uuid,
-                    "reaction_uuid": reaction_uuid
-                })
+                regulators_list.append(
+                    {
+                        "reaction": reaction_uuid,
+                        "PhysicalEntity": regulator_uuid,
+                        "edge_type": "regulator",
+                        "uuid": regulator_uuid,
+                        "reaction_uuid": reaction_uuid,
+                    }
+                )
         except Exception as e:
             logger.error("Error in get_positive_regulators_for_reaction", exc_info=True)
             raise e
 
     return pd.DataFrame(
-        regulators_list, columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"], index=None
+        regulators_list,
+        columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"],
+        index=None,
     )
 
 
-def get_negative_regulators_for_reaction(reaction_id_mapping: DataFrame, graph: Graph) -> DataFrame:
+def get_negative_regulators_for_reaction(
+    reaction_id_mapping: DataFrame, graph: Graph
+) -> DataFrame:
     regulators_list = []
 
     for _, row in reaction_id_mapping.iterrows():
@@ -155,21 +167,24 @@ def get_negative_regulators_for_reaction(reaction_id_mapping: DataFrame, graph: 
         try:
             result = graph.run(query)
             for record in result:
-                regulator_id = record["PhysicalEntity"]
                 regulator_uuid = str(uuid.uuid4())  # Generate UUID for each entity
-                regulators_list.append({
-                    "reaction": reaction_uuid,
-                    "PhysicalEntity": regulator_uuid,
-                    "edge_type": "regulator",
-                    "uuid": regulator_uuid,
-                    "reaction_uuid": reaction_uuid
-                })
+                regulators_list.append(
+                    {
+                        "reaction": reaction_uuid,
+                        "PhysicalEntity": regulator_uuid,
+                        "edge_type": "regulator",
+                        "uuid": regulator_uuid,
+                        "reaction_uuid": reaction_uuid,
+                    }
+                )
         except Exception as e:
             logger.error("Error in get_negative_regulators_for_reaction", exc_info=True)
             raise e
 
     return pd.DataFrame(
-        regulators_list, columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"], index=None
+        regulators_list,
+        columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"],
+        index=None,
     )
 
 
@@ -226,7 +241,6 @@ def create_pathway_logic_network(
     else:
         print("Total number of reactions is zero, cannot calculate percentage.")
 
-    assigned_uids = {}
     reaction_id_map = create_reaction_id_map(
         decomposed_uid_mapping, reaction_ids, best_matches
     )
@@ -239,7 +253,9 @@ def create_pathway_logic_network(
     )
     print("reaction_id_map")
     print(reaction_id_map)
-    uid_reaction_connections = create_uid_reaction_connections(reaction_id_map, reaction_connections)
+    uid_reaction_connections = create_uid_reaction_connections(
+        reaction_id_map, reaction_connections
+    )
     print("uid_RC")
     print(uid_reaction_connections)
 
@@ -328,7 +344,7 @@ def create_pathway_logic_network(
                         if input_or_output_uid_values_output
                         else None
                     ),
-                    "pos_neg": "pos", 
+                    "pos_neg": "pos",
                     "and_or": and_or,
                     "edge_type": edge_type,
                 }
@@ -337,7 +353,7 @@ def create_pathway_logic_network(
     for map_df, pos_neg, edge_type in zip(
         [catalyst_map, negative_regulator_map, positive_regulator_map],
         ["pos", "neg", "pos"],
-        ["catalyst", "regulator", "regulator"]
+        ["catalyst", "regulator", "regulator"],
     ):
         for _, row in map_df.iterrows():
             pathway_logic_network_data.append(
@@ -349,8 +365,8 @@ def create_pathway_logic_network(
                     "edge_type": edge_type,
                 }
             )
- 
-    print("Appended data:", pathway_logic_network_data[-1])  
+
+    print("Appended data:", pathway_logic_network_data[-1])
     pathway_logic_network = pd.DataFrame(
         pathway_logic_network_data, columns=columns.keys()
     )
@@ -358,8 +374,11 @@ def create_pathway_logic_network(
     print(pathway_logic_network)
 
     root_inputs = find_root_inputs(pathway_logic_network)
-
+    print("root_inputs")
+    print(root_inputs)
     terminal_outputs = find_terminal_outputs(pathway_logic_network)
+    print("terminal_outputs")
+    print(terminal_outputs)
 
     return pathway_logic_network
 
