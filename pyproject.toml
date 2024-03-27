@@ -21,9 +21,9 @@ python-dotenv = "^1.0.1"
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.8.0"
 pandas-stubs = "^2.1.4.231227"
-black = "^21.12b0"
 isort = "^5.10.3"
-ruff = "^0.2.1"
+ruff = "^0.3.4"
+pre-commit = "^3.7.0"
 
 [build-system]
 requires = ["poetry-core"]
