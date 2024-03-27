@@ -18,7 +18,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install ruff ruff-format
+        pip install ruff
 
     - name: Run ruff
       run: |
@@ -26,4 +26,4 @@ jobs:
 
     - name: Run ruff formatter
       run: |
-        ruff-format src/ bin/
+        ruff format src/ bin/
