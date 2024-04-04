@@ -48,27 +48,23 @@ def create_reaction_id_map(decomposed_uid_mapping, reaction_ids, best_matches):
 
 
 def create_uid_reaction_connections(
-    reaction_id_map: DataFrame, reaction_connections: DataFrame
-) -> DataFrame:
-    """
-    Create uid_reaction_connections DataFrame based on reaction_id_map and reaction_connections.
-
-    Args:
-        reaction_id_map (DataFrame): DataFrame containing mapping of Reactome IDs to UIDs.
-        reaction_connections (DataFrame): DataFrame containing reaction connections.
-
-    Returns:
-        DataFrame: The created uid_reaction_connections DataFrame.
-    """
+    reaction_id_map: pd.DataFrame, best_matches: pd.DataFrame, decomposed_uid_mapping
+) -> pd.DataFrame:
     uid_reaction_connections_data = []
-    # Map Reactome IDs to UIDs
     reactome_id_to_uid_mapping = dict(
         zip(reaction_id_map["reactome_id"], reaction_id_map["uid"])
     )
 
-    for _, row in reaction_connections.iterrows():
-        preceding_reaction_id = row["preceding_reaction_id"]
-        following_reaction_id = row["following_reaction_id"]
+    # Create uid_reaction_connections from best_matches
+    for _, match in best_matches.iterrows():
+        incomming_hash = match["incomming"]
+        outgoing_hash = match["outgoing"]
+        preceding_reaction_id = decomposed_uid_mapping.loc[
+            decomposed_uid_mapping["uid"] == incomming_hash, "reactome_id"
+        ].values[0]
+        following_reaction_id = decomposed_uid_mapping.loc[
+            decomposed_uid_mapping["uid"] == outgoing_hash, "reactome_id"
+        ].values[0]
         preceding_uid = reactome_id_to_uid_mapping.get(preceding_reaction_id)
         following_uid = reactome_id_to_uid_mapping.get(following_reaction_id)
         if preceding_uid is not None and following_uid is not None:
@@ -254,7 +250,7 @@ def create_pathway_logic_network(
     print("reaction_id_map")
     print(reaction_id_map)
     uid_reaction_connections = create_uid_reaction_connections(
-        reaction_id_map, reaction_connections
+        reaction_id_map, best_matches, decomposed_uid_mapping
     )
     print("uid_RC")
     print(uid_reaction_connections)
@@ -281,12 +277,15 @@ def create_pathway_logic_network(
         filtered_rows_input = decomposed_uid_mapping[
             decomposed_uid_mapping["uid"] == input_hash
         ]
+        print("filtered_rows_input:")
+        print(filtered_rows_input)
         input_or_output_uid_values_input = filtered_rows_input[
             "input_or_output_uid"
         ].tolist()
         input_or_output_uid_values_input = [
             value for value in input_or_output_uid_values_input if pd.notna(value)
         ]
+        print("input_or_output_uid_values_input:", input_or_output_uid_values_input)
         input_or_output_reactome_id_values_input = filtered_rows_input[
             "input_or_output_reactome_id"
         ].tolist()
@@ -306,12 +305,17 @@ def create_pathway_logic_network(
             filtered_rows_output = decomposed_uid_mapping[
                 decomposed_uid_mapping["uid"] == output_hash
             ]
+            print("filtered_rows_output:")
+            print(filtered_rows_output)
             input_or_output_uid_values_output = filtered_rows_output[
                 "input_or_output_uid"
             ].tolist()
             input_or_output_uid_values_output = [
                 value for value in input_or_output_uid_values_output if pd.notna(value)
             ]
+            print(
+                "input_or_output_uid_values_output:", input_or_output_uid_values_output
+            )
             input_or_output_reactome_id_values_output = filtered_rows_output[
                 "input_or_output_reactome_id"
             ].tolist()
