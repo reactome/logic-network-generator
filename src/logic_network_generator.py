@@ -270,6 +270,9 @@ def create_pathway_logic_network(
     print("Number of positive regulators:", positive_regulator_count)
     print("Number of negative regulators:", negative_regulator_count)
 
+    # Create a dictionary to store relationships between Reactome IDs and UUIDs
+    reactome_id_to_uuid = {}
+
     for reaction_uid in reaction_uids:
         input_hash = reaction_id_map.loc[
             reaction_id_map["uid"] == reaction_uid, "input_hash"
@@ -277,15 +280,12 @@ def create_pathway_logic_network(
         filtered_rows_input = decomposed_uid_mapping[
             decomposed_uid_mapping["uid"] == input_hash
         ]
-        print("filtered_rows_input:")
-        print(filtered_rows_input)
         input_or_output_uid_values_input = filtered_rows_input[
             "input_or_output_uid"
         ].tolist()
         input_or_output_uid_values_input = [
             value for value in input_or_output_uid_values_input if pd.notna(value)
         ]
-        print("input_or_output_uid_values_input:", input_or_output_uid_values_input)
         input_or_output_reactome_id_values_input = filtered_rows_input[
             "input_or_output_reactome_id"
         ].tolist()
@@ -305,17 +305,12 @@ def create_pathway_logic_network(
             filtered_rows_output = decomposed_uid_mapping[
                 decomposed_uid_mapping["uid"] == output_hash
             ]
-            print("filtered_rows_output:")
-            print(filtered_rows_output)
             input_or_output_uid_values_output = filtered_rows_output[
                 "input_or_output_uid"
             ].tolist()
             input_or_output_uid_values_output = [
                 value for value in input_or_output_uid_values_output if pd.notna(value)
             ]
-            print(
-                "input_or_output_uid_values_output:", input_or_output_uid_values_output
-            )
             input_or_output_reactome_id_values_output = filtered_rows_output[
                 "input_or_output_reactome_id"
             ].tolist()
@@ -325,35 +320,51 @@ def create_pathway_logic_network(
                 if pd.notna(value)
             ]
 
+            # Assign UUIDs to extracted inputs and outputs
+            input_uuids = [
+                reactome_id_to_uuid.setdefault(input_reactome_id, str(uuid.uuid4()))
+                for input_reactome_id in input_or_output_reactome_id_values_input
+            ]
+            output_uuids = [
+                reactome_id_to_uuid.setdefault(output_reactome_id, str(uuid.uuid4()))
+                for output_reactome_id in input_or_output_reactome_id_values_output
+            ]
+
             # Determine "and_or" value based on input or output
             if input_or_output_uid_values_input:
                 and_or = "and"
+                edge_type = "input"  # Set edge_type for inputs
             else:
                 and_or = "or"
-            # Determine "edge_type" based on whether the entity is an input or output
-            if input_or_output_uid_values_input:
-                edge_type = "input"
-            elif input_or_output_uid_values_output:
-                edge_type = "output"
+                edge_type = "output"  # Set edge_type for outputs
 
-            pathway_logic_network_data.append(
-                {
-                    "source_id": (
-                        input_or_output_uid_values_input[0]
-                        if input_or_output_uid_values_input
-                        else None
-                    ),
-                    "target_id": (
-                        input_or_output_uid_values_output[0]
-                        if input_or_output_uid_values_output
-                        else None
-                    ),
-                    "pos_neg": "pos",
-                    "and_or": and_or,
-                    "edge_type": edge_type,
-                }
-            )
+            # Append the input and output UUIDs to pathway_logic_network_data
+            for input_uuid in input_uuids:
+                for output_uuid in output_uuids:
+                    pathway_logic_network_data.append(
+                        {
+                            "source_id": input_uuid,
+                            "target_id": output_uuid,
+                            "pos_neg": "pos",
+                            "and_or": and_or,
+                            "edge_type": edge_type,
+                        }
+                    )
 
+    for _, row_output in filtered_rows_output.iterrows():
+        pathway_logic_network_data.append(
+            {
+                "source_id": (
+                    input_or_output_uid_values_input[0]
+                    if input_or_output_uid_values_input
+                    else None
+                ),
+                "target_id": row_output["input_or_output_uid"],
+                "pos_neg": "pos",
+                "and_or": and_or,
+                "edge_type": edge_type,
+            }
+        )
     for map_df, pos_neg, edge_type in zip(
         [catalyst_map, negative_regulator_map, positive_regulator_map],
         ["pos", "neg", "pos"],
