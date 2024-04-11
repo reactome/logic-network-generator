@@ -1,5 +1,4 @@
 import uuid
-from typing import Dict
 
 import pandas as pd
 from pandas import DataFrame
@@ -184,95 +183,15 @@ def get_negative_regulators_for_reaction(
     )
 
 
-def create_pathway_logic_network(
-    decomposed_uid_mapping: DataFrame, reaction_connections: DataFrame, best_matches
-) -> DataFrame:
-    """
-    Create pathway_logic_network DataFrame based on decomposed_uid_mapping, reaction_connections, and best_matches.
-
-    Args:
-        decomposed_uid_mapping (DataFrame): DataFrame containing decomposed UID mapping.
-        reaction_connections (DataFrame): DataFrame containing reaction connections.
-
-    Returns:
-        DataFrame: The created pathway_logic_network DataFrame.
-    """
-    logger.debug("Adding reaction pairs to pathway_logic_network")
-
-    columns: Dict[str, pd.Series] = {
-        "source_id": pd.Series(dtype="Int64"),
-        "target_id": pd.Series(dtype="Int64"),
-        "pos_neg": pd.Series(dtype="str"),
-        "and_or": pd.Series(dtype="str"),
-        "edge_type": pd.Series(dtype="str"),
-    }
-    pathway_logic_network_data = []
-    reaction_ids = pd.unique(
-        reaction_connections[["preceding_reaction_id", "following_reaction_id"]]
-        .stack()  # Stack the columns to convert them into a single series
-        .dropna()  # Drop NaN values
-    )
-    print("reaction_connections")
-    print(reaction_connections)
-    # Count the number of reactions without preceding events
-    reactions_without_preceding_events = reaction_connections[
-        ~reaction_connections["following_reaction_id"].isin(
-            reaction_connections["preceding_reaction_id"]
-        )
-    ]
-    num_reactions_without_preceding_events = len(reactions_without_preceding_events)
-    num_total_reactions = len(reaction_connections)
-    print(
-        "Number of reactions without preceding events:",
-        len(reactions_without_preceding_events),
-    )
-    print("Total number of reactions:", num_total_reactions)
-    if num_total_reactions > 0:
-        percentage_reactions_without_preceding_events = (
-            num_reactions_without_preceding_events / num_total_reactions
-        ) * 100
-        print(
-            f"Percentage of reactions without preceding events: {percentage_reactions_without_preceding_events:.2f}%"
-        )
-    else:
-        print("Total number of reactions is zero, cannot calculate percentage.")
-
-    reaction_id_map = create_reaction_id_map(
-        decomposed_uid_mapping, reaction_ids, best_matches
-    )
-    catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
-    negative_regulator_map = get_negative_regulators_for_reaction(
-        reaction_id_map, graph
-    )
-    positive_regulator_map = get_positive_regulators_for_reaction(
-        reaction_id_map, graph
-    )
-    print("reaction_id_map")
-    print(reaction_id_map)
-    uid_reaction_connections = create_uid_reaction_connections(
-        reaction_id_map, best_matches, decomposed_uid_mapping
-    )
-    print("uid_RC")
-    print(uid_reaction_connections)
-
-    reaction_uids = pd.unique(
-        uid_reaction_connections[["preceding_uid", "following_uid"]]
-        .stack()  # Stack the columns to convert them into a single series
-        .dropna()  # Drop NaN values
-    )
-
-    positive_regulator_count = len(positive_regulator_map)
-    negative_regulator_count = len(negative_regulator_map)
-
-    # Count the number of catalysts
-    num_catalysts = len(catalyst_map)
-    print("Number of catalysts:", num_catalysts)
-    print("Number of positive regulators:", positive_regulator_count)
-    print("Number of negative regulators:", negative_regulator_count)
-
-    # Create a dictionary to store relationships between Reactome IDs and UUIDs
-    reactome_id_to_uuid = {}
-
+def extract_inputs_and_outputs(
+    reaction_uid,
+    reaction_uids,
+    uid_reaction_connections,
+    reaction_id_map,
+    decomposed_uid_mapping,
+    reactome_id_to_uuid,
+    pathway_logic_network_data,
+):
     for reaction_uid in reaction_uids:
         input_hash = reaction_id_map.loc[
             reaction_id_map["uid"] == reaction_uid, "input_hash"
@@ -351,20 +270,16 @@ def create_pathway_logic_network(
                         }
                     )
 
-    for _, row_output in filtered_rows_output.iterrows():
-        pathway_logic_network_data.append(
-            {
-                "source_id": (
-                    input_or_output_uid_values_input[0]
-                    if input_or_output_uid_values_input
-                    else None
-                ),
-                "target_id": row_output["input_or_output_uid"],
-                "pos_neg": "pos",
-                "and_or": and_or,
-                "edge_type": edge_type,
-            }
-        )
+
+def append_regulators(
+    catalyst_map,
+    negative_regulator_map,
+    positive_regulator_map,
+    pathway_logic_network_data,
+    reactome_id_to_uuid,
+    and_or,
+    edge_type,
+):
     for map_df, pos_neg, edge_type in zip(
         [catalyst_map, negative_regulator_map, positive_regulator_map],
         ["pos", "neg", "pos"],
@@ -381,19 +296,105 @@ def create_pathway_logic_network(
                 }
             )
 
-    print("Appended data:", pathway_logic_network_data[-1])
+
+def create_pathway_logic_network(
+    decomposed_uid_mapping: pd.DataFrame,
+    reaction_connections: pd.DataFrame,
+    best_matches,
+) -> pd.DataFrame:
+    logger.debug("Adding reaction pairs to pathway_logic_network")
+
+    columns = {
+        "source_id": pd.Series(dtype="Int64"),
+        "target_id": pd.Series(dtype="Int64"),
+        "pos_neg": pd.Series(dtype="str"),
+        "and_or": pd.Series(dtype="str"),
+        "edge_type": pd.Series(dtype="str"),
+    }
+    pathway_logic_network_data = []
+    reaction_ids = pd.unique(
+        reaction_connections[["preceding_reaction_id", "following_reaction_id"]]
+        .stack()
+        .dropna()
+    )
+
+    reactions_without_preceding_events = reaction_connections[
+        ~reaction_connections["following_reaction_id"].isin(
+            reaction_connections["preceding_reaction_id"]
+        )
+    ]
+    num_reactions_without_preceding_events = len(reactions_without_preceding_events)
+    num_total_reactions = len(reaction_connections)
+
+    if num_total_reactions > 0:
+        percentage_reactions_without_preceding_events = (
+            num_reactions_without_preceding_events / num_total_reactions
+        ) * 100
+    print("Percentage of reactions without preceding events")
+    print(percentage_reactions_without_preceding_events)
+    reaction_id_map = create_reaction_id_map(
+        decomposed_uid_mapping, reaction_ids, best_matches
+    )
+    catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
+    negative_regulator_map = get_negative_regulators_for_reaction(
+        reaction_id_map, graph
+    )
+    positive_regulator_map = get_positive_regulators_for_reaction(
+        reaction_id_map, graph
+    )
+
+    uid_reaction_connections = create_uid_reaction_connections(
+        reaction_id_map, best_matches, decomposed_uid_mapping
+    )
+
+    reaction_uids = pd.unique(
+        uid_reaction_connections[["preceding_uid", "following_uid"]].stack().dropna()
+    )
+
+    positive_regulator_count = len(positive_regulator_map)
+    negative_regulator_count = len(negative_regulator_map)
+    num_catalysts = len(catalyst_map)
+    print(
+        f"Positive regulator count: {positive_regulator_count}\n"
+        f"Negative regulator count: {negative_regulator_count}\n"
+        f"Number of catalysts: {num_catalysts}"
+    )
+    reactome_id_to_uuid = {}
+
+    for reaction_uid in reaction_uids:
+        extract_inputs_and_outputs(
+            reaction_uid,
+            reaction_uids,
+            uid_reaction_connections,
+            reaction_id_map,
+            decomposed_uid_mapping,
+            reactome_id_to_uuid,
+            pathway_logic_network_data,
+        )
+    and_or = ""
+    edge_type = ""
+    append_regulators(
+        catalyst_map,
+        negative_regulator_map,
+        positive_regulator_map,
+        pathway_logic_network_data,
+        reactome_id_to_uuid,
+        and_or,
+        edge_type,
+    )
+
     pathway_logic_network = pd.DataFrame(
         pathway_logic_network_data, columns=columns.keys()
     )
-    print("pathway_logic_network")
-    print(pathway_logic_network)
 
     root_inputs = find_root_inputs(pathway_logic_network)
-    print("root_inputs")
-    print(root_inputs)
     terminal_outputs = find_terminal_outputs(pathway_logic_network)
-    print("terminal_outputs")
-    print(terminal_outputs)
+
+    print(
+        f"root_inputs: {root_inputs}\n"
+        f"terminal_outputs: {terminal_outputs}\n"
+        f"pathway_logic_network: {pathway_logic_network}"
+    )
 
     return pathway_logic_network
 
