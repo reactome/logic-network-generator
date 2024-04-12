@@ -33,3 +33,9 @@ poetry run mypy --ignore-missing-imports .
 ```bash
 poetry run flake8 .
 ```
+
+### Create db-id-name-mapping-file.tsv
+
+```bash
+python src/create-db-id-name-mapping-file.py
+```
