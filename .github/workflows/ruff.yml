@@ -20,9 +20,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install ruff
 
-    - name: Run ruff
+    
+    - name: Run ruff check
       run: |
-        ruff src/ bin/
+        ruff check src/ bin/
+        
 
     - name: Run ruff formatter
       run: |
