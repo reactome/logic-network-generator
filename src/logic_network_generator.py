@@ -1,35 +1,44 @@
 import uuid
+from typing import Dict, List, Any
 
 import pandas as pd
 from pandas import DataFrame
 from py2neo import Graph  # type: ignore
-from typing import List, Dict, Any
 from src.argument_parser import logger
 
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
 
-def create_reaction_id_map(decomposed_uid_mapping, reaction_ids, best_matches):
+def _get_reactome_id_from_hash(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> int:
+    """Extract reactome_id for a given hash from decomposed_uid_mapping."""
+    return decomposed_uid_mapping.loc[
+        decomposed_uid_mapping["uid"] == hash_value, "reactome_id"
+    ].values[0]
+
+
+def create_reaction_id_map(
+    decomposed_uid_mapping: pd.DataFrame, 
+    reaction_ids: List[int], 
+    best_matches: pd.DataFrame
+) -> pd.DataFrame:
+    """Create a mapping between reaction UIDs, reactome IDs, and input/output hashes."""
+    
     reaction_id_map_column_types = {
         "uid": str,
         "reactome_id": pd.Int64Dtype(),
         "input_hash": str,
         "output_hash": str,
     }
-    reaction_id_map = pd.DataFrame(columns=reaction_id_map_column_types.keys()).astype(
-        reaction_id_map_column_types
-    )
-
-    rows = []
+    
     print("Checking best_matches contents:")
-
-    for index, match in best_matches.iterrows():
+    
+    rows = []
+    for _, match in best_matches.iterrows():
         incomming_hash = match["incomming"]
         outgoing_hash = match["outgoing"]
-        reactome_id = decomposed_uid_mapping.loc[
-            decomposed_uid_mapping["uid"] == incomming_hash, "reactome_id"
-        ].values[0]
+        reactome_id = _get_reactome_id_from_hash(decomposed_uid_mapping, incomming_hash)
+        
         row = {
             "uid": str(uuid.uuid4()),
             "reactome_id": int(reactome_id),
@@ -39,62 +48,102 @@ def create_reaction_id_map(decomposed_uid_mapping, reaction_ids, best_matches):
         print("row")
         print(row)
         rows.append(row)
-
-    new_rows_df = pd.DataFrame(rows)
-    reaction_id_map = pd.concat([reaction_id_map, new_rows_df], ignore_index=True)
-
+    
+    # Create DataFrame directly from rows instead of concatenating
+    reaction_id_map = pd.DataFrame(rows).astype(reaction_id_map_column_types)
+    
     return reaction_id_map
 
 
 def create_uid_reaction_connections(
-    reaction_id_map: pd.DataFrame, best_matches: pd.DataFrame, decomposed_uid_mapping
+    reaction_id_map: pd.DataFrame, 
+    best_matches: pd.DataFrame, 
+    decomposed_uid_mapping: pd.DataFrame
 ) -> pd.DataFrame:
-    uid_reaction_connections_data = []
+    """Create connections between reaction UIDs based on best matches."""
+    
+    # Create lookup mapping for efficiency
     reactome_id_to_uid_mapping = dict(
         zip(reaction_id_map["reactome_id"], reaction_id_map["uid"])
     )
-
-    # Create uid_reaction_connections from best_matches
+    
+    uid_reaction_connections_data = []
+    
     for _, match in best_matches.iterrows():
         incomming_hash = match["incomming"]
         outgoing_hash = match["outgoing"]
-        preceding_reaction_id = decomposed_uid_mapping.loc[
-            decomposed_uid_mapping["uid"] == incomming_hash, "reactome_id"
-        ].values[0]
-        following_reaction_id = decomposed_uid_mapping.loc[
-            decomposed_uid_mapping["uid"] == outgoing_hash, "reactome_id"
-        ].values[0]
+        
+        # Get reactome IDs for both hashes
+        preceding_reaction_id = _get_reactome_id_from_hash(decomposed_uid_mapping, incomming_hash)
+        following_reaction_id = _get_reactome_id_from_hash(decomposed_uid_mapping, outgoing_hash)
+        
+        # Get corresponding UIDs
         preceding_uid = reactome_id_to_uid_mapping.get(preceding_reaction_id)
         following_uid = reactome_id_to_uid_mapping.get(following_reaction_id)
+        
+        # Only add connection if both UIDs exist
         if preceding_uid is not None and following_uid is not None:
-            uid_reaction_connections_data.append(
-                {"preceding_uid": preceding_uid, "following_uid": following_uid}
-            )
+            uid_reaction_connections_data.append({
+                "preceding_uid": preceding_uid, 
+                "following_uid": following_uid
+            })
+    
+    return pd.DataFrame(uid_reaction_connections_data)
 
-    uid_reaction_connections = pd.DataFrame(uid_reaction_connections_data)
-    return uid_reaction_connections
+
+def _execute_regulator_query(
+    graph: Graph, 
+    query: str, 
+    reaction_uuid: str, 
+    function_name: str
+) -> List[Dict[str, Any]]:
+    """Execute a regulator query and return processed results."""
+    try:
+        result = graph.run(query)
+        regulators = []
+        
+        for record in result:
+            regulator_uuid = str(uuid.uuid4())
+            regulators.append({
+                "reaction": reaction_uuid,
+                "PhysicalEntity": regulator_uuid,
+                "edge_type": "regulator",
+                "uuid": regulator_uuid,
+                "reaction_uuid": reaction_uuid,
+            })
+        
+        return regulators
+    
+    except Exception as e:
+        logger.error(f"Error in {function_name}", exc_info=True)
+        raise e
 
 
 def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:
+    """Get catalysts for reactions using Neo4j graph queries."""
     catalyst_list = []
-
+    
     for _, row in reaction_id_map.iterrows():
         reaction_id = row["reactome_id"]
+        reaction_uuid = row["uid"]
+        
+        # Cypher query preserved exactly as original
         query = (
             f"MATCH (reaction:ReactionLikeEvent{{dbId: {reaction_id}}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
             f"RETURN reaction.dbId AS reaction_id, catalyst.dbId AS catalyst_id, 'catalyst' AS edge_type"
         )
+        
         try:
             data = graph.run(query).data()
             for item in data:
-                item["uuid"] = str(uuid.uuid4())  # Generate UUID for each entity
-                # Map the reaction ID to the UUID
-                item["reaction_uuid"] = row["uid"]
+                item["uuid"] = str(uuid.uuid4())
+                item["reaction_uuid"] = reaction_uuid
             catalyst_list.extend(data)
+            
         except Exception as e:
             logger.error("Error in get_catalysts_for_reaction", exc_info=True)
             raise e
-
+    
     return pd.DataFrame(
         catalyst_list,
         columns=["reaction_id", "catalyst_id", "edge_type", "uuid", "reaction_uuid"],
@@ -102,39 +151,32 @@ def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> Data
 
 
 def get_positive_regulators_for_reaction(
-    reaction_id_mapping: DataFrame, graph: Graph
+    reaction_id_mapping: DataFrame, 
+    graph: Graph
 ) -> DataFrame:
+    """Get positive regulators for reactions using Neo4j graph queries."""
     regulators_list = []
-
+    
     for _, row in reaction_id_mapping.iterrows():
         reaction_id = row["reactome_id"]
         reaction_uuid = row["uid"]
+        
         if pd.isna(reaction_uuid):
             logger.error(f"No UUID found for reaction ID {reaction_id}")
             continue
-
+        
+        # Cypher query preserved exactly as original
         query = (
             f"MATCH (reaction)-[:regulatedBy]->(regulator:PositiveRegulation)-[:regulator]->(pe:PhysicalEntity) "
             f"WHERE reaction.dbId = {reaction_id} "
             "RETURN reaction.dbId as reaction, pe.dbId as PhysicalEntity"
         )
-        try:
-            result = graph.run(query)
-            for record in result:
-                regulator_uuid = str(uuid.uuid4())  # Generate UUID for each entity
-                regulators_list.append(
-                    {
-                        "reaction": reaction_uuid,
-                        "PhysicalEntity": regulator_uuid,
-                        "edge_type": "regulator",
-                        "uuid": regulator_uuid,
-                        "reaction_uuid": reaction_uuid,
-                    }
-                )
-        except Exception as e:
-            logger.error("Error in get_positive_regulators_for_reaction", exc_info=True)
-            raise e
-
+        
+        regulators = _execute_regulator_query(
+            graph, query, reaction_uuid, "get_positive_regulators_for_reaction"
+        )
+        regulators_list.extend(regulators)
+    
     return pd.DataFrame(
         regulators_list,
         columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"],
@@ -143,45 +185,37 @@ def get_positive_regulators_for_reaction(
 
 
 def get_negative_regulators_for_reaction(
-    reaction_id_mapping: DataFrame, graph: Graph
+    reaction_id_mapping: DataFrame, 
+    graph: Graph
 ) -> DataFrame:
+    """Get negative regulators for reactions using Neo4j graph queries."""
     regulators_list = []
-
+    
     for _, row in reaction_id_mapping.iterrows():
         reaction_id = row["reactome_id"]
         reaction_uuid = row["uid"]
+        
         if pd.isna(reaction_uuid):
             logger.error(f"No UUID found for reaction ID {reaction_id}")
             continue
-
+        
+        # Cypher query preserved exactly as original
         query = (
             f"MATCH (reaction)-[:regulatedBy]->(regulator:NegativeRegulation)-[:regulator]->(pe:PhysicalEntity) "
             f"WHERE reaction.dbId = {reaction_id} "
             "RETURN reaction.dbId as reaction, pe.dbId as PhysicalEntity"
         )
-        try:
-            result = graph.run(query)
-            for record in result:
-                regulator_uuid = str(uuid.uuid4())  # Generate UUID for each entity
-                regulators_list.append(
-                    {
-                        "reaction": reaction_uuid,
-                        "PhysicalEntity": regulator_uuid,
-                        "edge_type": "regulator",
-                        "uuid": regulator_uuid,
-                        "reaction_uuid": reaction_uuid,
-                    }
-                )
-        except Exception as e:
-            logger.error("Error in get_negative_regulators_for_reaction", exc_info=True)
-            raise e
-
+        
+        regulators = _execute_regulator_query(
+            graph, query, reaction_uuid, "get_negative_regulators_for_reaction"
+        )
+        regulators_list.extend(regulators)
+    
     return pd.DataFrame(
         regulators_list,
         columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"],
         index=None,
     )
-
 
 
 def _get_non_null_values(df: pd.DataFrame, column: str) -> List[Any]:
