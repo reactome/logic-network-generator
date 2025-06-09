@@ -49,7 +49,6 @@ def create_reaction_id_map(
         print(row)
         rows.append(row)
     
-    # Create DataFrame directly from rows instead of concatenating
     reaction_id_map = pd.DataFrame(rows).astype(reaction_id_map_column_types)
     
     return reaction_id_map
@@ -62,7 +61,6 @@ def create_uid_reaction_connections(
 ) -> pd.DataFrame:
     """Create connections between reaction UIDs based on best matches."""
     
-    # Create lookup mapping for efficiency
     reactome_id_to_uid_mapping = dict(
         zip(reaction_id_map["reactome_id"], reaction_id_map["uid"])
     )
@@ -127,7 +125,6 @@ def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> Data
         reaction_id = row["reactome_id"]
         reaction_uuid = row["uid"]
         
-        # Cypher query preserved exactly as original
         query = (
             f"MATCH (reaction:ReactionLikeEvent{{dbId: {reaction_id}}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
             f"RETURN reaction.dbId AS reaction_id, catalyst.dbId AS catalyst_id, 'catalyst' AS edge_type"
@@ -165,7 +162,6 @@ def get_positive_regulators_for_reaction(
             logger.error(f"No UUID found for reaction ID {reaction_id}")
             continue
         
-        # Cypher query preserved exactly as original
         query = (
             f"MATCH (reaction)-[:regulatedBy]->(regulator:PositiveRegulation)-[:regulator]->(pe:PhysicalEntity) "
             f"WHERE reaction.dbId = {reaction_id} "
@@ -199,7 +195,6 @@ def get_negative_regulators_for_reaction(
             logger.error(f"No UUID found for reaction ID {reaction_id}")
             continue
         
-        # Cypher query preserved exactly as original
         query = (
             f"MATCH (reaction)-[:regulatedBy]->(regulator:NegativeRegulation)-[:regulator]->(pe:PhysicalEntity) "
             f"WHERE reaction.dbId = {reaction_id} "
@@ -435,7 +430,6 @@ def create_pathway_logic_network(
             pathway_logic_network_data,
         )
     
-    # Note: Using empty strings to maintain original functionality
     and_or = ""
     edge_type = ""
     append_regulators(
