@@ -2,7 +2,7 @@ import hashlib
 import itertools
 import uuid
 import warnings
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple, Optional
 
 import pandas as pd
 
@@ -31,6 +31,28 @@ InputOutputID = str
 ReactomeID = str
 DataFrameRow = Dict[str, Any]
 
+# Enhanced functional equivalence groups configuration
+FUNCTIONAL_EQUIVALENT_GROUPS = {
+    # Ubiquitin - classic case of functionally equivalent isoforms
+    "68524": {
+        "group_name": "ubiquitin_isoforms",
+        "strategy": "use_canonical",
+        "canonical_representative": "68524",
+        "description": "Ubiquitin isoforms - all serve identical protein degradation signaling function",
+        "biological_rationale": "Multiple ubiquitin genes produce identical/near-identical proteins"
+    },
+    
+    # Template for other functional groups
+    # "entity_id": {
+    #     "group_name": "group_name",
+    #     "strategy": "use_canonical",  # or "representative_sampling", "context_dependent"
+    #     "canonical_representative": "representative_id",
+    #     "description": "Brief description",
+    #     "biological_rationale": "Why these are functionally equivalent"
+    # }
+}
+
+
 decomposed_uid_mapping = pd.DataFrame(
     columns=decomposed_uid_mapping_column_types.keys()
 ).astype(  # type: ignore
@@ -41,8 +63,6 @@ reference_entity_dict: Dict[str, str] = {}
 
 
 def get_component_id_or_reference_entity_id(reactome_id):
-    global reference_entity_dict
-
     if reactome_id in reference_entity_dict:
         component_id = reference_entity_dict[reactome_id]
         return component_id
@@ -61,6 +81,26 @@ def is_valid_uuid(identifier: Any) -> bool:
     return True if len(identifier) == 64 else False
 
 
+def is_functionally_equivalent_entity(entity_id: str) -> Optional[Dict[str, Any]]:
+    """Check if entity is part of a functional equivalence group."""
+    return FUNCTIONAL_EQUIVALENT_GROUPS.get(entity_id)
+
+
+def apply_functional_equivalence_strategy(
+    entity_id: str, 
+    functional_group: Dict[str, Any],
+    original_result: Set[str]
+) -> Set[str]:
+    """Apply functional equivalence strategy to entity decomposition."""
+    strategy = functional_group.get("strategy", "use_canonical")
+    
+    if strategy == "use_canonical":
+        canonical_rep = functional_group.get("canonical_representative", entity_id)
+        return {canonical_rep}
+    else:
+        return original_result
+
+
 def get_broken_apart_ids(
     broken_apart_members: list[set[str]], reactome_id: ReactomeID
 ) -> Set[UID]:
@@ -77,16 +117,20 @@ def get_broken_apart_ids(
                 new_broken_apart_members.append({member})
 
         iterproduct_components = list(itertools.product(*new_broken_apart_members))
+        total_combinations = len(iterproduct_components)
+        
+        if total_combinations > 1000:
+            logger.warning(f"Large combination set for reaction {reactome_id}: {total_combinations} combinations")
+
         iterproduct_components_as_sets = [
             set(map(str, item)) for item in iterproduct_components
         ]
-        uids = get_uids_for_iterproduct_components(
-            iterproduct_components_as_sets, reactome_id
-        )
+        uids = get_uids_for_iterproduct_components(iterproduct_components_as_sets, reactome_id)
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
         row: DataFrameRow
+        
         for member in broken_apart_members:
             if is_valid_uuid(member):
                 component_ids = decomposed_uid_mapping.loc[
@@ -110,13 +154,14 @@ def get_broken_apart_ids(
                     "component_id": member,
                     "reactome_id": reactome_id,
                     "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(
-                        component_id
+                        member  # Fixed: was using undefined 'component_id'
                     ),
                     "input_or_output_uid": None,
                     "input_or_output_reactome_id": member,
                 }
                 rows.append(row)
         uids = {uid}
+
         decomposed_uid_mapping = pd.concat([decomposed_uid_mapping, pd.DataFrame(rows)])
 
     return uids
@@ -131,6 +176,7 @@ def get_uids_for_iterproduct_components(
     uids: Set[UID] = set()
     for component in iterproduct_components:
         component_to_input_or_output: Dict[ComponentID, InputOutputID] = {}
+        
         for item in component:
             if is_valid_uuid(item):
                 selected_rows = decomposed_uid_mapping.loc[
@@ -173,7 +219,23 @@ def get_uids_for_iterproduct_components(
 
 
 def break_apart_entity(entity_id: int) -> Set[str]:
-    """Break apart entity."""
+    """Break apart entity with functional equivalence support."""
+    global decomposed_uid_mapping
+
+    entity_str = str(entity_id)
+
+    # Check for functional equivalence rules first
+    functional_group = is_functionally_equivalent_entity(entity_str)
+    if functional_group:
+        original_result = break_apart_entity_standard(entity_id)
+        return apply_functional_equivalence_strategy(entity_str, functional_group, original_result)
+
+    # Use original decomposition logic
+    return break_apart_entity_standard(entity_id)
+
+
+def break_apart_entity_standard(entity_id: int) -> Set[str]:
+    """Standard break_apart_entity logic."""
     global decomposed_uid_mapping
 
     labels = get_labels(entity_id)
@@ -197,12 +259,12 @@ def break_apart_entity(entity_id: int) -> Set[str]:
         contains_thing = contains_reference_gene_product_molecule_or_isoform(entity_id)
         if contains_thing:
             return set([str(entity_id)])
+        
         member_ids = get_set_members(entity_id)
 
         member_list: List[str] = []
         for member_id in member_ids:
             members = break_apart_entity(member_id)
-
             if isinstance(members, set):
                 member_list.extend(members)
             else:
@@ -232,7 +294,6 @@ def break_apart_entity(entity_id: int) -> Set[str]:
             "SimpleEntity",
         ]
     ):
-
         return {str(entity_id)}
 
     else:
@@ -277,7 +338,10 @@ def get_decomposed_uid_mapping(
     """Get decomposed UID mapping."""
     global decomposed_uid_mapping
 
-    decomposed_uid_mapping.drop(decomposed_uid_mapping.index, inplace=True)
+    # Fix: Properly reinitialize instead of dropping rows
+    decomposed_uid_mapping = pd.DataFrame(
+        columns=decomposed_uid_mapping_column_types.keys()
+    ).astype(decomposed_uid_mapping_column_types)
 
     reaction_ids = pd.unique(
         reaction_connections[

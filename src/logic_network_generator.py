@@ -10,7 +10,7 @@ uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
 
-def _get_reactome_id_from_hash(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> int:
+def get_reactome_id_from_hash(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> int:
     """Extract reactome_id for a given hash from decomposed_uid_mapping."""
     return decomposed_uid_mapping.loc[
         decomposed_uid_mapping["uid"] == hash_value, "reactome_id"
@@ -35,14 +35,14 @@ def create_reaction_id_map(
     
     rows = []
     for _, match in best_matches.iterrows():
-        incomming_hash = match["incomming"]
+        incoming_hash = match["incoming"]
         outgoing_hash = match["outgoing"]
-        reactome_id = _get_reactome_id_from_hash(decomposed_uid_mapping, incomming_hash)
+        reactome_id = get_reactome_id_from_hash(decomposed_uid_mapping, incoming_hash)
         
         row = {
             "uid": str(uuid.uuid4()),
             "reactome_id": int(reactome_id),
-            "input_hash": incomming_hash,
+            "input_hash": incoming_hash,
             "output_hash": outgoing_hash,
         }
         print("row")
@@ -55,39 +55,43 @@ def create_reaction_id_map(
 
 
 def create_uid_reaction_connections(
-    reaction_id_map: pd.DataFrame, 
-    best_matches: pd.DataFrame, 
+    reaction_id_map: pd.DataFrame,
+    best_matches: pd.DataFrame,
     decomposed_uid_mapping: pd.DataFrame
 ) -> pd.DataFrame:
     """Create connections between reaction UIDs based on best matches."""
-    
+
     reactome_id_to_uid_mapping = dict(
         zip(reaction_id_map["reactome_id"], reaction_id_map["uid"])
     )
-    
+   
     uid_reaction_connections_data = []
-    
+
     for _, match in best_matches.iterrows():
-        incomming_hash = match["incomming"]
+        incoming_hash = match["incoming"]
         outgoing_hash = match["outgoing"]
-        
+
         # Get reactome IDs for both hashes
-        preceding_reaction_id = _get_reactome_id_from_hash(decomposed_uid_mapping, incomming_hash)
-        following_reaction_id = _get_reactome_id_from_hash(decomposed_uid_mapping, outgoing_hash)
-        
+        preceding_reaction_id = get_reactome_id_from_hash(decomposed_uid_mapping, incoming_hash)
+        following_reaction_id = get_reactome_id_from_hash(decomposed_uid_mapping, outgoing_hash)
+
         # Get corresponding UIDs
         preceding_uid = reactome_id_to_uid_mapping.get(preceding_reaction_id)
         following_uid = reactome_id_to_uid_mapping.get(following_reaction_id)
-        
+
         # Only add connection if both UIDs exist
         if preceding_uid is not None and following_uid is not None:
             uid_reaction_connections_data.append({
-                "preceding_uid": preceding_uid, 
+                "preceding_uid": preceding_uid,
                 "following_uid": following_uid
             })
-    
-    return pd.DataFrame(uid_reaction_connections_data)
 
+    # Fix: Always create DataFrame with proper columns, even if empty
+    if uid_reaction_connections_data:
+        return pd.DataFrame(uid_reaction_connections_data)
+    else:
+        # Return empty DataFrame with correct column structure
+        return pd.DataFrame(columns=["preceding_uid", "following_uid"])
 
 def _execute_regulator_query(
     graph: Graph, 
@@ -213,29 +217,29 @@ def get_negative_regulators_for_reaction(
     )
 
 
-def _get_non_null_values(df: pd.DataFrame, column: str) -> List[Any]:
+def get_non_null_values(df: pd.DataFrame, column: str) -> List[Any]:
     """Extract non-null values from a DataFrame column."""
     return [value for value in df[column].tolist() if pd.notna(value)]
 
 
-def _get_hash_for_reaction(reaction_id_map: pd.DataFrame, uid: str, hash_type: str) -> str:
+def get_hash_for_reaction(reaction_id_map: pd.DataFrame, uid: str, hash_type: str) -> str:
     """Get input_hash or output_hash for a given reaction UID."""
     return reaction_id_map.loc[
         reaction_id_map["uid"] == uid, hash_type
     ].iloc[0]
 
 
-def _extract_uid_and_reactome_values(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> tuple:
+def extract_uid_and_reactome_values(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> tuple:
     """Extract UID and Reactome ID values for a given hash."""
     filtered_rows = decomposed_uid_mapping[decomposed_uid_mapping["uid"] == hash_value]
     
-    uid_values = _get_non_null_values(filtered_rows, "input_or_output_uid")
-    reactome_id_values = _get_non_null_values(filtered_rows, "input_or_output_reactome_id")
+    uid_values = get_non_null_values(filtered_rows, "input_or_output_uid")
+    reactome_id_values = get_non_null_values(filtered_rows, "input_or_output_reactome_id")
     
     return uid_values, reactome_id_values
 
 
-def _assign_uuids(reactome_ids: List[str], reactome_id_to_uuid: Dict[str, str]) -> List[str]:
+def assign_uuids(reactome_ids: List[str], reactome_id_to_uuid: Dict[str, str]) -> List[str]:
     """Assign UUIDs to Reactome IDs, creating new ones if they don't exist."""
     return [
         reactome_id_to_uuid.setdefault(reactome_id, str(uuid.uuid4()))
@@ -243,7 +247,7 @@ def _assign_uuids(reactome_ids: List[str], reactome_id_to_uuid: Dict[str, str]) 
     ]
 
 
-def _determine_edge_properties(input_uid_values: List[Any]) -> tuple:
+def determine_edge_properties(input_uid_values: List[Any]) -> tuple:
     """Determine and_or and edge_type based on input UID values."""
     if input_uid_values:
         return "and", "input"
@@ -251,7 +255,7 @@ def _determine_edge_properties(input_uid_values: List[Any]) -> tuple:
         return "or", "output"
 
 
-def _add_pathway_connections(
+def add_pathway_connections(
     input_uuids: List[str], 
     output_uuids: List[str], 
     and_or: str, 
@@ -283,8 +287,8 @@ def extract_inputs_and_outputs(
     
     for reaction_uid in reaction_uids:
         # Extract input information
-        input_hash = _get_hash_for_reaction(reaction_id_map, reaction_uid, "input_hash")
-        input_uid_values, input_reactome_id_values = _extract_uid_and_reactome_values(
+        input_hash = get_hash_for_reaction(reaction_id_map, reaction_uid, "input_hash")
+        input_uid_values, input_reactome_id_values = extract_uid_and_reactome_values(
             decomposed_uid_mapping, input_hash
         )
         
@@ -295,20 +299,20 @@ def extract_inputs_and_outputs(
         
         for preceding_uid in preceding_uids:
             # Extract output information
-            output_hash = _get_hash_for_reaction(reaction_id_map, preceding_uid, "output_hash")
-            output_uid_values, output_reactome_id_values = _extract_uid_and_reactome_values(
+            output_hash = get_hash_for_reaction(reaction_id_map, preceding_uid, "output_hash")
+            output_uid_values, output_reactome_id_values = extract_uid_and_reactome_values(
                 decomposed_uid_mapping, output_hash
             )
             
             # Assign UUIDs
-            input_uuids = _assign_uuids(input_reactome_id_values, reactome_id_to_uuid)
-            output_uuids = _assign_uuids(output_reactome_id_values, reactome_id_to_uuid)
+            input_uuids = assign_uuids(input_reactome_id_values, reactome_id_to_uuid)
+            output_uuids = assign_uuids(output_reactome_id_values, reactome_id_to_uuid)
             
             # Determine edge properties
-            and_or, edge_type = _determine_edge_properties(input_uid_values)
+            and_or, edge_type = determine_edge_properties(input_uid_values)
             
             # Add connections to pathway network
-            _add_pathway_connections(
+            add_pathway_connections(
                 input_uuids, output_uuids, and_or, edge_type, pathway_logic_network_data
             )
 
