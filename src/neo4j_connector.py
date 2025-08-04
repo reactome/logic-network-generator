@@ -65,20 +65,22 @@ def get_labels(entity_id: int) -> List[str]:
         raise
 
 
-def get_complex_components(entity_id: int) -> Set[int]:
+def get_complex_components_with_stoichiometry(entity_id: int) -> List[Dict[str, Any]]:
     query_get_components_template: str = """
-       MATCH (entity)-[:hasComponent]->(component)
+       MATCH (entity)-[r:hasComponent]->(component)
            WHERE entity.dbId = %s
-       RETURN collect(component.dbId) AS component_ids
+       RETURN component.dbId AS component_id,
+              COALESCE(r.stoichiometry, 1) AS stoichiometry
        """
     query: str = query_get_components_template % entity_id
 
     try:
-        return set(graph.run(query).data()[0]["component_ids"])
+        result = graph.run(query).data()
+        print(f"Complex {entity_id} components with stoichiometry: {result}")
+        return result
     except Exception:
-        logger.error("Error in get_complex_components", exc_info=True)
+        logger.error("Error in get_complex_components_with_stoichiometry", exc_info=True)
         raise
-
 
 def get_set_members(entity_id: int) -> Set[int]:
     query_get_members_template: str = """
@@ -111,21 +113,23 @@ def get_reactions(pathway_id: int, taxon_id: str) -> List[int]:
         raise
 
 
-def get_reaction_input_output_ids(reaction_id: int, input_or_output: str) -> Set[int]:
+def get_reaction_input_output_ids_with_stoichiometry(reaction_id: int, input_or_output: str) -> List[Dict[str, Any]]:
     query_template: str = """
-       MATCH (reaction)-[:%s]-(io)
+       MATCH (reaction)-[r:%s]->(io)
            WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) AND reaction.dbId=%s
-       RETURN COLLECT(io.dbId) AS io_ids
+       RETURN io.dbId AS entity_id,
+              COALESCE(r.stoichiometry, 1) AS stoichiometry
     """
     relation_type: str = "input" if input_or_output == "input" else "output"
     query: str = query_template % (relation_type, reaction_id)
 
     try:
-        return set(graph.run(query).data()[0]["io_ids"])
+        result = graph.run(query).data()
+        print(f"Reaction {reaction_id} {input_or_output}s with stoichiometry: {result}")
+        return result
     except Exception:
-        logger.error("Error in get_reaction_input_output_ids", exc_info=True)
+        logger.error("Error in get_reaction_input_output_ids_with_stoichiometry", exc_info=True)
         raise
-
 
 def get_reference_entity_id(entity_id: int) -> Union[str, None]:
     query_template: str = """
@@ -164,3 +168,21 @@ def contains_reference_gene_product_molecule_or_isoform(entity_id: int) -> bool:
             exc_info=True,
         )
         raise e
+
+
+def get_catalyst_stoichiometry(reaction_id: int) -> List[Dict[str, Any]]:
+    query_template: str = """
+       MATCH (reaction:ReactionLikeEvent)-[r:catalystActivity]->(ca:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity)
+           WHERE reaction.dbId = %s
+       RETURN catalyst.dbId AS catalyst_id,
+              COALESCE(r.stoichiometry, 1) AS stoichiometry
+    """
+    query: str = query_template % reaction_id
+
+    try:
+        result = graph.run(query).data()
+        print(f"Reaction {reaction_id} catalysts with stoichiometry: {result}")
+        return result
+    except Exception:
+        logger.error("Error in get_catalyst_stoichiometry", exc_info=True)
+        raise

@@ -11,9 +11,9 @@ from src.best_reaction_match import find_best_reaction_match
 from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.neo4j_connector import (
     contains_reference_gene_product_molecule_or_isoform,
-    get_complex_components,
+    get_complex_components_with_stoichiometry,  # MODIFIED IMPORT
     get_labels,
-    get_reaction_input_output_ids,
+    get_reaction_input_output_ids_with_stoichiometry,  # MODIFIED IMPORT
     get_reference_entity_id,
     get_set_members,
 )
@@ -41,23 +41,19 @@ FUNCTIONAL_EQUIVALENT_GROUPS = {
         "description": "Ubiquitin isoforms - all serve identical protein degradation signaling function",
         "biological_rationale": "Multiple ubiquitin genes produce identical/near-identical proteins"
     },
-    
-    # Template for other functional groups
-    # "entity_id": {
-    #     "group_name": "group_name",
-    #     "strategy": "use_canonical",  # or "representative_sampling", "context_dependent"
-    #     "canonical_representative": "representative_id",
-    #     "description": "Brief description",
-    #     "biological_rationale": "Why these are functionally equivalent"
-    # }
 }
 
+# MODIFIED: Add stoichiometry columns to the schema
+enhanced_decomposed_uid_mapping_column_types = {
+    **decomposed_uid_mapping_column_types,
+    "stoichiometry": pd.Int64Dtype(),
+    "entity_stoichiometry": pd.Int64Dtype(),
+    "component_stoichiometry": pd.Int64Dtype(),
+}
 
 decomposed_uid_mapping = pd.DataFrame(
-    columns=decomposed_uid_mapping_column_types.keys()
-).astype(  # type: ignore
-    decomposed_uid_mapping_column_types
-)
+    columns=enhanced_decomposed_uid_mapping_column_types.keys()
+).astype(enhanced_decomposed_uid_mapping_column_types)
 
 reference_entity_dict: Dict[str, str] = {}
 
@@ -102,10 +98,15 @@ def apply_functional_equivalence_strategy(
 
 
 def get_broken_apart_ids(
-    broken_apart_members: list[set[str]], reactome_id: ReactomeID
+    broken_apart_members: list[set[str]], 
+    reactome_id: ReactomeID,
+    stoichiometry_map: Dict[str, int] = None  # NEW PARAMETER
 ) -> Set[UID]:
-    """Get broken apart IDs."""
+    """Get broken apart IDs with stoichiometry support."""
     global decomposed_uid_mapping
+
+    if stoichiometry_map is None:
+        stoichiometry_map = {}
 
     uids: Set[UID]
     if any(isinstance(member, set) for member in broken_apart_members):
@@ -125,7 +126,9 @@ def get_broken_apart_ids(
         iterproduct_components_as_sets = [
             set(map(str, item)) for item in iterproduct_components
         ]
-        uids = get_uids_for_iterproduct_components(iterproduct_components_as_sets, reactome_id)
+        uids = get_uids_for_iterproduct_components(
+            iterproduct_components_as_sets, reactome_id, stoichiometry_map
+        )
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
@@ -137,6 +140,9 @@ def get_broken_apart_ids(
                     decomposed_uid_mapping["uid"] == member, "component_id"
                 ].tolist()
                 for component_id in component_ids:
+                    # NEW: Add stoichiometry information
+                    stoichiometry = stoichiometry_map.get(component_id, 1)
+                    
                     row = {
                         "uid": uid,
                         "component_id": component_id,
@@ -146,18 +152,27 @@ def get_broken_apart_ids(
                         ),
                         "input_or_output_uid": member,
                         "input_or_output_reactome_id": None,
+                        "stoichiometry": stoichiometry,  # NEW
+                        "entity_stoichiometry": stoichiometry,  # NEW
+                        "component_stoichiometry": 1,  # NEW
                     }
                     rows.append(row)
             else:
+                # NEW: Add stoichiometry information
+                stoichiometry = stoichiometry_map.get(member, 1)
+                
                 row = {
                     "uid": uid,
                     "component_id": member,
                     "reactome_id": reactome_id,
                     "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(
-                        member  # Fixed: was using undefined 'component_id'
+                        member
                     ),
                     "input_or_output_uid": None,
                     "input_or_output_reactome_id": member,
+                    "stoichiometry": stoichiometry,  # NEW
+                    "entity_stoichiometry": stoichiometry,  # NEW
+                    "component_stoichiometry": 1,  # NEW
                 }
                 rows.append(row)
         uids = {uid}
@@ -168,14 +183,20 @@ def get_broken_apart_ids(
 
 
 def get_uids_for_iterproduct_components(
-    iterproduct_components: List[Set[ComponentID]], reactome_id: ReactomeID
+    iterproduct_components: List[Set[ComponentID]], 
+    reactome_id: ReactomeID,
+    stoichiometry_map: Dict[str, int] = None  # NEW PARAMETER
 ) -> Set[UID]:
-    """Get UID for iterproduct components."""
+    """Get UID for iterproduct components with stoichiometry support."""
     global decomposed_uid_mapping
+
+    if stoichiometry_map is None:
+        stoichiometry_map = {}
 
     uids: Set[UID] = set()
     for component in iterproduct_components:
         component_to_input_or_output: Dict[ComponentID, InputOutputID] = {}
+        component_stoichiometries: Dict[ComponentID, int] = {}  # NEW
         
         for item in component:
             if is_valid_uuid(item):
@@ -185,12 +206,17 @@ def get_uids_for_iterproduct_components(
                 for index, selected_row in selected_rows.iterrows():
                     component_id = selected_row["component_id"]
                     component_to_input_or_output[component_id] = item
+                    # NEW: Get stoichiometry from existing data
+                    component_stoichiometries[component_id] = selected_row.get("stoichiometry", 1)
             else:
                 component_to_input_or_output[item] = item
+                # NEW: Get stoichiometry from the map
+                component_stoichiometries[item] = stoichiometry_map.get(item, 1)
 
-        uid = hashlib.sha256(
-            str(sorted(component_to_input_or_output.values())).encode()
-        ).hexdigest()
+        # MODIFIED: Include stoichiometry in UID calculation
+        uid_data = [(comp, io, component_stoichiometries.get(comp, 1)) 
+                   for comp, io in sorted(component_to_input_or_output.items())]
+        uid = hashlib.sha256(str(uid_data).encode()).hexdigest()
 
         rows: List[DataFrameRow] = []
         for component_id, input_or_output_id in component_to_input_or_output.items():
@@ -200,6 +226,10 @@ def get_uids_for_iterproduct_components(
             input_or_output_reactome_id = (
                 input_or_output_id if not is_valid_uuid(input_or_output_id) else None
             )
+            
+            # NEW: Get stoichiometry information
+            stoichiometry = component_stoichiometries.get(component_id, 1)
+            
             row: DataFrameRow = {
                 "uid": uid,
                 "component_id": component_id,
@@ -209,6 +239,9 @@ def get_uids_for_iterproduct_components(
                 ),
                 "input_or_output_uid": input_or_output_uid,
                 "input_or_output_reactome_id": input_or_output_reactome_id,
+                "stoichiometry": stoichiometry,  # NEW
+                "entity_stoichiometry": stoichiometry,  # NEW
+                "component_stoichiometry": stoichiometry,  # NEW
             }
             rows.append(row)
 
@@ -235,7 +268,7 @@ def break_apart_entity(entity_id: int) -> Set[str]:
 
 
 def break_apart_entity_standard(entity_id: int) -> Set[str]:
-    """Standard break_apart_entity logic."""
+    """Standard break_apart_entity logic with stoichiometry support."""
     global decomposed_uid_mapping
 
     labels = get_labels(entity_id)
@@ -274,13 +307,27 @@ def break_apart_entity_standard(entity_id: int) -> Set[str]:
 
     elif "Complex" in labels:
         broken_apart_members: List[Set[str]] = []
-        member_ids = get_complex_components(entity_id)
+        
+        # MODIFIED: Get components with stoichiometry
+        component_data = get_complex_components_with_stoichiometry(entity_id)
+        print(f"Complex {entity_id} component data: {component_data}")
+        
+        component_stoichiometry = {}
+        member_ids = []
+        
+        for component_info in component_data:
+            component_id = component_info['component_id']
+            stoichiometry = component_info['stoichiometry']
+            component_stoichiometry[str(component_id)] = stoichiometry
+            member_ids.append(component_id)
 
         for member_id in member_ids:
             members = break_apart_entity(member_id)
             broken_apart_members.append(members)
 
-        return get_broken_apart_ids(broken_apart_members, str(entity_id))
+        return get_broken_apart_ids(
+            broken_apart_members, str(entity_id), component_stoichiometry
+        )
 
     elif any(
         entity_label in labels
@@ -302,25 +349,41 @@ def break_apart_entity_standard(entity_id: int) -> Set[str]:
 
 
 def decompose_by_reactions(reaction_ids: List[int]) -> List[Any]:
-    """Decompose by reactions."""
+    """Decompose by reactions with stoichiometry support."""
     global decomposed_uid_mapping
 
-    logger.debug("Decomposing reactions")
+    logger.debug("Decomposing reactions with stoichiometry")
 
     all_best_matches = []
     for reaction_id in reaction_ids:
-        input_ids = get_reaction_input_output_ids(reaction_id, "input")
+        print(f"Processing reaction {reaction_id}")
+        
+        # MODIFIED: Get inputs with stoichiometry
+        input_data = get_reaction_input_output_ids_with_stoichiometry(reaction_id, "input")
+        input_ids = [item['entity_id'] for item in input_data]
+        input_stoichiometry = {str(item['entity_id']): item['stoichiometry'] for item in input_data}
+        
+        print(f"Reaction {reaction_id} inputs: {input_ids}")
+        print(f"Input stoichiometry: {input_stoichiometry}")
+        
         broken_apart_input_id = [break_apart_entity(input_id) for input_id in input_ids]
         input_combinations = get_broken_apart_ids(
-            broken_apart_input_id, str(reaction_id)
+            broken_apart_input_id, str(reaction_id), input_stoichiometry
         )
 
-        output_ids = get_reaction_input_output_ids(reaction_id, "output")
+        # MODIFIED: Get outputs with stoichiometry
+        output_data = get_reaction_input_output_ids_with_stoichiometry(reaction_id, "output")
+        output_ids = [item['entity_id'] for item in output_data]
+        output_stoichiometry = {str(item['entity_id']): item['stoichiometry'] for item in output_data}
+        
+        print(f"Reaction {reaction_id} outputs: {output_ids}")
+        print(f"Output stoichiometry: {output_stoichiometry}")
+        
         broken_apart_output_id = [
             break_apart_entity(output_id) for output_id in output_ids
         ]
         output_combinations = get_broken_apart_ids(
-            broken_apart_output_id, str(reaction_id)
+            broken_apart_output_id, str(reaction_id), output_stoichiometry
         )
 
         [best_matches, _] = find_best_reaction_match(
@@ -335,13 +398,13 @@ def decompose_by_reactions(reaction_ids: List[int]) -> List[Any]:
 def get_decomposed_uid_mapping(
     pathway_id: str, reaction_connections: pd.DataFrame
 ) -> Tuple[pd.DataFrame, List[Any]]:
-    """Get decomposed UID mapping."""
+    """Get decomposed UID mapping with stoichiometry support."""
     global decomposed_uid_mapping
 
-    # Fix: Properly reinitialize instead of dropping rows
+    # MODIFIED: Use enhanced column types
     decomposed_uid_mapping = pd.DataFrame(
-        columns=decomposed_uid_mapping_column_types.keys()
-    ).astype(decomposed_uid_mapping_column_types)
+        columns=enhanced_decomposed_uid_mapping_column_types.keys()
+    ).astype(enhanced_decomposed_uid_mapping_column_types)
 
     reaction_ids = pd.unique(
         reaction_connections[
@@ -351,6 +414,14 @@ def get_decomposed_uid_mapping(
 
     reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
     reaction_ids = reaction_ids.astype(int).tolist()  # converting to integer
+    
+    print(f"Processing {len(reaction_ids)} reactions for pathway {pathway_id}")
+    
     best_matches = decompose_by_reactions(list(reaction_ids))
+    
+    print(f"Final decomposed_uid_mapping shape: {decomposed_uid_mapping.shape}")
+    print(f"Stoichiometry column summary:")
+    if 'stoichiometry' in decomposed_uid_mapping.columns:
+        print(decomposed_uid_mapping['stoichiometry'].value_counts())
 
     return (decomposed_uid_mapping, best_matches)

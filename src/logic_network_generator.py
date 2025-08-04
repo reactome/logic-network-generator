@@ -122,7 +122,7 @@ def _execute_regulator_query(
 
 
 def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:
-    """Get catalysts for reactions using Neo4j graph queries."""
+    """Get catalysts for reactions with stoichiometry using Neo4j graph queries."""
     catalyst_list = []
     
     for _, row in reaction_id_map.iterrows():
@@ -130,8 +130,9 @@ def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> Data
         reaction_uuid = row["uid"]
         
         query = (
-            f"MATCH (reaction:ReactionLikeEvent{{dbId: {reaction_id}}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
-            f"RETURN reaction.dbId AS reaction_id, catalyst.dbId AS catalyst_id, 'catalyst' AS edge_type"
+            f"MATCH (reaction:ReactionLikeEvent{{dbId: {reaction_id}}})-[r:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
+            f"RETURN reaction.dbId AS reaction_id, catalyst.dbId AS catalyst_id, "
+            f"COALESCE(r.stoichiometry, 1) AS stoichiometry, 'catalyst' AS edge_type"
         )
         
         try:
@@ -147,7 +148,7 @@ def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> Data
     
     return pd.DataFrame(
         catalyst_list,
-        columns=["reaction_id", "catalyst_id", "edge_type", "uuid", "reaction_uuid"],
+        columns=["reaction_id", "catalyst_id", "stoichiometry", "edge_type", "uuid", "reaction_uuid"],
     )
 
 
@@ -283,13 +284,18 @@ def extract_inputs_and_outputs(
     reactome_id_to_uuid: Dict[str, str],
     pathway_logic_network_data: List[Dict[str, Any]],
 ) -> None:
-    """Extract inputs and outputs for reactions and add them to the pathway network."""
+    """Extract inputs and outputs with stoichiometry support."""
     
     for reaction_uid in reaction_uids:
-        # Extract input information
+        # Extract input information WITH stoichiometry
         input_hash = get_hash_for_reaction(reaction_id_map, reaction_uid, "input_hash")
         input_uid_values, input_reactome_id_values = extract_uid_and_reactome_values(
             decomposed_uid_mapping, input_hash
+        )
+        
+        # NEW: Extract stoichiometry for inputs
+        input_stoichiometry = extract_stoichiometry_for_entity(
+            decomposed_uid_mapping, input_hash, input_reactome_id_values
         )
         
         # Process preceding reactions (outputs)
@@ -298,10 +304,15 @@ def extract_inputs_and_outputs(
         ]["preceding_uid"].tolist()
         
         for preceding_uid in preceding_uids:
-            # Extract output information
+            # Extract output information WITH stoichiometry
             output_hash = get_hash_for_reaction(reaction_id_map, preceding_uid, "output_hash")
             output_uid_values, output_reactome_id_values = extract_uid_and_reactome_values(
                 decomposed_uid_mapping, output_hash
+            )
+            
+            # NEW: Extract stoichiometry for outputs
+            output_stoichiometry = extract_stoichiometry_for_entity(
+                decomposed_uid_mapping, output_hash, output_reactome_id_values
             )
             
             # Assign UUIDs
@@ -311,9 +322,11 @@ def extract_inputs_and_outputs(
             # Determine edge properties
             and_or, edge_type = determine_edge_properties(input_uid_values)
             
-            # Add connections to pathway network
-            add_pathway_connections(
-                input_uuids, output_uuids, and_or, edge_type, pathway_logic_network_data
+            # Add connections with stoichiometry
+            add_pathway_connections_with_stoichiometry(
+                input_uuids, output_uuids, 
+                input_stoichiometry, output_stoichiometry,
+                and_or, edge_type, pathway_logic_network_data
             )
 
 
@@ -326,24 +339,28 @@ def append_regulators(
     and_or: str,
     edge_type: str,
 ) -> None:
-    """Append regulatory relationships to the pathway network."""
+    """Append regulatory relationships with stoichiometry."""
     
     regulator_configs = [
         (catalyst_map, "pos", "catalyst"),
-        (negative_regulator_map, "neg", "regulator"),
+        (negative_regulator_map, "neg", "regulator"),  
         (positive_regulator_map, "pos", "regulator"),
     ]
     
     for map_df, pos_neg, edge_type_override in regulator_configs:
         for _, row in map_df.iterrows():
+            stoichiometry = row.get("stoichiometry", 1)  # Get stoichiometry if available
+            
             pathway_logic_network_data.append({
                 "source_id": row["uuid"],
                 "target_id": row["reaction_uuid"],
                 "pos_neg": pos_neg,
                 "and_or": and_or,
                 "edge_type": edge_type_override,
+                "source_stoichiometry": stoichiometry,
+                "target_stoichiometry": 1,  # Reactions are typically 1:1 with regulators
+                "stoichiometry_ratio": 1.0,
             })
-
 
 def _calculate_reaction_statistics(reaction_connections: pd.DataFrame) -> None:
     """Calculate and print statistics about reactions without preceding events."""
@@ -375,21 +392,75 @@ def _print_regulator_statistics(
     )
 
 
+def extract_stoichiometry_for_entity(
+    decomposed_uid_mapping: pd.DataFrame, 
+    hash_value: str, 
+    entity_reactome_ids: List[str]
+) -> Dict[str, int]:
+    """Extract stoichiometry information for entities."""
+    stoichiometry_map = {}
+    
+    for reactome_id in entity_reactome_ids:
+        # Get stoichiometry from decomposed mapping
+        filtered_rows = decomposed_uid_mapping[
+            (decomposed_uid_mapping["uid"] == hash_value) & 
+            (decomposed_uid_mapping["input_or_output_reactome_id"] == reactome_id)
+        ]
+        
+        if not filtered_rows.empty:
+            stoichiometry = filtered_rows["stoichiometry"].iloc[0]
+            stoichiometry_map[reactome_id] = stoichiometry if pd.notna(stoichiometry) else 1
+        else:
+            stoichiometry_map[reactome_id] = 1
+    
+    return stoichiometry_map
+
+def add_pathway_connections_with_stoichiometry(
+    input_uuids: List[str], 
+    output_uuids: List[str], 
+    input_stoichiometry: Dict[str, int],
+    output_stoichiometry: Dict[str, int],
+    and_or: str, 
+    edge_type: str,
+    pathway_logic_network_data: List[Dict[str, Any]]
+) -> None:
+    """Add connections with stoichiometry information."""
+    
+    for input_uuid in input_uuids:
+        for output_uuid in output_uuids:
+            # Calculate stoichiometry ratio
+            input_stoich = input_stoichiometry.get(input_uuid, 1)
+            output_stoich = output_stoichiometry.get(output_uuid, 1)
+            stoich_ratio = output_stoich / input_stoich if input_stoich > 0 else 1.0
+            
+            pathway_logic_network_data.append({
+                "source_id": input_uuid,
+                "target_id": output_uuid,
+                "pos_neg": "pos",
+                "and_or": and_or,
+                "edge_type": edge_type,
+                "source_stoichiometry": input_stoich,
+                "target_stoichiometry": output_stoich,
+                "stoichiometry_ratio": stoich_ratio,
+            })
+
 def create_pathway_logic_network(
     decomposed_uid_mapping: pd.DataFrame,
     reaction_connections: pd.DataFrame,
     best_matches: Any,
 ) -> pd.DataFrame:
-    """Create a pathway logic network from decomposed UID mappings and reaction connections."""
-    logger.debug("Adding reaction pairs to pathway_logic_network")
-
-    # Initialize data structures
+    """Create a pathway logic network with stoichiometry support."""
+    
+    # Enhanced column structure
     columns = {
         "source_id": pd.Series(dtype="Int64"),
         "target_id": pd.Series(dtype="Int64"),
         "pos_neg": pd.Series(dtype="str"),
         "and_or": pd.Series(dtype="str"),
         "edge_type": pd.Series(dtype="str"),
+        "source_stoichiometry": pd.Series(dtype="Int64"),  # NEW
+        "target_stoichiometry": pd.Series(dtype="Int64"),  # NEW
+        "stoichiometry_ratio": pd.Series(dtype="float"),   # NEW
     }
     pathway_logic_network_data = []
     
