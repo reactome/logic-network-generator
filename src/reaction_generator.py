@@ -187,7 +187,7 @@ def get_uids_for_iterproduct_components(
     reactome_id: ReactomeID,
     stoichiometry_map: Dict[str, int] = None,  # NEW PARAMETER
 ) -> Set[UID]:
-    """Get UID for iterproduct components with stoichiometry support."""
+    """Get UID for iterproduct components."""
     global decomposed_uid_mapping
 
     if stoichiometry_map is None:
@@ -434,7 +434,7 @@ def get_decomposed_uid_mapping(
     best_matches = decompose_by_reactions(list(reaction_ids))
 
     print(f"Final decomposed_uid_mapping shape: {decomposed_uid_mapping.shape}")
-    print(f"Stoichiometry column summary:")
+    print("Stoichiometry column summary:")
     if "stoichiometry" in decomposed_uid_mapping.columns:
         print(decomposed_uid_mapping["stoichiometry"].value_counts())
 
