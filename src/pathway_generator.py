@@ -42,9 +42,7 @@ def generate_pathway_file(
         [decomposed_uid_mapping, best_matches_list] = get_decomposed_uid_mapping(
             pathway_id, reaction_connections
         )
-        best_matches = pd.DataFrame(
-            best_matches_list, columns=["incoming", "outgoing"]
-        )
+        best_matches = pd.DataFrame(best_matches_list, columns=["incoming", "outgoing"])
         decomposed_uid_mapping.to_csv(decomposed_uid_mapping_file, index=False)
         best_matches.to_csv(best_matches_file, index=False)
 

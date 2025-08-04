@@ -79,8 +79,11 @@ def get_complex_components_with_stoichiometry(entity_id: int) -> List[Dict[str, 
         print(f"Complex {entity_id} components with stoichiometry: {result}")
         return result
     except Exception:
-        logger.error("Error in get_complex_components_with_stoichiometry", exc_info=True)
+        logger.error(
+            "Error in get_complex_components_with_stoichiometry", exc_info=True
+        )
         raise
+
 
 def get_set_members(entity_id: int) -> Set[int]:
     query_get_members_template: str = """
@@ -113,7 +116,9 @@ def get_reactions(pathway_id: int, taxon_id: str) -> List[int]:
         raise
 
 
-def get_reaction_input_output_ids_with_stoichiometry(reaction_id: int, input_or_output: str) -> List[Dict[str, Any]]:
+def get_reaction_input_output_ids_with_stoichiometry(
+    reaction_id: int, input_or_output: str
+) -> List[Dict[str, Any]]:
     query_template: str = """
        MATCH (reaction)-[r:%s]->(io)
            WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) AND reaction.dbId=%s
@@ -128,8 +133,11 @@ def get_reaction_input_output_ids_with_stoichiometry(reaction_id: int, input_or_
         print(f"Reaction {reaction_id} {input_or_output}s with stoichiometry: {result}")
         return result
     except Exception:
-        logger.error("Error in get_reaction_input_output_ids_with_stoichiometry", exc_info=True)
+        logger.error(
+            "Error in get_reaction_input_output_ids_with_stoichiometry", exc_info=True
+        )
         raise
+
 
 def get_reference_entity_id(entity_id: int) -> Union[str, None]:
     query_template: str = """
