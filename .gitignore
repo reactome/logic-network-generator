@@ -9,3 +9,6 @@ __pycache__/
 
 #output folder of results
 output
+
+#vim files
+*.swp
