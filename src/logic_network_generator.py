@@ -85,21 +85,24 @@ def create_uid_reaction_connections(
                 "preceding_uid": preceding_uid, 
                 "following_uid": following_uid
             })
-    
-    return pd.DataFrame(uid_reaction_connections_data)
+
+    uid_reaction_connections = pd.DataFrame(
+        uid_reaction_connections_data, columns=["preceding_uid", "following_uid"]
+    )
+    return uid_reaction_connections
 
 
 def _execute_regulator_query(
-    graph: Graph, 
-    query: str, 
-    reaction_uuid: str, 
+    graph: Graph,
+    query: str,
+    reaction_uuid: str,
     function_name: str
 ) -> List[Dict[str, Any]]:
     """Execute a regulator query and return processed results."""
     try:
         result = graph.run(query)
         regulators = []
-        
+
         for record in result:
             regulator_uuid = str(uuid.uuid4())
             regulators.append({
@@ -109,9 +112,9 @@ def _execute_regulator_query(
                 "uuid": regulator_uuid,
                 "reaction_uuid": reaction_uuid,
             })
-        
+
         return regulators
-    
+
     except Exception as e:
         logger.error(f"Error in {function_name}", exc_info=True)
         raise e
