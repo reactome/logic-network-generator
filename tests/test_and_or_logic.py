@@ -6,7 +6,6 @@ User clarification:
 - Single source → physical entity: AND relationship (R1→A (AND) if R1 is only source)
 """
 
-import pytest
 import pandas as pd
 from typing import Dict, List, Any
 import sys

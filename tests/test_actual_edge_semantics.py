@@ -1,6 +1,5 @@
 """Test to understand what edges actually represent by examining real data."""
 
-import pytest
 import pandas as pd
 
 
@@ -19,13 +18,13 @@ class TestActualEdgeSemantics:
         # Find non-self-loop edges
         non_self_loops = main_edges[main_edges['source_id'] != main_edges['target_id']]
 
-        print(f"\n=== Real Pathway Data Analysis ===")
+        print("\n=== Real Pathway Data Analysis ===")
         print(f"Total main pathway edges: {len(main_edges)}")
         print(f"Self-loop edges: {len(main_edges) - len(non_self_loops)}")
         print(f"Non-self-loop edges: {len(non_self_loops)}")
 
         if len(non_self_loops) > 0:
-            print(f"\nSample non-self-loop edges:")
+            print("\nSample non-self-loop edges:")
             for idx, edge in non_self_loops.head(5).iterrows():
                 print(f"  {edge['source_id']} → {edge['target_id']}")
                 print(f"    AND/OR: {edge['and_or']}, Edge Type: {edge['edge_type']}")
@@ -59,7 +58,7 @@ class TestActualEdgeSemantics:
         targets_only = set(non_self_loops['target_id'].unique()) - set(non_self_loops['source_id'].unique())
         both = set(non_self_loops['source_id'].unique()) & set(non_self_loops['target_id'].unique())
 
-        print(f"\n=== Node Role Analysis ===")
+        print("\n=== Node Role Analysis ===")
         print(f"Physical entities that are ONLY sources: {len(sources_only)}")
         print(f"Physical entities that are ONLY targets: {len(targets_only)}")
         print(f"Physical entities that are BOTH: {len(both)}")

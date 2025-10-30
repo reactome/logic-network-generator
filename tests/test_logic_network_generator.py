@@ -1,7 +1,5 @@
 """Tests for logic_network_generator module."""
 
-import pytest
-import pandas as pd
 from typing import Dict, List, Any
 
 
@@ -156,7 +154,7 @@ class Test_add_pathway_connections:
 
         # Document what we observe
         print(f"\nObserved edge: {edge['source_id']} → {edge['target_id']}")
-        print(f"If correct flow: preceding-output-molecule → current-input-molecule")
+        print("If correct flow: preceding-output-molecule → current-input-molecule")
         print(f"Current code creates: {edge['source_id']} → {edge['target_id']}")
 
         # This test will FAIL if edges are backwards

@@ -6,7 +6,6 @@ Verify that edges correctly represent biochemical transformations:
 - Transformations flow in the correct direction
 """
 
-import pytest
 import pandas as pd
 from typing import Dict, List, Any
 import sys

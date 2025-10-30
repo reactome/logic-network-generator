@@ -11,7 +11,6 @@ Expected edges in the logic network:
 This represents forward flow: root input → intermediate → terminal output
 """
 
-import pytest
 import pandas as pd
 from typing import Dict, List, Any
 import sys
@@ -126,7 +125,7 @@ class TestEdgeDirectionIntegration:
         molecule_x_uuid = reactome_id_to_uuid.get(1001) or reactome_id_to_uuid.get(1001.0)
         assert molecule_x_uuid is not None, "MoleculeX should have been assigned a UUID"
 
-        print(f"\n=== Test Results ===")
+        print("\n=== Test Results ===")
         print(f"MoleculeX UUID: {molecule_x_uuid}")
         print(f"Edge created: {edge['source_id']} → {edge['target_id']}")
         print(f"AND/OR: {edge['and_or']}, Edge Type: {edge['edge_type']}")
@@ -242,7 +241,7 @@ class TestEdgeDirectionIntegration:
             pathway_logic_network_data=pathway_logic_network_data,
         )
 
-        print(f"\n=== Test Results for Distinct Molecules ===")
+        print("\n=== Test Results for Distinct Molecules ===")
         print(f"Number of edges created: {len(pathway_logic_network_data)}")
         print(f"Reactome ID to UUID mapping: {reactome_id_to_uuid}")
 

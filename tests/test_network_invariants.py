@@ -8,7 +8,6 @@ These tests verify structural properties of the generated networks:
 - Edge direction represents transformations
 """
 
-import pytest
 import pandas as pd
 
 

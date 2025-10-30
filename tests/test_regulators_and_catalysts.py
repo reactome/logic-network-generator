@@ -12,7 +12,7 @@ import pytest
 import pandas as pd
 from typing import Dict, List, Any
 import sys
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 sys.path.insert(0, '/home/awright/gitroot/logic-network-generator')
 
@@ -275,7 +275,7 @@ class TestRealNetworkRegulators:
             negative_regulators = regulator_edges[regulator_edges['pos_neg'] == 'neg']
             positive_regulators = regulator_edges[regulator_edges['pos_neg'] == 'pos']
 
-            print(f"\nRegulator statistics:")
+            print("\nRegulator statistics:")
             print(f"  Total regulators: {len(regulator_edges)}")
             print(f"  Negative regulators: {len(negative_regulators)}")
             print(f"  Positive regulators: {len(positive_regulators)}")
@@ -301,6 +301,6 @@ class TestRealNetworkRegulators:
             assert len(negative_catalysts) == 0, \
                 f"Found {len(negative_catalysts)} negative catalysts - catalysts should always be positive"
 
-            print(f"\nCatalyst statistics:")
+            print("\nCatalyst statistics:")
             print(f"  Total catalysts: {len(catalyst_edges)}")
-            print(f"  All catalysts are positive ✓")
+            print("  All catalysts are positive ✓")
