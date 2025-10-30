@@ -4,6 +4,77 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Improved - Database ID to Name Mapping Script (2025-01-29)
+
+**Summary**: Enhanced the `create-db-id-name-mapping-file.py` script to production quality with comprehensive error handling, logging, and flexible options.
+
+#### Changes Made
+
+**1. Modernized Script Structure** (`bin/create-db-id-name-mapping-file.py`)
+
+**Added Features**:
+- Comprehensive command-line argument parsing with argparse
+- Optional authentication (no auth by default, supports --username/--password)
+- Custom output file path via --output flag
+- Species filtering (--all-species flag to include all organisms)
+- Debug and verbose logging modes
+- Help text with usage examples
+
+**Enhanced Error Handling**:
+- Connection validation with informative error messages
+- Query result validation
+- File I/O error handling with troubleshooting hints
+- Graceful error exits with appropriate status codes
+
+**Improved Logging**:
+- Structured logging using project logger
+- Progress reporting during long-running queries
+- Statistics summary (entity counts, node types)
+- Connection status messages
+
+**Authentication**:
+- No authentication by default (for standard Reactome Docker instances)
+- Optional --username and --password flags when needed
+- Clear logging of authentication status
+
+**Before (70 lines)**:
+```python
+uri = "bolt://localhost:7687"
+graph = Graph(uri, auth=('neo4j', 'test'))
+results = graph.run(query).data()
+df = pd.DataFrame(results)
+df.to_csv("db_id_to_name_mapping.tsv", sep="\t", index=False)
+```
+
+**After (345 lines)**:
+```python
+def parse_arguments() -> argparse.Namespace:
+    # Comprehensive CLI with examples and help
+
+def fetch_mapping_data(graph: Graph, all_species: bool) -> pd.DataFrame:
+    # Query execution with validation and error handling
+
+def save_mapping_file(df: pd.DataFrame, output_path: str) -> None:
+    # File saving with statistics and error handling
+
+def main() -> None:
+    # Orchestrates with proper error handling and logging
+```
+
+**Benefits**:
+- ✅ **Production ready**: Comprehensive error handling and validation
+- ✅ **Flexible**: Configurable via command-line arguments
+- ✅ **Documented**: Help text with examples
+- ✅ **Type safe**: Full type hints throughout
+- ✅ **Debuggable**: Verbose logging and informative error messages
+- ✅ **Compatible**: Works with or without authentication
+
+**Files Modified**:
+- `bin/create-db-id-name-mapping-file.py` (70 → 345 lines)
+- `README.md` (enhanced documentation with examples)
+
+---
+
 ### Added - Comprehensive Regulator and Catalyst Tests (2025-01-29)
 
 **Summary**: Created thorough test coverage for regulatory relationships (negative regulators, positive regulators, and catalysts).

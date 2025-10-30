@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "mp-biopath-pathway-generator"
+name = "logic-network-generator"
 version = "0.1.0"
 description = "Generator of pairwise interaction files from Reactome Graph database"
 authors = ["Adam Wright <adam.wright@wormbase.org>"]

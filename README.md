@@ -61,9 +61,37 @@ The pathway list file should be tab-separated with columns: `id` and `pathway_na
 
 ### Create Database ID to Name Mapping
 
+The mapping file converts Reactome database IDs to human-readable names and types. This is useful for downstream analysis and visualization.
+
+**Basic usage**:
 ```bash
 poetry run python bin/create-db-id-name-mapping-file.py
 ```
+
+**Output**: Creates `db_id_to_name_mapping.tsv` with columns:
+- `database_identifier` - Reactome database ID
+- `node_type` - Type (protein, complex, small-molecule, reaction-like-event, etc.)
+- `display_name` - Human-readable display name
+- `reference_entity_name` - Reference entity name
+- `reference_entity_identifier` - External database reference (e.g., UniProt:P12345)
+- `instance_class` - Reactome schema class
+
+**Options**:
+```bash
+# Specify custom output file
+poetry run python bin/create-db-id-name-mapping-file.py --output my_mapping.tsv
+
+# Include all species (not just human)
+poetry run python bin/create-db-id-name-mapping-file.py --all-species
+
+# Use authentication if required
+poetry run python bin/create-db-id-name-mapping-file.py --username neo4j --password mypassword
+
+# Enable verbose logging
+poetry run python bin/create-db-id-name-mapping-file.py --verbose
+```
+
+**Note**: By default, the script extracts only human entities (taxId 9606). Use `--all-species` to include all organisms.
 
 ## Examples
 
