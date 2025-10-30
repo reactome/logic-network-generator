@@ -8,7 +8,16 @@ These tests verify structural properties of the generated networks:
 - Edge direction represents transformations
 """
 
+import os
+import pytest
 import pandas as pd
+
+
+# Skip all tests in this module if the test network file doesn't exist
+pytestmark = pytest.mark.skipif(
+    not os.path.exists('pathway_logic_network_69620.csv'),
+    reason="Test network file pathway_logic_network_69620.csv not found"
+)
 
 
 class TestNetworkInvariants:

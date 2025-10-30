@@ -1,6 +1,15 @@
 """Test to understand what edges actually represent by examining real data."""
 
+import os
+import pytest
 import pandas as pd
+
+
+# Skip all tests in this module if the test network file doesn't exist
+pytestmark = pytest.mark.skipif(
+    not os.path.exists('pathway_logic_network_69620.csv'),
+    reason="Test network file pathway_logic_network_69620.csv not found"
+)
 
 
 class TestActualEdgeSemantics:
