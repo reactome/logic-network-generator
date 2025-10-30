@@ -268,7 +268,7 @@ def save_mapping_file(df: pd.DataFrame, output_path: str) -> None:
     logger.info(f"  Total entities: {len(df)}")
 
     node_type_counts = df["node_type"].value_counts()
-    logger.info(f"  Node types:")
+    logger.info("  Node types:")
     for node_type, count in node_type_counts.items():
         logger.info(f"    - {node_type}: {count}")
 
