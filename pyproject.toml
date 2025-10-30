@@ -24,6 +24,8 @@ pandas-stubs = "^2.1.4.231227"
 isort = "^5.10.3"
 ruff = "^0.3.4"
 pre-commit = "^3.7.0"
+pytest = "^8.4.2"
+pytest-cov = "^7.0.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -35,4 +37,31 @@ plugins = ["flake8-mypy"]
 
 [tool.black]
 line-length = 88  # Adjust line length as needed
-target-version = ['py39'] 
+target-version = ['py39']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--strict-markers",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+] 

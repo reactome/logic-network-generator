@@ -40,7 +40,15 @@ decomposed_uid_mapping = pd.DataFrame(
 reference_entity_dict: Dict[str, str] = {}
 
 
-def get_component_id_or_reference_entity_id(reactome_id):
+def get_component_id_or_reference_entity_id(reactome_id: int) -> Union[str, int]:
+    """Get the reference entity ID for a Reactome ID, with caching.
+
+    Args:
+        reactome_id: Reactome database ID for the entity
+
+    Returns:
+        Reference entity ID (string) if it exists, otherwise the reactome_id (int)
+    """
     global reference_entity_dict
 
     if reactome_id in reference_entity_dict:

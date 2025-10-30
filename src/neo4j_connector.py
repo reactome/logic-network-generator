@@ -10,6 +10,18 @@ graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
 
 def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
+    """Get reaction connections for a pathway from Neo4j.
+
+    Args:
+        pathway_id: Reactome pathway database ID (e.g., "69620")
+
+    Returns:
+        DataFrame with preceding_reaction_id, following_reaction_id, and event_status columns
+
+    Raises:
+        ConnectionError: If Neo4j database is not accessible
+        ValueError: If pathway_id is invalid or pathway not found
+    """
     query: str = (
         """
         MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
@@ -24,13 +36,29 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     )
 
     try:
-        df: pd.DataFrame = pd.DataFrame(graph.run(query).data())
+        result = graph.run(query).data()
+        df: pd.DataFrame = pd.DataFrame(result)
+
+        if df.empty:
+            raise ValueError(
+                f"No reactions found for pathway ID: {pathway_id}. "
+                f"Verify the pathway exists in Reactome database and Neo4j is running."
+            )
+
         df["preceding_reaction_id"] = df["preceding_reaction_id"].astype("Int64")
         df["following_reaction_id"] = df["following_reaction_id"].astype("Int64")
+
+        logger.info(f"Found {len(df)} reaction connections for pathway {pathway_id}")
         return df
-    except Exception:
-        logger.error("Error in get_reaction_connections", exc_info=True)
+
+    except ValueError:
         raise
+    except Exception as e:
+        logger.error(f"Error querying Neo4j for pathway {pathway_id}", exc_info=True)
+        raise ConnectionError(
+            f"Failed to connect to Neo4j database at {uri}. "
+            f"Ensure Neo4j is running and accessible. Original error: {str(e)}"
+        ) from e
 
 
 def get_all_pathways() -> List[Dict[str, Any]]:
