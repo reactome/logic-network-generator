@@ -1,14 +1,38 @@
 debug_log.txt
 
-# Ignore Python bytecode files
+# Python bytecode files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.Python
+*.egg-info/
 
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.coverage
 
-#output folder of results
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+
+# Output folder of results
 output
 
-#vim files
-*.swp
+# Generated data files
+db_id_to_name_mapping.tsv
+pathway_logic_network_*.csv
+reaction_connections_*.csv
+decomposed_uid_mapping_*.csv
+best_matches_*.csv
