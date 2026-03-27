@@ -1,0 +1,33 @@
+         EntitySet         │ Members │ Reactions │ Factor │             Why it explodes              │                                                                               
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤                                                                               
+  │ Ub [cytosol]              │ 14      │ 332       │ 4,648  │ Already skipped                          │                                                                               
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤                                                                               
+  │ Ub [nucleoplasm]          │ 14      │ 125       │ 1,750  │ Already skipped                          │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤                                                                               
+  │ Histone H2B [nucleoplasm] │ 14      │ 165       │ 2,310  │ Same protein from diff genes (like Ub)   │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤                                                                               
+  │ G-protein gamma           │ 12      │ 75        │ 900    │ Subunit family                           │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ Ig Lambda Light Chain V   │ 37      │ 24        │ 888    │ Immunoglobulin variants                  │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ TP53 mutants              │ 1,301   │ 1         │ 1,301  │ Loss-of-function variants of one protein │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ KMT2D LOF variants        │ 564     │ ~1        │ 564    │ Loss-of-function variants                │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ Olfactory Receptors       │ 407     │ ~1        │ 407    │ Killed Gene expression                   │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ KRAB-ZNF                  │ 334     │ ~1        │ 334    │ Killed Gene expression                   │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ RB1 mutants               │ 369     │ ~1        │ 369    │ Loss-of-function variants                │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ BRCA2 mutants             │ 269     │ ~1        │ 269    │ Loss-of-function variants                │
+  ├───────────────────────────┼─────────┼───────────┼────────┼──────────────────────────────────────────┤
+  │ BRCA1 mutants             │ 139     │ ~1        │ 139    │ Loss-of-function variants                │
+  └───────────────────────────┴─────────┴───────────┴────────┴──────────────────────────────────────────┘
+
+  Rather than hardcoding every ID, I'd propose a member count threshold - any EntitySet above N members gets kept as a single entity. This catches:
+
+  - Disease mutant mega-sets (100-1,300 members) - all LOF variants of the same protein, no insight from decomposing
+  - Olfactory receptor families (400+ members)
+  - KRAB-ZNF (334 members) - the one that OOM'd Gene expression
+

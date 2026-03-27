@@ -2,7 +2,7 @@ import hashlib
 import itertools
 import uuid
 import warnings
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 
@@ -10,12 +10,13 @@ from src.argument_parser import logger
 from src.best_reaction_match import find_best_reaction_match
 from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.neo4j_connector import (
-    contains_reference_gene_product_molecule_or_isoform,
+    clear_prefetch_cache,
     get_complex_components,
     get_labels,
     get_reaction_input_output_ids,
     get_reference_entity_id,
     get_set_members,
+    prefetch_entity_data,
 )
 
 warnings.filterwarnings(
@@ -39,15 +40,35 @@ decomposed_uid_mapping = pd.DataFrame(
 
 reference_entity_dict: Dict[str, str] = {}
 
+# Cache for complex EntitySet checking to avoid repeated database queries
+_complex_contains_set_cache: Dict[str, bool] = {}
 
-def get_component_id_or_reference_entity_id(reactome_id: int) -> Union[str, int]:
-    """Get the reference entity ID for a Reactome ID, with caching.
+# Stoichiometry tracking: maps entity_id → {returned_uid_or_id: stoichiometry}
+# Populated during break_apart_entity for Complex decomposition,
+# consumed by get_broken_apart_ids to set per-row stoichiometry.
+_direct_component_stoichiometry: Dict[str, Dict[str, int]] = {}
+
+# Skip ubiquitin EntitySets - all members (UBB, UBC, RPS27A, UBA52)
+# encode the same 76-amino-acid protein, so decomposing adds no
+# biological insight and causes combinatorial explosion.
+_UBIQUITIN_ENTITY_SET_IDS = {
+    "R-HSA-68524",    # Ub [nucleoplasm]
+    "R-HSA-113595",   # Ub [cytosol]
+    "R-HSA-8943136",  # Ub [endoplasmic reticulum membrane]
+    "R-HSA-9660032",  # Ub [late endosome lumen]
+    "R-HSA-9660007",  # Ub [lysosomal lumen]
+    "R-HSA-9834963",  # Ub [mitochondrial outer membrane]
+}
+
+
+def get_component_id_or_reference_entity_id(reactome_id: str) -> str:
+    """Get the reference entity ID for a Reactome stable ID, with caching.
 
     Args:
-        reactome_id: Reactome database ID for the entity
+        reactome_id: Reactome stable ID for the entity (e.g., "R-HSA-12345")
 
     Returns:
-        Reference entity ID (string) if it exists, otherwise the reactome_id (int)
+        Reference entity stable ID if it exists, otherwise the reactome_id
     """
     global reference_entity_dict
 
@@ -65,15 +86,32 @@ def get_component_id_or_reference_entity_id(reactome_id: int) -> Union[str, int]
 
 
 def is_valid_uuid(identifier: Any) -> bool:
-    """Check if the given value is a valid UUID."""
-    return True if len(identifier) == 64 else False
+    """Check if the given value is a valid UUID (64-character hash).
+
+    Args:
+        identifier: Value to check
+
+    Returns:
+        True if identifier is a 64-character string, False otherwise
+    """
+    if not isinstance(identifier, str):
+        return False
+    return len(identifier) == 64
 
 
 def get_broken_apart_ids(
-    broken_apart_members: list[set[str]], reactome_id: ReactomeID
+    broken_apart_members: list[set[str]],
+    reactome_id: ReactomeID,
+    source_entity_id: Optional[str] = None
 ) -> Set[UID]:
     """Get broken apart IDs."""
     global decomposed_uid_mapping
+
+    # Handle empty input - no members means no UIDs to generate
+    # This prevents creating phantom UUIDs that never get stored in the mapping
+    if not broken_apart_members:
+        logger.debug(f"Empty broken_apart_members for reaction {reactome_id}, returning empty set")
+        return set()
 
     uids: Set[UID]
     if any(isinstance(member, set) for member in broken_apart_members):
@@ -89,13 +127,15 @@ def get_broken_apart_ids(
             set(map(str, item)) for item in iterproduct_components
         ]
         uids = get_uids_for_iterproduct_components(
-            iterproduct_components_as_sets, reactome_id
+            iterproduct_components_as_sets, reactome_id, source_entity_id
         )
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
         row: DataFrameRow
+        stoich_lookup = _direct_component_stoichiometry.get(reactome_id, {})
         for member in broken_apart_members:
+            member_stoich = stoich_lookup.get(member, 1)
             if is_valid_uuid(member):
                 component_ids = decomposed_uid_mapping.loc[
                     decomposed_uid_mapping["uid"] == member, "component_id"
@@ -110,6 +150,9 @@ def get_broken_apart_ids(
                         ),
                         "input_or_output_uid": member,
                         "input_or_output_reactome_id": None,
+                        "source_entity_id": source_entity_id,
+                        "source_reaction_id": None,  # TODO: Populate with original reaction ID for virtual reactions
+                        "stoichiometry": member_stoich,
                     }
                     rows.append(row)
             else:
@@ -118,10 +161,13 @@ def get_broken_apart_ids(
                     "component_id": member,
                     "reactome_id": reactome_id,
                     "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(
-                        component_id
+                        member
                     ),
                     "input_or_output_uid": None,
                     "input_or_output_reactome_id": member,
+                    "source_entity_id": source_entity_id,
+                    "source_reaction_id": None,  # TODO: Populate with original reaction ID for virtual reactions
+                    "stoichiometry": member_stoich,
                 }
                 rows.append(row)
         uids = {uid}
@@ -131,12 +177,15 @@ def get_broken_apart_ids(
 
 
 def get_uids_for_iterproduct_components(
-    iterproduct_components: List[Set[ComponentID]], reactome_id: ReactomeID
+    iterproduct_components: List[Set[ComponentID]],
+    reactome_id: ReactomeID,
+    source_entity_id: Optional[str] = None
 ) -> Set[UID]:
     """Get UID for iterproduct components."""
     global decomposed_uid_mapping
 
     uids: Set[UID] = set()
+    stoich_lookup = _direct_component_stoichiometry.get(reactome_id, {})
     for component in iterproduct_components:
         component_to_input_or_output: Dict[ComponentID, InputOutputID] = {}
         for item in component:
@@ -162,6 +211,7 @@ def get_uids_for_iterproduct_components(
             input_or_output_reactome_id = (
                 input_or_output_id if not is_valid_uuid(input_or_output_id) else None
             )
+            item_stoich = stoich_lookup.get(input_or_output_id, 1)
             row: DataFrameRow = {
                 "uid": uid,
                 "component_id": component_id,
@@ -171,6 +221,9 @@ def get_uids_for_iterproduct_components(
                 ),
                 "input_or_output_uid": input_or_output_uid,
                 "input_or_output_reactome_id": input_or_output_reactome_id,
+                "source_entity_id": source_entity_id,
+                "source_reaction_id": None,  # TODO: Populate with original reaction ID for virtual reactions
+                "stoichiometry": item_stoich,
             }
             rows.append(row)
 
@@ -180,8 +233,63 @@ def get_uids_for_iterproduct_components(
     return uids
 
 
-def break_apart_entity(entity_id: int) -> Set[str]:
-    """Break apart entity."""
+def _complex_contains_entity_set(entity_id: str) -> bool:
+    """Check if a complex contains any EntitySet members (recursively).
+
+    EntitySets represent alternatives (e.g., "any of these proteins"), which
+    creates combinatorial complexity that must be decomposed. Simple complexes
+    without EntitySets should remain as single entities.
+
+    Args:
+        entity_id: Reactome ID of the complex to check
+
+    Returns:
+        True if the complex contains any EntitySet members (recursively), False otherwise
+    """
+    global _complex_contains_set_cache
+
+    # Check cache first
+    if entity_id in _complex_contains_set_cache:
+        return _complex_contains_set_cache[entity_id]
+
+    labels = get_labels(entity_id)
+
+    # If this entity itself is an EntitySet, return True
+    if "EntitySet" in labels:
+        _complex_contains_set_cache[entity_id] = True
+        return True
+
+    # If it's a complex, check its components recursively
+    if "Complex" in labels:
+        member_ids = get_complex_components(entity_id)
+        for member_id in member_ids:
+            if _complex_contains_entity_set(member_id):
+                _complex_contains_set_cache[entity_id] = True
+                return True
+
+    _complex_contains_set_cache[entity_id] = False
+    return False
+
+
+def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -> Set[str]:
+    """Break apart entity, tracking which parent entity it came from.
+
+    This function decomposes entities based on the following rules:
+    1. EntitySets: Always decompose (they represent alternatives)
+    2. Complexes containing EntitySets: Decompose (to handle alternatives)
+    3. Simple complexes (no EntitySets): Keep intact (return as single entity ID)
+    4. Simple entities (proteins, molecules): Keep intact
+
+    Args:
+        entity_id: The Reactome entity ID to decompose
+        source_entity_id: The parent entity (Complex or EntitySet) being decomposed
+
+    Returns:
+        Set of UIDs or entity IDs representing the decomposed entity
+
+    The key change: Simple complexes are NO LONGER decomposed. This preserves
+    intermediate complexes in the pathway, maintaining biological feedback loops.
+    """
     global decomposed_uid_mapping
 
     labels = get_labels(entity_id)
@@ -199,18 +307,16 @@ def break_apart_entity(entity_id: int) -> Set[str]:
             )
 
     if "EntitySet" in labels:
-        if entity_id == 68524:  # ubiquitin
-            return set([str(entity_id)])
+        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+            return {str(entity_id)}
 
-        contains_thing = contains_reference_gene_product_molecule_or_isoform(entity_id)
-        if contains_thing:
-            return set([str(entity_id)])
         member_ids = get_set_members(entity_id)
 
+        # EntitySets represent OR alternatives - each member is a separate option
+        # Return a flat set of all member IDs/UIDs (NOT a cartesian product)
         member_list: List[str] = []
         for member_id in member_ids:
-            members = break_apart_entity(member_id)
-
+            members = break_apart_entity(member_id, source_entity_id=entity_id)
             if isinstance(members, set):
                 member_list.extend(members)
             else:
@@ -219,18 +325,33 @@ def break_apart_entity(entity_id: int) -> Set[str]:
         return set(member_list)
 
     elif "Complex" in labels:
-        broken_apart_members: List[Set[str]] = []
-        member_ids = get_complex_components(entity_id)
+        # NEW LOGIC: Only decompose complexes that contain EntitySets
+        # Simple complexes (no sets) should remain as single entities
+        if _complex_contains_entity_set(entity_id):
+            # Complex contains EntitySets → decompose to handle alternatives
+            logger.debug(f"Decomposing complex {entity_id} (contains EntitySet)")
+            broken_apart_members: List[Set[str]] = []
+            member_ids = get_complex_components(entity_id)
 
-        for member_id in member_ids:
-            members = break_apart_entity(member_id)
-            broken_apart_members.append(members)
+            for member_id in member_ids:
+                stoich = member_ids[member_id]
+                # Pass through the parent EntitySet ID when decomposing complex components
+                members = break_apart_entity(member_id, source_entity_id=source_entity_id)
+                broken_apart_members.append(members)
+                # Track stoichiometry for each returned UID/ID within this Complex
+                for uid_or_id in members:
+                    _direct_component_stoichiometry.setdefault(str(entity_id), {})[uid_or_id] = stoich
 
-        return get_broken_apart_ids(broken_apart_members, str(entity_id))
+            return get_broken_apart_ids(broken_apart_members, str(entity_id), source_entity_id)
+        else:
+            # Simple complex (no EntitySets) → keep as single entity
+            logger.debug(f"Keeping complex {entity_id} intact (no EntitySets)")
+            return {str(entity_id)}
 
     elif any(
         entity_label in labels
         for entity_label in [
+            "Cell",
             "ChemicalDrug",
             "Drug",
             "EntityWithAccessionedSequence",
@@ -244,11 +365,12 @@ def break_apart_entity(entity_id: int) -> Set[str]:
         return {str(entity_id)}
 
     else:
-        logger.error(f"Not handling labels correctly for: {entity_id}")
-        exit(1)
+        # Unknown label type - treat as simple entity and continue
+        logger.warning(f"Unknown entity labels for {entity_id}: {labels}. Treating as simple entity.")
+        return {str(entity_id)}
 
 
-def decompose_by_reactions(reaction_ids: List[int]) -> List[Any]:
+def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
     """Decompose by reactions."""
     global decomposed_uid_mapping
 
@@ -270,8 +392,17 @@ def decompose_by_reactions(reaction_ids: List[int]) -> List[Any]:
             broken_apart_output_id, str(reaction_id)
         )
 
+        # Skip reactions with empty input or output combinations
+        # This can happen when a reaction has no defined inputs or outputs in the database
+        if not input_combinations or not output_combinations:
+            logger.warning(
+                f"Reaction {reaction_id} has empty {'inputs' if not input_combinations else 'outputs'}, skipping"
+            )
+            continue
+
         [best_matches, _] = find_best_reaction_match(
-            input_combinations, output_combinations, decomposed_uid_mapping
+            input_combinations, output_combinations, decomposed_uid_mapping,
+            reaction_id=reaction_id
         )
 
         all_best_matches += best_matches
@@ -283,9 +414,14 @@ def get_decomposed_uid_mapping(
     pathway_id: str, reaction_connections: pd.DataFrame
 ) -> Tuple[pd.DataFrame, List[Any]]:
     """Get decomposed UID mapping."""
-    global decomposed_uid_mapping
+    global decomposed_uid_mapping, reference_entity_dict, _complex_contains_set_cache
+    global _direct_component_stoichiometry
 
     decomposed_uid_mapping.drop(decomposed_uid_mapping.index, inplace=True)
+    reference_entity_dict.clear()
+    _complex_contains_set_cache.clear()
+    _direct_component_stoichiometry.clear()
+    clear_prefetch_cache()
 
     reaction_ids = pd.unique(
         reaction_connections[
@@ -294,7 +430,11 @@ def get_decomposed_uid_mapping(
     )
 
     reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
-    reaction_ids = reaction_ids.astype(int).tolist()  # converting to integer
+    reaction_ids = reaction_ids.tolist()
+
+    # Bulk pre-fetch all entity data from Neo4j (replaces thousands of individual queries)
+    prefetch_entity_data(reaction_ids)
+
     best_matches = decompose_by_reactions(list(reaction_ids))
 
     return (decomposed_uid_mapping, best_matches)

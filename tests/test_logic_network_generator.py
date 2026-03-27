@@ -1,168 +1,329 @@
 """Tests for logic_network_generator module."""
 
 from typing import Dict, List, Any
-
-
-# Import functions to test
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, '/home/awright/gitroot/logic-network-generator')
+import pandas as pd
+
+# Add project root to Python path dynamically
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 # Mock py2neo.Graph to avoid Neo4j connection during import
 with patch('py2neo.Graph'):
     from src.logic_network_generator import (
         _assign_uuids,
-        _determine_edge_properties,
-        _add_pathway_connections,
+        _build_entity_producer_count,
+        _register_entity_uuid,
+        _get_or_create_entity_uuid,
+        _resolve_vr_entities,
     )
 
 
 class Test_assign_uuids:
-    """Tests for _assign_uuids function."""
+    """Tests for _assign_uuids function (position-aware version with union-find)."""
 
     def test_assigns_new_uuid_for_new_reactome_id(self):
-        """Should create a new UUID for a reactome ID not in the mapping."""
-        reactome_id_to_uuid: Dict[str, str] = {}
+        """Should create a new UUID for a reactome ID not in the registry."""
+        entity_uuid_registry: Dict[tuple, str] = {}
         reactome_ids = ["12345"]
+        source_reaction_uuid = "source-rxn-uuid"
+        target_reaction_uuid = "target-rxn-uuid"
 
-        result = _assign_uuids(reactome_ids, reactome_id_to_uuid)
+        result = _assign_uuids(reactome_ids, source_reaction_uuid, target_reaction_uuid, entity_uuid_registry)
 
         assert len(result) == 1
-        assert "12345" in reactome_id_to_uuid
-        assert result[0] == reactome_id_to_uuid["12345"]
+        # Should create entries in registry for both input and output positions
+        target_key = ("12345", target_reaction_uuid, "input")
+        source_key = ("12345", source_reaction_uuid, "output")
+        assert target_key in entity_uuid_registry
+        assert source_key in entity_uuid_registry
+        # Both should map to same UUID (union-find merged them)
+        assert entity_uuid_registry[target_key] == entity_uuid_registry[source_key]
+        assert result[0] == entity_uuid_registry[target_key]
 
-    def test_reuses_existing_uuid_for_known_reactome_id(self):
-        """Should reuse existing UUID for a reactome ID already in the mapping."""
+    def test_reuses_existing_uuid_for_known_reactome_id_at_same_position(self):
+        """Should reuse existing UUID for same reactome ID at same position."""
         existing_uuid = "test-uuid-123"
-        reactome_id_to_uuid = {"12345": existing_uuid}
+        source_reaction_uuid = "source-rxn-uuid"
+        target_reaction_uuid = "target-rxn-uuid"
+        entity_uuid_registry = {
+            ("12345", target_reaction_uuid, "input"): existing_uuid,
+            ("12345", source_reaction_uuid, "output"): existing_uuid,
+        }
         reactome_ids = ["12345"]
 
-        result = _assign_uuids(reactome_ids, reactome_id_to_uuid)
+        result = _assign_uuids(reactome_ids, source_reaction_uuid, target_reaction_uuid, entity_uuid_registry)
 
         assert len(result) == 1
         assert result[0] == existing_uuid
 
     def test_handles_multiple_reactome_ids(self):
-        """Should handle multiple reactome IDs correctly."""
-        reactome_id_to_uuid: Dict[str, str] = {"12345": "existing-uuid"}
+        """Should handle multiple reactome IDs correctly at same position."""
+        source_reaction_uuid = "source-rxn-uuid"
+        target_reaction_uuid = "target-rxn-uuid"
+        existing_uuid = "existing-uuid"
+        entity_uuid_registry: Dict[tuple, str] = {
+            ("12345", target_reaction_uuid, "input"): existing_uuid,
+            ("12345", source_reaction_uuid, "output"): existing_uuid,
+        }
         reactome_ids = ["12345", "67890", "11111"]
 
-        result = _assign_uuids(reactome_ids, reactome_id_to_uuid)
+        result = _assign_uuids(reactome_ids, source_reaction_uuid, target_reaction_uuid, entity_uuid_registry)
 
         assert len(result) == 3
-        assert result[0] == "existing-uuid"  # Reused
+        assert result[0] == existing_uuid  # Reused
         assert result[1] != result[2]  # New UUIDs are different
+        assert result[1] != result[0]  # New UUIDs different from existing
+
+    def test_different_positions_get_different_uuids(self):
+        """Same reactome ID at different positions should get different UUIDs."""
+        entity_uuid_registry: Dict[tuple, str] = {}
+        reactome_id = "12345"
+
+        # First position (between reaction1 and reaction2)
+        result1 = _assign_uuids([reactome_id], "reaction1-uuid", "reaction2-uuid", entity_uuid_registry)
+
+        # Second position (between reaction3 and reaction4)
+        result2 = _assign_uuids([reactome_id], "reaction3-uuid", "reaction4-uuid", entity_uuid_registry)
+
+        # Should have different UUIDs (completely different positions)
+        assert result1[0] != result2[0], "Same entity at different positions should have different UUIDs"
+
+    def test_union_find_respects_input_output_roles(self):
+        """Entity as input vs output of same reaction should get different UUIDs."""
+        entity_uuid_registry: Dict[tuple, str] = {}
+        reactome_id = "12345"
+
+        # First edge: reaction1 -> entity -> reaction2 (entity is INPUT to reaction2)
+        result1 = _assign_uuids([reactome_id], "reaction1-uuid", "reaction2-uuid", entity_uuid_registry)
+        uuid1 = result1[0]
+
+        # Second edge: reaction2 -> entity -> reaction3 (entity is OUTPUT of reaction2)
+        result2 = _assign_uuids([reactome_id], "reaction2-uuid", "reaction3-uuid", entity_uuid_registry)
+        uuid2 = result2[0]
+
+        # Different roles at same reaction = different positions = different UUIDs
+        assert uuid1 != uuid2, "Entity as input vs output of same reaction should have different UUIDs"
 
 
-class Test_determine_edge_properties:
-    """Tests for _determine_edge_properties function."""
+class TestEntityProducerCount:
+    """Tests for _build_entity_producer_count helper."""
 
-    def test_single_preceding_reaction_returns_and(self):
-        """When there's one preceding reaction, should return 'and' and 'input'."""
-        and_or, edge_type = _determine_edge_properties(1)
+    def test_entity_produced_by_multiple_vrs(self):
+        """Entity in output_ids of 2 VRs should have count=2."""
+        vr_entities = {
+            "vr1": (["A"], ["C", "D"]),
+            "vr2": (["B"], ["C", "E"]),
+        }
+        count = _build_entity_producer_count(vr_entities)
+        assert count["C"] == 2
+        assert count["D"] == 1
+        assert count["E"] == 1
 
-        assert and_or == "and"
-        assert edge_type == "input"
+    def test_entity_only_input_not_counted(self):
+        """Entity only in input_ids should not appear in count."""
+        vr_entities = {
+            "vr1": (["A", "B"], ["C"]),
+        }
+        count = _build_entity_producer_count(vr_entities)
+        assert "A" not in count
+        assert "B" not in count
+        assert count["C"] == 1
 
-    def test_multiple_preceding_reactions_returns_or(self):
-        """When there are multiple preceding reactions, should return 'or' and 'output'."""
-        and_or, edge_type = _determine_edge_properties(2)
-        assert and_or == "or"
-        assert edge_type == "output"
-
-        and_or, edge_type = _determine_edge_properties(5)
-        assert and_or == "or"
-        assert edge_type == "output"
-
-    def test_zero_preceding_reactions(self):
-        """Edge case: zero preceding reactions should return 'and' and 'input'."""
-        and_or, edge_type = _determine_edge_properties(0)
-        assert and_or == "and"
-        assert edge_type == "input"
+    def test_single_producer_returns_one(self):
+        """Entity in output_ids of 1 VR should have count=1."""
+        vr_entities = {
+            "vr1": (["A"], ["X"]),
+            "vr2": (["B"], ["Y"]),
+        }
+        count = _build_entity_producer_count(vr_entities)
+        assert count["X"] == 1
+        assert count["Y"] == 1
 
 
-class Test_add_pathway_connections:
-    """Tests for _add_pathway_connections function."""
+class TestInterReactionConnectivity:
+    """Tests for inter-reaction entity UUID connectivity (3-phase approach).
 
-    def test_adds_single_connection(self):
-        """Should add a single connection between one input and one output."""
-        pathway_data: List[Dict[str, Any]] = []
-        input_uuids = ["input-uuid-1"]
-        output_uuids = ["output-uuid-1"]
+    Verifies that entities shared between reactions get merged UUIDs,
+    while disconnected entities remain separate.
+    """
 
-        _add_pathway_connections(
-            input_uuids, output_uuids, "and", "input", pathway_data
-        )
+    def test_two_reactions_share_entity_uuid(self):
+        """Entity shared as output of VR1 and input of VR2 should get one UUID."""
+        registry: Dict[tuple, str] = {}
 
-        assert len(pathway_data) == 1
-        edge = pathway_data[0]
-        assert edge["pos_neg"] == "pos"
-        assert edge["and_or"] == "and"
-        assert edge["edge_type"] == "input"
+        # Phase 1: Register
+        _register_entity_uuid("A", "vr1", "output", registry)
+        _register_entity_uuid("A", "vr2", "input", registry)
 
-    def test_cartesian_product_of_inputs_and_outputs(self):
-        """Should create edges for all combinations of inputs and outputs."""
-        pathway_data: List[Dict[str, Any]] = []
-        input_uuids = ["input-1", "input-2"]
-        output_uuids = ["output-1", "output-2", "output-3"]
+        # Should start as different UUIDs
+        assert registry[("A", "vr1", "output")] != registry[("A", "vr2", "input")]
 
-        _add_pathway_connections(
-            input_uuids, output_uuids, "or", "output", pathway_data
-        )
+        # Phase 2: Merge
+        _get_or_create_entity_uuid("A", "vr1", "vr2", registry)
 
-        # Should create 2 * 3 = 6 edges
-        assert len(pathway_data) == 6
+        # Should now share the same UUID
+        assert registry[("A", "vr1", "output")] == registry[("A", "vr2", "input")]
 
-        # Check all combinations exist
-        sources = [edge["source_id"] for edge in pathway_data]
-        targets = [edge["target_id"] for edge in pathway_data]
+    def test_three_reaction_chain(self):
+        """VR1→A→VR2→B→VR3: A and B have separate merged UUIDs."""
+        registry: Dict[tuple, str] = {}
 
-        # All inputs should appear as sources
-        assert sources.count("input-1") == 3
-        assert sources.count("input-2") == 3
+        # Phase 1: Register all entities
+        _register_entity_uuid("A", "vr1", "output", registry)
+        _register_entity_uuid("A", "vr2", "input", registry)
+        _register_entity_uuid("B", "vr2", "output", registry)
+        _register_entity_uuid("B", "vr3", "input", registry)
 
-        # All outputs should appear as targets
-        assert targets.count("output-1") == 2
-        assert targets.count("output-2") == 2
-        assert targets.count("output-3") == 2
+        # Phase 2: Merge connections
+        _get_or_create_entity_uuid("A", "vr1", "vr2", registry)
+        _get_or_create_entity_uuid("B", "vr2", "vr3", registry)
 
-    def test_edge_direction_semantics(self):
+        uuid_a = registry[("A", "vr1", "output")]
+        uuid_b = registry[("B", "vr2", "output")]
+
+        # A and B should have different UUIDs
+        assert uuid_a != uuid_b
+
+        # A consistent across VR1 output and VR2 input
+        assert registry[("A", "vr1", "output")] == registry[("A", "vr2", "input")]
+
+        # B consistent across VR2 output and VR3 input
+        assert registry[("B", "vr2", "output")] == registry[("B", "vr3", "input")]
+
+    def test_no_spurious_keys(self):
+        """_register_entity_uuid should create only one key per call."""
+        registry: Dict[tuple, str] = {}
+
+        _register_entity_uuid("A", "vr1", "input", registry)
+
+        assert len(registry) == 1
+        assert ("A", "vr1", "input") in registry
+        assert ("A", "vr1", "output") not in registry
+
+    def test_disconnected_reactions_different_uuids(self):
+        """Same entity in unconnected reactions should have different UUIDs."""
+        registry: Dict[tuple, str] = {}
+
+        _register_entity_uuid("A", "vr1", "output", registry)
+        _register_entity_uuid("A", "vr3", "input", registry)
+
+        # No Phase 2 merge — they're disconnected
+        assert registry[("A", "vr1", "output")] != registry[("A", "vr3", "input")]
+
+    def test_multi_source_convergence(self):
+        """VR1→A→VR2 and VR3→A→VR2 should all merge to same UUID."""
+        registry: Dict[tuple, str] = {}
+
+        # Phase 1: Register
+        _register_entity_uuid("A", "vr1", "output", registry)
+        _register_entity_uuid("A", "vr3", "output", registry)
+        _register_entity_uuid("A", "vr2", "input", registry)
+
+        # Phase 2: Both VR1 and VR3 feed A into VR2
+        _get_or_create_entity_uuid("A", "vr1", "vr2", registry)
+        _get_or_create_entity_uuid("A", "vr3", "vr2", registry)
+
+        uuid_from_vr1 = registry[("A", "vr1", "output")]
+        uuid_from_vr3 = registry[("A", "vr3", "output")]
+        uuid_at_vr2 = registry[("A", "vr2", "input")]
+
+        # All three should share the same UUID
+        assert uuid_from_vr1 == uuid_at_vr2
+        assert uuid_from_vr3 == uuid_at_vr2
+
+    def test_no_duplicate_edges(self):
+        """Duplicate terminal IDs from decomposition should not produce duplicate edges.
+
+        When multiple decomposition paths converge on the same terminal Reactome ID,
+        _resolve_to_terminal_reactome_ids returns duplicates. _resolve_vr_entities
+        must deduplicate them so Phase 3 doesn't create duplicate edges.
         """
-        CRITICAL TEST: Verify edge direction represents correct molecular flow.
+        # Build a uid_index where hash "vr1-input" resolves to terminal ID "9933417"
+        # via two different nested paths, producing duplicates without dedup.
+        # uid_index maps hash -> (nested_uids, terminal_ids, stoich_map)
+        uid_index = {
+            "vr1-input": (["nested-1", "nested-2"], set(), {}),  # two nested paths, no direct terminals
+            "nested-1": ([], {"9933417"}, {"9933417": 1}),  # both nested paths resolve to same terminal
+            "nested-2": ([], {"9933417"}, {"9933417": 1}),
+            "vr1-output": ([], {"12345"}, {"12345": 1}),
+        }
 
-        Assumption: edges should represent molecular flow through the pathway.
-        - If input_uuids are from current reaction's inputs
-        - And output_uuids are from preceding reaction's outputs
-        - Then edges should flow: preceding_output → current_input
+        reaction_id_map = pd.DataFrame({
+            "uid": ["vr1"],
+            "input_hash": ["vr1-input"],
+            "output_hash": ["vr1-output"],
+            "reactome_id": [1],
+        })
 
-        Current implementation: source_id = input_uuid, target_id = output_uuid
-        This would be: current_input → preceding_output (BACKWARDS?)
+        vr_entities = _resolve_vr_entities(reaction_id_map, uid_index)
 
-        Expected: source_id = output_uuid, target_id = input_uuid
-        This would be: preceding_output → current_input (FORWARD)
-        """
-        pathway_data: List[Dict[str, Any]] = []
-        current_input_uuids = ["current-input-molecule"]
-        preceding_output_uuids = ["preceding-output-molecule"]
+        input_ids, output_ids, input_stoich, output_stoich = vr_entities["vr1"]
 
-        _add_pathway_connections(
-            current_input_uuids, preceding_output_uuids, "and", "input", pathway_data
+        # _resolve_to_terminal_reactome_ids now returns dict (deduped by key),
+        # but stoichiometry accumulates: 1 + 1 = 2 from two nested paths
+        assert len(input_ids) == 1, (
+            f"Expected 1 unique input ID, got {len(input_ids)}: {input_ids}"
         )
+        assert input_ids[0] == "9933417"
+        assert input_stoich["9933417"] == 2  # stoichiometry adds: 1 from nested-1 + 1 from nested-2
+        assert len(output_ids) == 1
 
-        edge = pathway_data[0]
+    def test_root_input_same_entity_gets_one_uuid(self):
+        """Root input entity appearing at multiple reactions should share one UUID."""
+        registry: Dict[tuple, str] = {}
+        root_input_eids = {"A"}
+        root_input_cache: Dict[str, str] = {}
 
-        # Document what we observe
-        print(f"\nObserved edge: {edge['source_id']} → {edge['target_id']}")
-        print("If correct flow: preceding-output-molecule → current-input-molecule")
-        print(f"Current code creates: {edge['source_id']} → {edge['target_id']}")
+        _register_entity_uuid("A", "vr1", "input", registry,
+                              root_input_eids, root_input_cache)
+        _register_entity_uuid("A", "vr3", "input", registry,
+                              root_input_eids, root_input_cache)
 
-        # This test will FAIL if edges are backwards
-        # Expected behavior: molecular flow from preceding output to current input
-        # TODO: Determine if this assertion is correct based on system requirements
-        # assert edge["source_id"] == "preceding-output-molecule", "Edge should flow from preceding output"
-        # assert edge["target_id"] == "current-input-molecule", "Edge should flow to current input"
+        assert registry[("A", "vr1", "input")] == registry[("A", "vr3", "input")]
 
-        # For now, just document what the code actually does
-        assert edge["source_id"] == "current-input-molecule"  # Current behavior
-        assert edge["target_id"] == "preceding-output-molecule"  # Current behavior
+    def test_terminal_output_same_entity_gets_one_uuid(self):
+        """Terminal output entity appearing at multiple reactions should share one UUID."""
+        registry: Dict[tuple, str] = {}
+        terminal_output_eids = {"B"}
+        terminal_output_cache: Dict[str, str] = {}
+
+        _register_entity_uuid("B", "vr1", "output", registry,
+                              terminal_output_eids, terminal_output_cache)
+        _register_entity_uuid("B", "vr2", "output", registry,
+                              terminal_output_eids, terminal_output_cache)
+
+        assert registry[("B", "vr1", "output")] == registry[("B", "vr2", "output")]
+
+    def test_root_and_terminal_same_entity_different_uuids(self):
+        """Entity that is both root input and terminal output should get separate UUIDs."""
+        registry: Dict[tuple, str] = {}
+        root_input_eids = {"A"}
+        terminal_output_eids = {"A"}
+        root_cache: Dict[str, str] = {}
+        terminal_cache: Dict[str, str] = {}
+
+        _register_entity_uuid("A", "vr1", "input", registry,
+                              root_input_eids, root_cache)
+        _register_entity_uuid("A", "vr2", "output", registry,
+                              terminal_output_eids, terminal_cache)
+
+        # Different caches → different UUIDs
+        assert registry[("A", "vr1", "input")] != registry[("A", "vr2", "output")]
+
+    def test_non_boundary_entity_gets_separate_uuids(self):
+        """Entity not in boundary sets should get normal per-position UUIDs."""
+        registry: Dict[tuple, str] = {}
+        root_input_eids = {"X"}  # "A" is NOT a boundary entity
+        root_cache: Dict[str, str] = {}
+
+        _register_entity_uuid("A", "vr1", "input", registry,
+                              root_input_eids, root_cache)
+        _register_entity_uuid("A", "vr2", "input", registry,
+                              root_input_eids, root_cache)
+
+        # "A" is not in root_input_eids, so it gets separate UUIDs
+        assert registry[("A", "vr1", "input")] != registry[("A", "vr2", "input")]

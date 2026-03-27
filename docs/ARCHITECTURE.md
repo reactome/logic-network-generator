@@ -37,10 +37,18 @@ The Logic Network Generator transforms Reactome pathway data into directed logic
                                     │
                                     │ Logic Network Generation
                                     │ (Create transformation edges)
+                                    │ (Position-aware UUID assignment)
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    pathway_logic_network.csv                         │
 │  (source_id → target_id edges with AND/OR logic annotations)        │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ UUID Mapping Export
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────┐
+│                    uuid_to_reactome_{pathway_id}.csv                 │
+│        (Maps UUIDs back to Reactome database IDs)                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -113,9 +121,34 @@ Reaction 2: B → C (creates edge where B is source)
 Result: Pathway flow A → B → C (B connects the reactions)
 ```
 
-**No self-loops** exist because reactions transform molecules (inputs ≠ outputs).
+**Self-loops are minimized** using position-aware UUIDs. When the same entity connects reactions, the union-find algorithm ensures entities in the same connected component share UUIDs, creating intentional self-loops that represent pathway flow, while entities at disconnected positions get different UUIDs.
 
-### 5. AND/OR Logic
+### 5. Position-Aware UUIDs
+
+The system uses **position-aware UUIDs** to uniquely identify entities at different pathway positions:
+
+```
+Example:
+  Reaction1 → gene1 → Reaction2
+  Reaction3 → gene1 → Reaction2
+
+Result: gene1 gets UUID_A (connected component)
+
+But elsewhere:
+  Reaction100 → gene1 → Reaction101
+
+Result: gene1 gets UUID_B (different position)
+```
+
+**Key Properties**:
+- Entities in same connected component share UUIDs (union-find algorithm)
+- Entities at disconnected positions get different UUIDs
+- Registry tracks: `(entity_dbId, reaction_uuid, role) → entity_uuid`
+- Results in 0% self-loops in real pathways while maintaining connectivity
+
+See [POSITION_AWARE_UUID_DESIGN.md](../POSITION_AWARE_UUID_DESIGN.md) for detailed design.
+
+### 6. AND/OR Logic
 
 The logic network assigns AND/OR relationships based on how many reactions produce the same physical entity:
 
@@ -179,17 +212,22 @@ Edge: R1→G6P (AND - required)
 **Output**: `best_matches` DataFrame with optimal pairings
 
 #### 4. `src/logic_network_generator.py`
-**Purpose**: Generate the final logic network
+**Purpose**: Generate the final logic network with position-aware UUIDs
 
 **Key Functions**:
 - `create_pathway_logic_network()`: Main orchestrator
+- `_get_or_create_entity_uuid()`: Union-find UUID assignment
+- `_assign_uuids()`: Position-aware UUID generation
 - `create_reaction_id_map()`: Create virtual reactions from best_matches
 - `extract_inputs_and_outputs()`: Create transformation edges
 - `_determine_edge_properties()`: Assign AND/OR logic
 - `_add_pathway_connections()`: Add edges with cartesian product
 - `append_regulators()`: Add catalyst/regulator edges
+- `export_uuid_to_reactome_mapping()`: Export UUID→dbId mapping
 
-**Output**: Logic network DataFrame with edges and logic annotations
+**Output**:
+- Logic network DataFrame with edges and logic annotations
+- UUID to Reactome ID mapping for entity tracking
 
 ### Bin Scripts
 
@@ -228,9 +266,9 @@ poetry run python bin/create-pathways.py --pathway-list pathways.tsv
 
 ### Network Structure
 - **Directed**: Edges have direction (source → target)
-- **Acyclic**: No cycles in main transformation edges
+- **Acyclic**: No cycles in main transformation edges (within individual reactions)
 - **Bipartite-like**: Entities and reactions connect through transformations
-- **No self-loops**: Reactions always transform inputs to different outputs
+- **Minimal self-loops**: Position-aware UUIDs minimize self-loops while preserving pathway connectivity
 
 ## Testing Strategy
 
@@ -238,7 +276,7 @@ poetry run python bin/create-pathways.py --pathway-list pathways.tsv
 
 1. **Unit Tests** (`tests/test_logic_network_generator.py`)
    - Individual helper functions
-   - UUID assignment
+   - Position-aware UUID assignment with union-find
    - Edge property determination
 
 2. **Integration Tests** (`tests/test_edge_direction_integration.py`)
@@ -267,9 +305,9 @@ poetry run python bin/create-pathways.py --pathway-list pathways.tsv
    - Error message clarity
 
 ### Test Coverage
-- **43 tests** total (100% passing)
-- Covers core functionality, edge semantics, and network properties
-- See `TEST_SUITE_SUMMARY.md` for detailed breakdown
+- **73+ tests** total (100% passing for core unit tests)
+- Covers position-aware UUIDs, core functionality, edge semantics, network properties, and comprehensive validation
+- Run tests with: `poetry run pytest tests/ -v`
 
 ## Design Decisions
 
@@ -298,7 +336,8 @@ poetry run python bin/create-pathways.py --pathway-list pathways.tsv
 ### Caching
 - Files are cached: `reaction_connections_{id}.csv`, `decomposed_uid_mapping_{id}.csv`, `best_matches_{id}.csv`
 - Subsequent runs reuse cached data
-- UUID assignments cached in `reactome_id_to_uuid` dictionary
+- Position-aware UUIDs tracked in `entity_uuid_registry` (regenerated each run for consistency)
+- UUID→dbId mappings exported to `uuid_to_reactome_{id}.csv`
 
 ### Scalability
 - Decomposition uses itertools.product (efficient for combinatorics)
@@ -310,19 +349,11 @@ poetry run python bin/create-pathways.py --pathway-list pathways.tsv
 - Medium pathway (100-200 reactions): 1-5 seconds
 - Large pathway (500+ reactions): 5-30 seconds
 
-## Future Improvements
+## Additional Documentation
 
-See `IMPROVEMENT_RECOMMENDATIONS.md` for comprehensive list. Key areas:
-
-1. **Remove global database connection** - Use dependency injection
-2. **Add more comprehensive tests** - Decomposition logic, Neo4j queries
-3. **Performance benchmarks** - Track generation time across versions
-4. **Better error handling** - Graceful handling of edge cases
-
-## References
-
+- **Main README**: `../README.md` - Quick start guide and features
+- **Position-Aware UUIDs**: `../POSITION_AWARE_UUID_DESIGN.md` - Design and implementation of UUID system
+- **Validation System**: `../VALIDATION_README.md` - Comprehensive validation documentation
+- **Examples**: `../examples/README.md` - Usage patterns and troubleshooting
+- **Changelog**: `../CHANGELOG.md` - Version history
 - **Reactome Database**: https://reactome.org/
-- **Test Suite Documentation**: `TEST_SUITE_SUMMARY.md`
-- **Test Findings**: `TEST_FINDINGS.md`
-- **Complete Understanding**: `COMPLETE_UNDERSTANDING.md`
-- **Improvement Recommendations**: `IMPROVEMENT_RECOMMENDATIONS.md`

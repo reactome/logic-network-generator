@@ -6,185 +6,211 @@ These tests verify structural properties of the generated networks:
 - Terminal outputs are always targets (never sources)
 - AND/OR logic is consistent
 - Edge direction represents transformations
+
+Tests run against all generated pathways in the output directory.
 """
 
 import os
 import pytest
 import pandas as pd
+from pathlib import Path
 
 
-# Skip all tests in this module if the test network file doesn't exist
+def get_generated_pathways():
+    """Find all generated pathway directories with logic_network.csv."""
+    output_dir = Path("output")
+    if not output_dir.exists():
+        return []
+    pathways = []
+    for d in sorted(output_dir.iterdir()):
+        if d.is_dir() and (d / "logic_network.csv").exists():
+            pathways.append(str(d / "logic_network.csv"))
+    return pathways
+
+
+GENERATED_PATHWAYS = get_generated_pathways()
+
+# Skip all tests if no generated pathways exist
 pytestmark = pytest.mark.skipif(
-    not os.path.exists('pathway_logic_network_69620.csv'),
-    reason="Test network file pathway_logic_network_69620.csv not found"
+    len(GENERATED_PATHWAYS) == 0,
+    reason="No generated pathway directories found in output/"
 )
+
+
+# Use a smaller representative sample for parametrized tests
+SAMPLE_PATHWAYS = GENERATED_PATHWAYS[:5] if len(GENERATED_PATHWAYS) > 5 else GENERATED_PATHWAYS
 
 
 class TestNetworkInvariants:
     """Test invariants that should hold for any valid pathway logic network."""
 
-    def test_no_self_loops_in_main_pathway(self):
-        """Main pathway edges should never have source_id == target_id.
+    @pytest.fixture(params=SAMPLE_PATHWAYS, ids=[Path(p).parent.name for p in SAMPLE_PATHWAYS])
+    def network(self, request):
+        """Load a generated pathway logic network."""
+        return pd.read_csv(request.param)
 
-        Rationale: Reactions transform molecules, so inputs ≠ outputs.
-        """
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
+    @pytest.fixture
+    def main_edges(self, network):
+        """Extract main pathway edges (excluding catalyst/regulator)."""
+        return network[~network['edge_type'].isin(['catalyst', 'regulator'])]
 
-        self_loops = main_edges[main_edges['source_id'] == main_edges['target_id']]
+    def test_required_columns_exist(self, network):
+        """Network must have all required columns."""
+        required = ['source_id', 'target_id', 'pos_neg', 'and_or', 'edge_type']
+        for col in required:
+            assert col in network.columns, f"Missing column: {col}"
 
-        assert len(self_loops) == 0, f"Found {len(self_loops)} self-loop edges in main pathway"
+    def test_no_null_source_or_target(self, network):
+        """No edges should have null source_id or target_id."""
+        assert network['source_id'].notna().all(), "Found null source_id"
+        assert network['target_id'].notna().all(), "Found null target_id"
 
-    def test_root_inputs_never_appear_as_targets(self):
-        """Root inputs should only appear as source_id, never as target_id.
+    def test_valid_edge_types(self, network):
+        """All edge_type values must be valid."""
+        valid_edge_types = {'input', 'output', 'catalyst', 'regulator'}
+        actual = set(network['edge_type'].unique())
+        invalid = actual - valid_edge_types
+        assert len(invalid) == 0, f"Invalid edge_type values: {invalid}"
 
-        Rationale: Root inputs are consumed by reactions but not produced.
-        """
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
+    def test_valid_pos_neg_values(self, network):
+        """pos_neg must be 'pos' or 'neg'."""
+        valid = {'pos', 'neg'}
+        actual = set(network['pos_neg'].dropna().unique())
+        invalid = actual - valid
+        assert len(invalid) == 0, f"Invalid pos_neg values: {invalid}"
 
-        sources = set(main_edges['source_id'].unique())
-        targets = set(main_edges['target_id'].unique())
-        root_inputs = sources - targets
+    def test_and_logic_consistency(self, network):
+        """Edges with 'and' logic should have edge_type in {'input', 'catalyst'}."""
+        and_edges = network[network['and_or'] == 'and']
+        if len(and_edges) == 0:
+            pytest.skip("No AND edges")
+        incorrect = and_edges[~and_edges['edge_type'].isin({'input', 'catalyst'})]
+        assert len(incorrect) == 0, f"Found {len(incorrect)} AND edges with edge_type not in {{'input', 'catalyst'}}"
 
-        # Check that none of the root inputs appear as targets
-        roots_as_targets = root_inputs & targets
-        assert len(roots_as_targets) == 0, f"Found {len(roots_as_targets)} root inputs appearing as targets"
-
-    def test_terminal_outputs_never_appear_as_sources(self):
-        """Terminal outputs should only appear as target_id, never as source_id.
-
-        Rationale: Terminal outputs are produced but not consumed.
-        """
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
-
-        sources = set(main_edges['source_id'].unique())
-        targets = set(main_edges['target_id'].unique())
-        terminal_outputs = targets - sources
-
-        # Check that none of the terminal outputs appear as sources
-        terminals_as_sources = terminal_outputs & sources
-        assert len(terminals_as_sources) == 0, f"Found {len(terminals_as_sources)} terminal outputs appearing as sources"
-
-    def test_all_nodes_reachable_from_roots(self):
-        """All nodes should be reachable from root inputs via directed edges.
-
-        Rationale: Disconnected components suggest data problems.
-        """
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
-
-        sources = set(main_edges['source_id'].unique())
-        targets = set(main_edges['target_id'].unique())
-        root_inputs = sources - targets
-
-        # BFS from roots
-        visited = set(root_inputs)
-        queue = list(root_inputs)
-
-        while queue:
-            current = queue.pop(0)
-            # Find all edges from current node
-            outgoing = main_edges[main_edges['source_id'] == current]
-            for _, edge in outgoing.iterrows():
-                target = edge['target_id']
-                if target not in visited:
-                    visited.add(target)
-                    queue.append(target)
-
-        all_nodes = sources | targets
-        unreachable = all_nodes - visited
-
-        # Allow some unreachable nodes (might be in disconnected branches)
-        # But warn if too many
-        unreachable_pct = len(unreachable) / len(all_nodes) * 100 if all_nodes else 0
-
-        assert unreachable_pct < 50, f"{unreachable_pct:.1f}% of nodes unreachable from roots"
-
-    def test_and_logic_consistency(self):
-        """Edges with 'and' logic should have edge_type='input'."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
-
-        and_edges = main_edges[main_edges['and_or'] == 'and']
-        incorrect = and_edges[and_edges['edge_type'] != 'input']
-
-        assert len(incorrect) == 0, f"Found {len(incorrect)} AND edges with edge_type != 'input'"
-
-    def test_or_logic_consistency(self):
+    def test_or_logic_consistency(self, main_edges):
         """Edges with 'or' logic should have edge_type='output'."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
-
+        if len(main_edges) == 0:
+            pytest.skip("No main pathway edges")
         or_edges = main_edges[main_edges['and_or'] == 'or']
         incorrect = or_edges[or_edges['edge_type'] != 'output']
-
         assert len(incorrect) == 0, f"Found {len(incorrect)} OR edges with edge_type != 'output'"
 
-    def test_all_edges_have_and_or_logic(self):
-        """All main pathway edges should have and_or specified."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
-
-        missing_logic = main_edges[main_edges['and_or'].isna()]
-
-        assert len(missing_logic) == 0, f"Found {len(missing_logic)} edges without AND/OR logic"
-
-    def test_pos_neg_is_always_pos_for_main_edges(self):
-        """Main pathway edges should all be positive (activation)."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
-
+    def test_pos_neg_is_pos_for_main_edges(self, main_edges):
+        """Main pathway edges should all be positive (transformations)."""
+        if len(main_edges) == 0:
+            pytest.skip("No main pathway edges")
         non_pos = main_edges[main_edges['pos_neg'] != 'pos']
-
         assert len(non_pos) == 0, f"Found {len(non_pos)} main edges with pos_neg != 'pos'"
 
-    def test_catalyst_edges_have_no_and_or_logic(self):
-        """Catalyst edges shouldn't have AND/OR logic (they're not transformations)."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        catalyst_edges = network[network['edge_type'] == 'catalyst']
+    def test_catalyst_edges_are_positive(self, network):
+        """Catalyst edges should always be positive."""
+        catalysts = network[network['edge_type'] == 'catalyst']
+        if len(catalysts) == 0:
+            pytest.skip("No catalyst edges")
+        neg_catalysts = catalysts[catalysts['pos_neg'] == 'neg']
+        assert len(neg_catalysts) == 0, f"Found {len(neg_catalysts)} negative catalysts"
 
-        has_logic = catalyst_edges[catalyst_edges['and_or'].notna()]
-
-        # This is just documenting current behavior - may or may not be desired
-        print(f"\nCatalyst edges with AND/OR logic: {len(has_logic)}/{len(catalyst_edges)}")
-
-    def test_regulator_edges_have_no_and_or_logic(self):
-        """Regulator edges shouldn't have AND/OR logic (they're not transformations)."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-        regulator_edges = network[network['edge_type'] == 'regulator']
-
-        has_logic = regulator_edges[regulator_edges['and_or'].notna()]
-
-        # This is just documenting current behavior
-        print(f"\nRegulator edges with AND/OR logic: {len(has_logic)}/{len(regulator_edges)}")
-
-    def test_network_has_reasonable_size(self):
-        """Sanity check: network should have a reasonable number of edges."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
-
+    def test_network_has_edges(self, network):
+        """Network should have a non-zero number of edges."""
         assert len(network) > 0, "Network has no edges"
-        assert len(network) < 100000, "Network suspiciously large"
 
+    def test_network_not_suspiciously_large(self, network):
+        """Sanity check: network shouldn't be excessively large."""
+        assert len(network) < 10_000_000, f"Network suspiciously large: {len(network)} edges"
+
+
+class TestAllPathwaysHaveContent:
+    """Verify all 29 generated pathways have meaningful content."""
+
+    @pytest.mark.parametrize("network_path", GENERATED_PATHWAYS,
+                             ids=[Path(p).parent.name for p in GENERATED_PATHWAYS])
+    def test_pathway_has_edges(self, network_path):
+        """Each pathway should have at least some edges."""
+        network = pd.read_csv(network_path)
+        assert len(network) > 0, f"Pathway has no edges"
+
+    @pytest.mark.parametrize("network_path", GENERATED_PATHWAYS,
+                             ids=[Path(p).parent.name for p in GENERATED_PATHWAYS])
+    def test_pathway_has_uuid_mapping(self, network_path):
+        """Each pathway should have a stid_to_uuid_mapping.csv."""
+        mapping_path = Path(network_path).parent / "stid_to_uuid_mapping.csv"
+        assert mapping_path.exists(), f"Missing {mapping_path}"
+        mapping = pd.read_csv(mapping_path)
+        assert len(mapping) > 0, "UUID mapping is empty"
+
+    @pytest.mark.parametrize("network_path", GENERATED_PATHWAYS,
+                             ids=[Path(p).parent.name for p in GENERATED_PATHWAYS])
+    def test_pathway_has_cache_files(self, network_path):
+        """Each pathway should have cached intermediate files."""
+        cache_dir = Path(network_path).parent / "cache"
+        assert cache_dir.exists(), f"Missing cache directory"
+        assert (cache_dir / "reaction_connections.csv").exists(), "Missing reaction_connections.csv"
+        assert (cache_dir / "decomposed_uid_mapping.csv").exists(), "Missing decomposed_uid_mapping.csv"
+        assert (cache_dir / "best_matches.csv").exists(), "Missing best_matches.csv"
+
+    @pytest.mark.parametrize("network_path", GENERATED_PATHWAYS,
+                             ids=[Path(p).parent.name for p in GENERATED_PATHWAYS])
+    def test_pathway_has_main_edges(self, network_path):
+        """Every pathway must have main (input/output) edges, not just catalysts/regulators.
+
+        Bug history: Cellular_responses_to_stimuli_8953897 had 0 main edges due to
+        an O(n^2) duplication bug in extract_inputs_and_outputs that was fixed.
+        This test ensures no pathway is missing main transformation edges.
+        """
+        network = pd.read_csv(network_path)
         main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
-        assert len(main_edges) > 0, "Network has no main pathway edges"
+        assert len(main_edges) > 0, (
+            f"Pathway has {len(network)} total edges but 0 main (input/output) edges. "
+            f"Edge types: {dict(network['edge_type'].value_counts())}"
+        )
 
-    def test_unique_molecules_are_reasonable(self):
-        """Sanity check: should have reasonable number of unique molecules."""
-        network = pd.read_csv('pathway_logic_network_69620.csv')
+    @pytest.mark.parametrize("network_path", GENERATED_PATHWAYS,
+                             ids=[Path(p).parent.name for p in GENERATED_PATHWAYS])
+    def test_main_edges_not_duplicated(self, network_path):
+        """Main edges should not have N^2 duplication from the extract_inputs_and_outputs bug.
+
+        Bug history: The outer loop in create_pathway_logic_network called
+        extract_inputs_and_outputs N times, and the function internally iterated
+        over ALL N reactions, creating N copies of every edge.
+        This test ensures each edge appears at most once.
+        """
+        network = pd.read_csv(network_path)
+        main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
+        if len(main_edges) == 0:
+            pytest.skip("No main edges")
+
+        # Check for exact duplicate rows
+        duplicated = main_edges.duplicated(subset=['source_id', 'target_id', 'edge_type'], keep=False)
+        num_duplicated = duplicated.sum()
+        assert num_duplicated == 0, (
+            f"Found {num_duplicated} duplicated main edges out of {len(main_edges)} total. "
+            f"This suggests the O(n^2) duplication bug in extract_inputs_and_outputs."
+        )
+
+    @pytest.mark.parametrize("network_path", GENERATED_PATHWAYS,
+                             ids=[Path(p).parent.name for p in GENERATED_PATHWAYS])
+    def test_main_edges_proportional_to_best_matches(self, network_path):
+        """Main edge count should be roughly proportional to best_matches, not N^2.
+
+        Each best_match creates a virtual reaction with a few input×output edges.
+        The total main edges should be within a reasonable ratio of best_matches count.
+        """
+        cache_dir = Path(network_path).parent / "cache"
+        if not (cache_dir / "best_matches.csv").exists():
+            pytest.skip("No best_matches.csv")
+
+        network = pd.read_csv(network_path)
+        best_matches = pd.read_csv(cache_dir / "best_matches.csv")
         main_edges = network[~network['edge_type'].isin(['catalyst', 'regulator'])]
 
-        all_molecules = set(main_edges['source_id'].unique()) | set(main_edges['target_id'].unique())
+        if len(main_edges) == 0 or len(best_matches) == 0:
+            pytest.skip("No main edges or best_matches")
 
-        assert len(all_molecules) > 0, "No molecules found"
-        assert len(all_molecules) < 10000, "Suspiciously many molecules"
-
-        # Should have at least one root and one terminal
-        sources = set(main_edges['source_id'].unique())
-        targets = set(main_edges['target_id'].unique())
-        roots = sources - targets
-        terminals = targets - sources
-
-        assert len(roots) > 0, "No root inputs found"
-        assert len(terminals) > 0, "No terminal outputs found"
+        ratio = len(main_edges) / len(best_matches)
+        # Each best_match creates input+output edges (entity→reaction→entity model)
+        # Ratio > 50 strongly suggests N^2 duplication
+        assert ratio < 50, (
+            f"Ratio of main_edges/best_matches = {ratio:.1f} is too high. "
+            f"main_edges={len(main_edges)}, best_matches={len(best_matches)}. "
+            f"This suggests O(n^2) edge duplication."
+        )

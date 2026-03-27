@@ -3,9 +3,12 @@
 import pytest
 import pandas as pd
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, '/home/awright/gitroot/logic-network-generator')
+# Add project root to Python path dynamically
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 # Mock py2neo.Graph to avoid Neo4j connection during import
 with patch('py2neo.Graph'):

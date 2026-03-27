@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment  # type: ignore
 
+from src.argument_parser import logger
+
 
 def create_raw_counts_matrix(input_reactions, output_reactions, decomposed_uid_mapping):
     input_reactions = list(input_reactions)
@@ -29,7 +31,7 @@ def create_raw_counts_matrix(input_reactions, output_reactions, decomposed_uid_m
 
 
 def find_best_match_both_decomposed_reactions(
-    input_reactions, output_reactions, decomposed_uid_mapping
+    input_reactions, output_reactions, decomposed_uid_mapping, reaction_id=None
 ):
     counts = create_raw_counts_matrix(
         input_reactions, output_reactions, decomposed_uid_mapping
@@ -37,6 +39,13 @@ def find_best_match_both_decomposed_reactions(
     num_rows, num_cols = counts.shape
 
     if num_rows != num_cols:
+        unmatched_count = abs(num_rows - num_cols)
+        side = "inputs" if num_rows > num_cols else "outputs"
+        logger.warning(
+            f"Reaction {reaction_id}: Hungarian matching dimension mismatch - "
+            f"{num_rows} input combinations vs {num_cols} output combinations; "
+            f"{unmatched_count} {side} will be unmatched"
+        )
         # Pad the counts matrix with zeros to make it square
         max_dim = max(num_rows, num_cols)
         padded_counts = np.zeros((max_dim, max_dim))
@@ -65,12 +74,12 @@ def find_best_match_both_decomposed_reactions(
     return [reaction_matches, matched_counts]
 
 
-def find_best_reaction_match(input_reactions, output_reactions, decomposed_uid_mapping):
+def find_best_reaction_match(input_reactions, output_reactions, decomposed_uid_mapping, reaction_id=None):
     if isinstance(input_reactions, str):
         input_reactions = {input_reactions}
     if isinstance(output_reactions, str):
         output_reactions = {output_reactions}
 
     return find_best_match_both_decomposed_reactions(
-        input_reactions, output_reactions, decomposed_uid_mapping
+        input_reactions, output_reactions, decomposed_uid_mapping, reaction_id=reaction_id
     )

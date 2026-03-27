@@ -1,199 +1,191 @@
 # Logic Network Generator
 
 [![Tests](https://github.com/reactome/logic-network-generator/actions/workflows/test.yml/badge.svg)](https://github.com/reactome/logic-network-generator/actions/workflows/test.yml)
+[![Code Style](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 Generate logic networks from Reactome pathways by decomposing sets and complexes into their individual components.
 
-## Setup
+## Features
+
+- ✅ **Position-Aware UUIDs** - Same entity at different positions gets unique identifiers
+- ✅ **Comprehensive Validation** - 100% validated against source database
+- ✅ **Identifier Resolution** - Find entities by UniProt, gene symbol, or Reactome ID
+- ✅ **Batch Processing** - Generate multiple pathways from a list
+- ✅ **Production Ready** - Full test coverage, error handling, and logging
+
+## Quick Start
 
 ### Prerequisites
 
-- [Python 3](https://www.python.org/downloads/)
+- [Python 3.9+](https://www.python.org/downloads/)
 - [Poetry](https://python-poetry.org/)
 - [Docker](https://www.docker.com/) (for Neo4j database)
 
 ### Installation
 
-1. Clone the repository:
+```bash
+# Clone and install
+git clone https://github.com/reactome/logic-network-generator.git
+cd logic-network-generator
+poetry install
 
-   ```bash
-   git clone https://github.com/reactome/logic-network-generator.git
-   cd logic-network-generator
-   ```
+# Start Neo4j Reactome database (easiest method)
+docker-compose up -d
 
-2. Install dependencies:
+# Or using plain docker
+docker run -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_dbms_memory_heap_maxSize=8g \
+  public.ecr.aws/reactome/graphdb:Release94
+```
 
-   ```bash
-   poetry install
-   ```
-
-3. Start the Neo4j Reactome database:
-
-   ```bash
-   docker run -p 7474:7474 -p 7687:7687 \
-     -e NEO4J_dbms_memory_heap_maxSize=8g \
-     public.ecr.aws/reactome/graphdb:Release94
-   ```
-
-   **Note:** Replace `Release94` with the desired Reactome version.
-
-   The database will be accessible at:
-   - Neo4j Browser: http://localhost:7474
-   - Bolt protocol: bolt://localhost:7687
-
-## Usage
-
-### Generate Pathway Logic Networks
-
-Generate logic networks for pathways using a pathway ID:
+### Generate a Pathway
 
 ```bash
+# Single pathway
 poetry run python bin/create-pathways.py --pathway-id 69620
+
+# Multiple pathways
+poetry run python bin/create-pathways.py --pathway-list pathways.tsv
 ```
 
-Or generate for multiple pathways using a pathway list file:
+## Output Files
+
+All generated files are saved to the `output/` directory:
+
+- **`pathway_logic_network_{id}.csv`** - Main logic network with edges
+- **`uuid_mapping_{id}.csv`** - UUID to Reactome ID mapping with position info
+- **`decomposed_uid_mapping_{id}.csv`** - Complex/set decomposition details
+- **`reaction_connections_{id}.csv`** - Reaction connectivity graph
+- **`best_matches_{id}.csv`** - Input/output matching for reactions
+
+## Logic Network Format
+
+The generated logic network CSV has these columns:
+
+| Column | Description |
+|--------|-------------|
+| `source_id` | UUID of source entity |
+| `target_id` | UUID of target entity |
+| `pos_neg` | `pos` (activation) or `neg` (inhibition) |
+| `and_or` | `and` (all inputs required) or `or` (any input sufficient) |
+| `edge_type` | `input`, `output`, `catalyst`, or `regulator` |
+
+## Utilities
+
+### Create Database ID Mapping
+
+Generate a mapping file from Reactome database IDs to human-readable names:
 
 ```bash
-poetry run python bin/create-pathways.py --pathway-list pathway_list.tsv
-```
-
-The pathway list file should be tab-separated with columns: `id` and `pathway_name`.
-
-### Create Database ID to Name Mapping
-
-The mapping file converts Reactome database IDs to human-readable names and types. This is useful for downstream analysis and visualization.
-
-**Basic usage**:
-```bash
+# Basic usage (human entities only)
 poetry run python bin/create-db-id-name-mapping-file.py
-```
 
-**Output**: Creates `db_id_to_name_mapping.tsv` with columns:
-- `database_identifier` - Reactome database ID
-- `node_type` - Type (protein, complex, small-molecule, reaction-like-event, etc.)
-- `display_name` - Human-readable display name
-- `reference_entity_name` - Reference entity name
-- `reference_entity_identifier` - External database reference (e.g., UniProt:P12345)
-- `instance_class` - Reactome schema class
-
-**Options**:
-```bash
-# Specify custom output file
-poetry run python bin/create-db-id-name-mapping-file.py --output my_mapping.tsv
-
-# Include all species (not just human)
+# All species
 poetry run python bin/create-db-id-name-mapping-file.py --all-species
 
-# Use authentication if required
-poetry run python bin/create-db-id-name-mapping-file.py --username neo4j --password mypassword
-
-# Enable verbose logging
-poetry run python bin/create-db-id-name-mapping-file.py --verbose
+# Custom output location
+poetry run python bin/create-db-id-name-mapping-file.py --output my_mapping.tsv
 ```
 
-**Note**: By default, the script extracts only human entities (taxId 9606). Use `--all-species` to include all organisms.
+Output columns: `database_identifier`, `node_type`, `display_name`, `reference_entity_name`, `reference_entity_identifier`, `instance_class`
+
+## Validation
+
+Comprehensive validation ensures generated networks match the source database:
+
+```bash
+# Run all validation tests
+poetry run pytest tests/test_pathway_validation.py -v
+
+# Run comprehensive validation (includes loop analysis, regulator matching, identifier resolution)
+poetry run pytest tests/test_comprehensive_validation.py -v
+
+# Quick validation script
+poetry run python validate_pathway.py 69620
+```
+
+See [VALIDATION_README.md](VALIDATION_README.md) for details.
+
+## Testing
+
+```bash
+# Run unit tests (no database required - fast)
+poetry run pytest tests/ -v -m "not database"
+
+# Run all tests including database tests (requires Neo4j)
+poetry run pytest tests/ -v
+
+# Run only database/integration tests
+poetry run pytest tests/ -v -m "database"
+
+# Run with coverage
+poetry run pytest tests/ --cov=src --cov-report=html -m "not database"
+open htmlcov/index.html
+
+# Run specific test categories
+poetry run pytest tests/test_and_or_logic.py -v
+poetry run pytest tests/test_regulators_and_catalysts.py -v
+poetry run pytest tests/test_network_invariants.py -v
+```
+
+**Test Suite**: 82 tests total
+- **62 unit tests** - Core functionality, AND/OR logic, regulators, invariants (no database required)
+- **20 integration tests** - Comprehensive validation against Neo4j database (requires database)
 
 ## Examples
 
-The `examples/` directory contains complete working examples:
-
-### Generate and Analyze a Pathway
+Complete working examples in the `examples/` directory:
 
 ```bash
 poetry run python examples/generate_pathway_example.py
 ```
 
-This example demonstrates:
-- Generating a logic network for the Cell Cycle pathway
-- Analyzing network properties (edges, nodes, logic relationships)
-- Finding root inputs and terminal outputs
-- Error handling and troubleshooting
-
-See **[examples/README.md](examples/README.md)** for:
-- Additional usage patterns
-- Example pathways to try
-- Cytoscape export
-- Troubleshooting guide
-
-## Testing
-
-The project has a comprehensive test suite with 52 tests covering core functionality, AND/OR logic, transformation semantics, network invariants, and regulatory relationships.
-
-### Run All Tests
-
-```bash
-poetry run pytest tests/ -v
-```
-
-### Run Tests with Coverage
-
-```bash
-poetry run pytest tests/ --cov=src --cov-report=html
-```
-
-View the coverage report:
-```bash
-open htmlcov/index.html  # macOS
-xdg-open htmlcov/index.html  # Linux
-```
-
-### Run Specific Test Files
-
-```bash
-# Test AND/OR logic
-poetry run pytest tests/test_and_or_logic.py -v
-
-# Test input validation
-poetry run pytest tests/test_input_validation.py -v
-
-# Test network invariants
-poetry run pytest tests/test_network_invariants.py -v
-
-# Test transformation semantics
-poetry run pytest tests/test_transformation_semantics.py -v
-```
-
-### Test Suite Overview
-
-- **52 tests** total (100% passing)
-- **Unit tests**: Core helper functions
-- **Integration tests**: End-to-end pathway generation
-- **Validation tests**: Input validation and error handling
-- **Invariant tests**: Network structural properties
-- **Semantics tests**: Transformation logic and edge direction
-- **Regulatory tests**: Negative regulators, positive regulators, and catalysts
-
-For detailed test documentation, see `TEST_SUITE_SUMMARY.md`.
-
-## Development
-
-### Run Type Checking
-
-```bash
-poetry run mypy --ignore-missing-imports .
-```
-
-### Run Linting
-
-```bash
-poetry run flake8 .
-```
+See [examples/README.md](examples/README.md) for more usage patterns and example pathways.
 
 ## Documentation
 
-### Architecture
-- **[Architecture Overview](docs/ARCHITECTURE.md)** - Complete system architecture, data flow, and key concepts
-  - Data flow from Neo4j to logic network
-  - Virtual reactions and edge semantics
-  - AND/OR logic rules
-  - Design decisions and rationale
+- **[Architecture](docs/ARCHITECTURE.md)** - System architecture, data flow, and design decisions
+- **[Position-Aware UUIDs](POSITION_AWARE_UUID_DESIGN.md)** - Design and implementation of position-aware UUID system
+- **[Validation](VALIDATION_README.md)** - Comprehensive validation system documentation
+- **[Examples](examples/README.md)** - Usage examples and patterns
+- **[Changelog](CHANGELOG.md)** - Version history and notable changes
 
-### Test Documentation
-- **[Test Suite Summary](TEST_SUITE_SUMMARY.md)** - Overview of all 52 tests
-- **[Test Findings](TEST_FINDINGS.md)** - Investigation results from edge direction analysis
-- **[Complete Understanding](COMPLETE_UNDERSTANDING.md)** - Definitive explanation of edge semantics
+## Development
 
-### Improvement Documentation
-- **[Improvement Recommendations](IMPROVEMENT_RECOMMENDATIONS.md)** - Prioritized list of 15 improvements
-- **[Quick Wins](QUICK_WINS.md)** - 9 quick improvements (~2 hours total)
-- **[Changelog](CHANGELOG.md)** - Detailed history of all changes
+```bash
+# Start Neo4j database
+docker-compose up -d
+
+# Stop Neo4j database
+docker-compose down
+
+# Type checking
+poetry run mypy --ignore-missing-imports src/
+
+# Linting
+poetry run ruff check src/
+
+# Formatting
+poetry run ruff format src/
+
+# Pre-commit hooks
+poetry run pre-commit install
+poetry run pre-commit run --all-files
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development guidelines.
+
+## License
+
+Apache 2.0 - See [LICENSE](LICENSE) file for details.
+
+## Citation
+
+If you use this tool in your research, please cite:
+
+```
+Logic Network Generator - Reactome Pathway Logic Network Generation Tool
+https://github.com/reactome/logic-network-generator
+```

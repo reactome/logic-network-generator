@@ -6,14 +6,19 @@ from argparse import Namespace
 
 def parse_args() -> Namespace:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        description="pathway_creation"
+        description="Generate logic networks from Reactome pathways"
     )
     parser.add_argument("--debug", action="store_true", help="Enable debugging")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
-        "--pathway-list", type=str, help="Input file containing pathway information"
+        "--pathway-list", type=str, help="Input file containing pathway information (TSV with id and pathway_name columns)"
     )
-    parser.add_argument("--pathway-id", type=str, help="Single pathway ID to process")
+    parser.add_argument("--pathway-id", type=str, help="Single pathway stable ID to process (e.g., R-HSA-9909396)")
+    parser.add_argument(
+        "--top-level-pathways",
+        action="store_true",
+        help="Generate logic networks for all top-level Reactome pathways"
+    )
     parser.add_argument(
         "--output-dir",
         type=str,

@@ -94,8 +94,8 @@ for pathway_id in pathway_ids:
 import pandas as pd
 from src.logic_network_generator import find_root_inputs, find_terminal_outputs
 
-# Load previously generated network
-network = pd.read_csv("pathway_logic_network_69620.csv")
+# Load previously generated network from output directory
+network = pd.read_csv("output/pathway_logic_network_69620.csv")
 
 # Find starting and ending points
 roots = find_root_inputs(network)
@@ -114,8 +114,8 @@ print(f"AND edges: {len(and_edges)}, OR edges: {len(or_edges)}")
 ```python
 import pandas as pd
 
-# Load network
-network = pd.read_csv("pathway_logic_network_69620.csv")
+# Load network from output directory
+network = pd.read_csv("output/pathway_logic_network_69620.csv")
 
 # Create Cytoscape-compatible format
 cytoscape_edges = network[['source_id', 'target_id', 'and_or', 'edge_type']].copy()
@@ -166,7 +166,8 @@ docker run -p 7474:7474 -p 7687:7687 \
 
 ## Additional Resources
 
-- **Architecture Documentation**: `docs/ARCHITECTURE.md`
-- **Test Suite**: `tests/` directory with 43 tests
-- **Improvement Ideas**: `IMPROVEMENT_RECOMMENDATIONS.md`
+- **Main README**: `README.md` - Quick start and features
+- **Architecture Documentation**: `docs/ARCHITECTURE.md` - System design and data flow
+- **Validation System**: `VALIDATION_README.md` - Comprehensive validation documentation
+- **Test Suite**: `tests/` directory with 62 comprehensive tests
 - **Reactome Database**: https://reactome.org/

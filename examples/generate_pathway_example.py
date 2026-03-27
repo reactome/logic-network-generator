@@ -39,11 +39,12 @@ def main():
 
     try:
         # Generate the pathway logic network
-        # This will create several CSV files:
-        # - reaction_connections_{pathway_id}.csv
-        # - decomposed_uid_mapping_{pathway_id}.csv
-        # - best_matches_{pathway_id}.csv
-        # - pathway_logic_network_{pathway_id}.csv (the final output)
+        # This will create several CSV files in output/ directory:
+        # - output/reaction_connections_{pathway_id}.csv
+        # - output/decomposed_uid_mapping_{pathway_id}.csv
+        # - output/best_matches_{pathway_id}.csv
+        # - output/pathway_logic_network_{pathway_id}.csv (the final output)
+        # - output/uuid_mapping_{pathway_id}.csv (UUID to Reactome ID mapping)
         print("Step 1: Fetching reactions from Neo4j...")
         print("Step 2: Decomposing complexes and entity sets...")
         print("Step 3: Matching inputs and outputs...")
@@ -61,7 +62,7 @@ def main():
         print("="*70)
 
         # Load the generated network for analysis
-        network_file = f"pathway_logic_network_{pathway_id}.csv"
+        network_file = f"output/pathway_logic_network_{pathway_id}.csv"
         network = pd.read_csv(network_file)
 
         # Analyze network properties
@@ -102,13 +103,14 @@ def main():
                   f"({edge['and_or'].upper()}, {edge['edge_type']})")
 
         print("\n" + "="*70)
-        print("Output Files:")
+        print("Output Files (in output/ directory):")
         print("="*70)
         print(f"  Main output: {network_file}")
-        print(f"  Cached files:")
-        print(f"    - reaction_connections_{pathway_id}.csv")
-        print(f"    - decomposed_uid_mapping_{pathway_id}.csv")
-        print(f"    - best_matches_{pathway_id}.csv")
+        print(f"  UUID mapping: output/uuid_mapping_{pathway_id}.csv")
+        print(f"  Supporting files:")
+        print(f"    - output/reaction_connections_{pathway_id}.csv")
+        print(f"    - output/decomposed_uid_mapping_{pathway_id}.csv")
+        print(f"    - output/best_matches_{pathway_id}.csv")
 
         print("\n" + "="*70)
         print("Next Steps:")

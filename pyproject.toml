@@ -17,6 +17,7 @@ mypy = "^1.8.0"
 isort = "^5.13.2"
 click = "^8.1.7"
 python-dotenv = "^1.0.1"
+networkx = "^3.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.8.0"
@@ -47,6 +48,9 @@ python_functions = ["test_*"]
 addopts = [
     "--verbose",
     "--strict-markers",
+]
+markers = [
+    "database: tests that require Neo4j database connection",
 ]
 
 [tool.coverage.run]
