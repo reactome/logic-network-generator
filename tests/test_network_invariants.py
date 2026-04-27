@@ -131,6 +131,39 @@ class TestNetworkInvariants:
             f"Found {len(wrong)} positive regulator edges with and_or != 'and'"
         )
 
+    def test_assembly_edges_are_pos_and(self, network):
+        """Assembly edges (leaf → root-input complex) are pos/and.
+
+        These are synthetic edges added at the boundary so individual
+        proteins can be perturbed at network entry — see
+        docs/DESIGN_DECISIONS.md, "Two layers of decomposition."
+        """
+        asm = network[network['edge_type'] == 'assembly']
+        if len(asm) == 0:
+            pytest.skip("No assembly edges")
+        wrong = asm[(asm['pos_neg'] != 'pos') | (asm['and_or'] != 'and')]
+        assert len(wrong) == 0, (
+            f"Found {len(wrong)} assembly edges with pos_neg/and_or != pos/and"
+        )
+
+    def test_dissociation_edges_are_pos_and(self, network):
+        """Dissociation edges (terminal-output complex → leaf) are pos/and."""
+        diss = network[network['edge_type'] == 'dissociation']
+        if len(diss) == 0:
+            pytest.skip("No dissociation edges")
+        wrong = diss[(diss['pos_neg'] != 'pos') | (diss['and_or'] != 'and')]
+        assert len(wrong) == 0, (
+            f"Found {len(wrong)} dissociation edges with pos_neg/and_or != pos/and"
+        )
+
+    def test_no_boundary_self_loops(self, network):
+        """Assembly/dissociation edges never connect a node to itself."""
+        boundary = network[network['edge_type'].isin({'assembly', 'dissociation'})]
+        if len(boundary) == 0:
+            pytest.skip("No boundary edges")
+        loops = boundary[boundary['source_id'] == boundary['target_id']]
+        assert len(loops) == 0, f"Found {len(loops)} boundary self-loops"
+
     def test_or_logic_consistency(self, main_edges):
         """Edges with 'or' logic should have edge_type='output'."""
         if len(main_edges) == 0:
