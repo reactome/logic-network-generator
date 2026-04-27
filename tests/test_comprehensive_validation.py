@@ -9,6 +9,7 @@ Tests verify that generated logic networks correctly capture:
 These tests require a running Neo4j database with Reactome data.
 """
 
+import re
 import pandas as pd
 import pytest
 import sys
@@ -23,11 +24,17 @@ sys.path.insert(0, str(project_root))
 
 
 def find_pathway_dir(pathway_id: str) -> Path:
-    """Find the output directory for a pathway by its ID."""
+    """Find the output directory for a pathway by its trailing numeric ID.
+
+    Handles both naming conventions:
+    "Foo_12345" and "Foo_R-HSA-12345".
+    """
     output_dir = Path("output")
     for d in output_dir.iterdir():
-        if d.is_dir() and d.name.endswith(f"_{pathway_id}"):
-            return d
+        if d.is_dir():
+            match = re.search(r"(\d+)$", d.name)
+            if match and match.group(1) == pathway_id:
+                return d
     return None
 
 
@@ -197,15 +204,15 @@ class TestDecompositionCorrectness:
         pathway_dir = find_pathway_dir(pathway_id)
         decomposed = pd.read_csv(pathway_dir / "cache" / "decomposed_uid_mapping.csv")
 
-        # Query DB for reactions
+        # Query DB for reactions (cache uses R-HSA stable IDs)
         query = f"""
         MATCH (pathway:Pathway {{dbId: {pathway_id}}})-[:hasEvent*]->(reaction:ReactionLikeEvent)
-        RETURN DISTINCT reaction.dbId as reaction_id
+        RETURN DISTINCT reaction.stId as reaction_id
         """
         db_reactions = {row['reaction_id'] for row in graph.run(query).data()}
 
         # Get reactions from decomposition
-        decomposed_reactions = set(decomposed['reactome_id'].dropna().astype(int).unique())
+        decomposed_reactions = set(decomposed['reactome_id'].dropna().unique())
 
         # Check coverage
         missing = db_reactions - decomposed_reactions
@@ -251,11 +258,11 @@ class TestDecompositionCorrectness:
         pathway_dir = find_pathway_dir(pathway_id)
         decomposed = pd.read_csv(pathway_dir / "cache" / "decomposed_uid_mapping.csv")
 
-        # Query DB for entity sets
+        # Query DB for entity sets (cache uses R-HSA stable IDs)
         query = f"""
         MATCH (pathway:Pathway {{dbId: {pathway_id}}})-[:hasEvent*]->(reaction:ReactionLikeEvent)
         MATCH (reaction)-[:input|output]->(es:EntitySet)-[:hasMember|hasCandidate]->(member)
-        RETURN DISTINCT es.dbId as set_id, count(DISTINCT member) as num_members
+        RETURN DISTINCT es.stId as set_id, count(DISTINCT member) as num_members
         """
         db_sets = graph.run(query).data()
 
@@ -264,7 +271,7 @@ class TestDecompositionCorrectness:
 
         # Source entity ID should track original sets
         if 'source_entity_id' in decomposed.columns:
-            source_entities = decomposed['source_entity_id'].dropna().astype(int).unique()
+            source_entities = decomposed['source_entity_id'].dropna().unique()
             db_set_ids = {row['set_id'] for row in db_sets}
             covered_sets = db_set_ids.intersection(set(source_entities))
 

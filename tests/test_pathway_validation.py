@@ -9,6 +9,7 @@ the original pathways from the database by:
 These tests require a running Neo4j database with Reactome data.
 """
 
+import re
 import pandas as pd
 import pytest
 from pathlib import Path
@@ -16,13 +17,19 @@ from py2neo import Graph
 
 
 def find_pathway_dir(pathway_id: str) -> Path:
-    """Find the output directory for a pathway by its ID."""
+    """Find the output directory for a pathway by its trailing numeric ID.
+
+    Handles both naming conventions:
+    "Foo_12345" and "Foo_R-HSA-12345".
+    """
     output_dir = Path("output")
     if not output_dir.exists():
         return None
     for d in output_dir.iterdir():
-        if d.is_dir() and d.name.endswith(f"_{pathway_id}"):
-            return d
+        if d.is_dir():
+            match = re.search(r"(\d+)$", d.name)
+            if match and match.group(1) == pathway_id:
+                return d
     return None
 
 
@@ -37,10 +44,11 @@ def get_available_pathways():
                 and (d / "logic_network.csv").exists()
                 and (d / "stid_to_uuid_mapping.csv").exists()
                 and (d / "cache" / "decomposed_uid_mapping.csv").exists()):
-            # Extract pathway ID from directory name (last part after _)
-            parts = d.name.rsplit("_", 1)
-            if len(parts) == 2 and parts[1].isdigit():
-                available.append((parts[1], d))
+            # Extract trailing numeric pathway ID — handles both "Foo_12345"
+            # and "Foo_R-HSA-12345" naming.
+            match = re.search(r"(\d+)$", d.name)
+            if match:
+                available.append((match.group(1), d))
     return available
 
 
@@ -93,7 +101,7 @@ class TestPathwayValidation:
 
         query = f"""
         MATCH (pathway:Pathway {{dbId: {pathway_id}}})-[:hasEvent*]->(reaction:ReactionLikeEvent)
-        RETURN DISTINCT reaction.dbId as reaction_id
+        RETURN DISTINCT reaction.stId as reaction_id
         """
         db_reactions = graph.run(query).data()
         db_reaction_ids = {row['reaction_id'] for row in db_reactions}
