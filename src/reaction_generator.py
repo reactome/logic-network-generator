@@ -366,6 +366,41 @@ def _emit_entityset_provenance_rows(entity_set_id: str, leaves: Set[str]) -> Non
     )
 
 
+def get_terminal_components(entity_id: str) -> Set[str]:
+    """Recursively walk a Complex/EntitySet structure down to its terminal leaves.
+
+    Returns the set of leaf entity IDs (proteins, simple molecules, etc.)
+    reachable from this entity. Used by `logic_network_generator` for the
+    boundary-expansion pass: roots and terminals get synthetic assembly /
+    dissociation edges to their leaves so individual proteins can be
+    perturbed and read.
+
+    This is a pure read — nothing is written to `decomposed_uid_mapping`.
+    It is the *output-layer* counterpart to `break_apart_entity`'s
+    matching-layer rules; the two intentionally treat Complexes
+    differently (matching keeps them atomic; output decomposes them at
+    boundaries). See docs/DESIGN_DECISIONS.md for the full discussion.
+    """
+    labels = get_labels(entity_id)
+    if "Complex" in labels:
+        components = get_complex_components(entity_id)
+        leaves: Set[str] = set()
+        for member_id in components:
+            leaves |= get_terminal_components(member_id)
+        return leaves if leaves else {str(entity_id)}
+    if any(s in labels for s in ("EntitySet", "DefinedSet", "CandidateSet")):
+        # Ubiquitin sets are atomic at the boundary too: decomposing them
+        # would explode every boundary into ~14 indistinguishable copies.
+        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+            return {str(entity_id)}
+        members = get_set_members(entity_id)
+        leaves = set()
+        for member_id in members:
+            leaves |= get_terminal_components(member_id)
+        return leaves if leaves else {str(entity_id)}
+    return {str(entity_id)}
+
+
 def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -> Set[str]:
     """Break apart entity, tracking which parent entity it came from.
 

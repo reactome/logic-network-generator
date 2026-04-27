@@ -5,7 +5,11 @@ import pandas as pd
 from pandas import DataFrame
 from py2neo import Graph  # type: ignore
 from src.argument_parser import logger
-from src.reaction_generator import _complex_contains_entity_set, _UBIQUITIN_ENTITY_SET_IDS
+from src.reaction_generator import (
+    _complex_contains_entity_set,
+    _UBIQUITIN_ENTITY_SET_IDS,
+    get_terminal_components,
+)
 
 uri: str = "bolt://localhost:7687"
 graph: Graph = Graph(uri, auth=("neo4j", "test"))
@@ -570,6 +574,97 @@ def _decompose_regulator_entity(entity_id: str) -> List[tuple]:
         return [(entity_id, "and", 1)]
 
 
+def _emit_boundary_decomposition_edges(
+    pathway_logic_network_data: List[Dict[str, Any]],
+    root_input_eids: Set[str],
+    terminal_output_eids: Set[str],
+    root_input_uuid_cache: Dict[str, str],
+    terminal_output_uuid_cache: Dict[str, str],
+    reactome_id_to_uuid: Dict[str, str],
+) -> None:
+    """Append synthetic edges that expose leaves of root/terminal complexes.
+
+    For each root-input complex C with components {A, B, ...}, emit
+    ``A → C``, ``B → C``, ... edges of edge_type='assembly'. For each
+    terminal-output complex, emit ``C → A``, ``C → B``, ... of
+    edge_type='dissociation'. Each leaf shares a single UUID across all
+    boundary contexts so that perturbing a leaf at the assembly side
+    propagates through any downstream dissociation that reads the same
+    species.
+
+    Intermediate complexes (those produced by some reaction AND consumed
+    by another in this pathway) are intentionally NOT expanded — they're
+    real biological species flowing between reactions, and the AB dimer
+    is a different molecule from free A and free B. See
+    docs/DESIGN_DECISIONS.md, "Two layers of decomposition."
+
+    Simple-leaf root/terminal entities (proteins, small molecules) are
+    skipped: they're already perturbable as themselves.
+    """
+    from src.neo4j_connector import get_labels
+
+    leaf_uuid_registry: Dict[str, str] = {}
+
+    def _leaf_uuid(leaf_stid: str) -> str:
+        if leaf_stid not in leaf_uuid_registry:
+            leaf_uuid_registry[leaf_stid] = str(uuid.uuid4())
+            reactome_id_to_uuid[leaf_uuid_registry[leaf_stid]] = leaf_stid
+        return leaf_uuid_registry[leaf_stid]
+
+    def _is_complex(entity_id: str) -> bool:
+        return "Complex" in get_labels(entity_id)
+
+    assembly_count = 0
+    for eid in root_input_eids:
+        if not _is_complex(eid):
+            continue
+        complex_uuid = root_input_uuid_cache.get(eid)
+        if not complex_uuid:
+            continue
+        leaves = get_terminal_components(eid)
+        # If the only "leaf" is the complex itself, there's nothing to expose.
+        if leaves == {str(eid)}:
+            continue
+        for leaf in leaves:
+            pathway_logic_network_data.append({
+                "source_id": _leaf_uuid(leaf),
+                "target_id": complex_uuid,
+                "pos_neg": "pos",
+                "and_or": "and",
+                "edge_type": "assembly",
+                "stoichiometry": 1,
+            })
+            assembly_count += 1
+
+    dissociation_count = 0
+    for eid in terminal_output_eids:
+        if not _is_complex(eid):
+            continue
+        complex_uuid = terminal_output_uuid_cache.get(eid)
+        if not complex_uuid:
+            continue
+        leaves = get_terminal_components(eid)
+        if leaves == {str(eid)}:
+            continue
+        for leaf in leaves:
+            pathway_logic_network_data.append({
+                "source_id": complex_uuid,
+                "target_id": _leaf_uuid(leaf),
+                "pos_neg": "pos",
+                "and_or": "and",
+                "edge_type": "dissociation",
+                "stoichiometry": 1,
+            })
+            dissociation_count += 1
+
+    if assembly_count or dissociation_count:
+        logger.info(
+            f"Boundary expansion: {assembly_count} assembly edges, "
+            f"{dissociation_count} dissociation edges, "
+            f"{len(leaf_uuid_registry)} unique boundary leaves"
+        )
+
+
 def append_regulators(
     catalyst_map: pd.DataFrame,
     negative_regulator_map: pd.DataFrame,
@@ -915,7 +1010,22 @@ def create_pathway_logic_network(
         reactome_id_to_uuid,
         entity_uuid_registry=entity_uuid_registry,
     )
-    
+
+    # Boundary expansion: root-input and terminal-output complexes get
+    # synthetic assembly / dissociation edges to their leaf components so
+    # individual proteins are perturbable / readable at the network
+    # boundary. Intermediate complexes are deliberately left intact —
+    # they're the actual biological species flowing between reactions.
+    # See docs/DESIGN_DECISIONS.md, "Two layers of decomposition."
+    _emit_boundary_decomposition_edges(
+        pathway_logic_network_data=pathway_logic_network_data,
+        root_input_eids=root_input_eids,
+        terminal_output_eids=terminal_output_eids,
+        root_input_uuid_cache=root_input_uuid_cache,
+        terminal_output_uuid_cache=terminal_output_uuid_cache,
+        reactome_id_to_uuid=reactome_id_to_uuid,
+    )
+
     # Create final DataFrame
     pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=columns.keys())
     
