@@ -5,14 +5,12 @@ import pandas as pd
 from pandas import DataFrame
 from py2neo import Graph  # type: ignore
 from src.argument_parser import logger
+from src.neo4j_connector import get_graph
 from src.reaction_generator import (
     _complex_contains_entity_set,
     _UBIQUITIN_ENTITY_SET_IDS,
     get_terminal_components,
 )
-
-uri: str = "bolt://localhost:7687"
-graph: Graph = Graph(uri, auth=("neo4j", "test"))
 
 
 class PathwayResult(NamedTuple):
@@ -872,6 +870,7 @@ def create_pathway_logic_network(
     
     # Create mappings and connections
     reaction_id_map = create_reaction_id_map(decomposed_uid_mapping, best_matches)
+    graph = get_graph()
     catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
     negative_regulator_map = get_negative_regulators_for_reaction(reaction_id_map, graph)
     positive_regulator_map = get_positive_regulators_for_reaction(reaction_id_map, graph)

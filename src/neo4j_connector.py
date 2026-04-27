@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, List, Optional, Set, Union
 
 import pandas as pd
@@ -5,8 +6,32 @@ from py2neo import Graph  # type: ignore
 
 from src.argument_parser import logger
 
-uri: str = "bolt://localhost:7687"
-graph: Graph = Graph(uri, auth=("neo4j", "test"))
+# Lazy module-level Neo4j connection. The Graph object is only created
+# when first needed, so importing this module doesn't fail when Neo4j
+# is unreachable (e.g. in CI or during pytest collection).
+_graph: Optional[Graph] = None
+
+
+def get_graph() -> Graph:
+    global _graph
+    if _graph is None:
+        url = os.getenv("NEO4J_URL", "bolt://localhost:7687")
+        user = os.getenv("NEO4J_USER", "neo4j")
+        password = os.getenv("NEO4J_PASSWORD", "test")
+        _graph = Graph(url, auth=(user, password))
+    return _graph
+
+
+class _GraphProxy:
+    """Backward-compat shim: callers that do `graph.run(...)` keep working
+    after the lazy refactor. New code should call get_graph() directly.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_graph(), name)
+
+
+graph = _GraphProxy()
 
 # Module-level caches for bulk pre-fetched data
 _labels_cache: Dict[str, List[str]] = {}
