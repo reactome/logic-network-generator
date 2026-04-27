@@ -16,6 +16,7 @@ with patch('py2neo.Graph'):
     from src.logic_network_generator import (
         _assign_uuids,
         _build_entity_producer_count,
+        _emit_boundary_decomposition_edges,
         _register_entity_uuid,
         _get_or_create_entity_uuid,
         _resolve_vr_entities,
@@ -327,3 +328,82 @@ class TestInterReactionConnectivity:
 
         # "A" is not in root_input_eids, so it gets separate UUIDs
         assert registry[("A", "vr1", "input")] != registry[("A", "vr2", "input")]
+
+
+class TestBoundaryLeavesReuseExistingUUIDs:
+    """Boundary expansion must NOT mint a fresh UUID for a leaf if that
+    leaf's stId already has a UUID elsewhere in the network. Otherwise
+    perturbing 'MDM2 the regulator' wouldn't propagate to 'MDM2 the
+    boundary leaf' — they'd be disconnected duplicate nodes for the
+    same biological entity, which kills the perturbation use case
+    boundary expansion exists to enable.
+    """
+
+    def test_leaf_reuses_uuid_when_entity_already_in_registry(self):
+        """If MDM2 already has UUID U_existing in reactome_id_to_uuid (e.g.
+        because it's a regular VR input or a regulator elsewhere), the
+        boundary expansion of MDM2:TP53 must use U_existing for the MDM2
+        leaf — not a fresh one.
+        """
+        existing_mdm2_uuid = "u-existing-mdm2"
+        complex_uuid = "u-complex"
+        reactome_id_to_uuid: Dict[str, str] = {
+            existing_mdm2_uuid: "MDM2",  # MDM2 already has a UUID elsewhere
+            complex_uuid: "MDM2:TP53",
+        }
+        edges: List[Dict[str, Any]] = []
+
+        with patch('src.neo4j_connector.get_labels',
+                   return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"MDM2", "TP53"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                root_input_eids={"MDM2:TP53"},
+                terminal_output_eids=set(),
+                root_input_uuid_cache={"MDM2:TP53": complex_uuid},
+                terminal_output_uuid_cache={},
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+
+        # Find the assembly edge whose target is the complex and whose
+        # source maps back to MDM2.
+        mdm2_assembly = [
+            e for e in edges
+            if e["edge_type"] == "assembly"
+            and e["target_id"] == complex_uuid
+            and reactome_id_to_uuid.get(e["source_id"]) == "MDM2"
+        ]
+        assert len(mdm2_assembly) == 1
+        assert mdm2_assembly[0]["source_id"] == existing_mdm2_uuid, (
+            "Boundary leaf must reuse the existing UUID for its stId, "
+            "not mint a fresh one. See docs/DESIGN_DECISIONS.md."
+        )
+
+    def test_leaf_mints_fresh_uuid_when_entity_is_new_to_network(self):
+        """When the leaf's stId is not in reactome_id_to_uuid, a fresh
+        UUID is minted and recorded so future passes can find it.
+        """
+        complex_uuid = "u-complex"
+        reactome_id_to_uuid: Dict[str, str] = {complex_uuid: "C"}
+        edges: List[Dict[str, Any]] = []
+
+        with patch('src.neo4j_connector.get_labels',
+                   return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"L1", "L2"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                root_input_eids={"C"},
+                terminal_output_eids=set(),
+                root_input_uuid_cache={"C": complex_uuid},
+                terminal_output_uuid_cache={},
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+
+        # Two new leaf UUIDs added to the mapping
+        new_uuids = [u for u, sid in reactome_id_to_uuid.items() if sid in {"L1", "L2"}]
+        assert len(new_uuids) == 2
+        # Each fresh UUID is also used as a source on an assembly edge
+        for u in new_uuids:
+            assert any(e["source_id"] == u and e["edge_type"] == "assembly" for e in edges)

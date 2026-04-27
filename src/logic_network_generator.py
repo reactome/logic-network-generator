@@ -600,12 +600,28 @@ def _emit_boundary_decomposition_edges(
 
     Simple-leaf root/terminal entities (proteins, small molecules) are
     skipped: they're already perturbable as themselves.
+
+    A leaf reuses any UUID the entity already has elsewhere in the network
+    (regular VR inputs/outputs, regulators, catalysts) so that perturbing a
+    protein in one role propagates through every other role. Without this,
+    boundary leaves would be disconnected duplicate nodes for the same
+    biological entity.
     """
     from src.neo4j_connector import get_labels
+
+    # Build stId → existing UUID lookup from everything assigned so far
+    # (entity registry from VR phases, plus regulator/catalyst UUIDs added
+    # by append_regulators). reactome_id_to_uuid is keyed by UUID, so invert.
+    stid_to_existing_uuid: Dict[str, str] = {}
+    for existing_uuid, stid in reactome_id_to_uuid.items():
+        if stid not in stid_to_existing_uuid:
+            stid_to_existing_uuid[stid] = existing_uuid
 
     leaf_uuid_registry: Dict[str, str] = {}
 
     def _leaf_uuid(leaf_stid: str) -> str:
+        if leaf_stid in stid_to_existing_uuid:
+            return stid_to_existing_uuid[leaf_stid]
         if leaf_stid not in leaf_uuid_registry:
             leaf_uuid_registry[leaf_stid] = str(uuid.uuid4())
             reactome_id_to_uuid[leaf_uuid_registry[leaf_stid]] = leaf_stid
