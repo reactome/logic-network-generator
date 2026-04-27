@@ -271,6 +271,73 @@ def _complex_contains_entity_set(entity_id: str) -> bool:
     return False
 
 
+def _emit_entityset_provenance_rows(entity_set_id: str, leaves: Set[str]) -> None:
+    """Write rows that record EntitySet membership for each decomposed leaf.
+
+    Each row's source_entity_id points back at the EntitySet, so a query like
+    "which EntitySets contain leaf X?" can be answered by filtering
+    decomposed_uid_mapping on (component_id == X) & source_entity_id.notna().
+
+    The uid is a deterministic sha256 of (entity_set_id, leaf, component_id),
+    which guarantees we don't write duplicates if this code is somehow invoked
+    twice for the same EntitySet (the cache check at the top of
+    break_apart_entity should already prevent this, but a deterministic uid is
+    a belt-and-suspenders safeguard).
+
+    Provenance uids are never returned upward from break_apart_entity, so
+    downstream callers (best_reaction_match, _build_uid_index, etc.) never
+    pass them in lookups — they live in the table purely as records.
+    """
+    global decomposed_uid_mapping
+
+    if not leaves:
+        return
+
+    rows: List[DataFrameRow] = []
+    for leaf in leaves:
+        if is_valid_uuid(leaf):
+            # Leaf is itself a UID from a nested decomposition (e.g., a
+            # Complex inside this set). Expand to its component_ids and
+            # record one provenance row per component.
+            component_ids = decomposed_uid_mapping.loc[
+                decomposed_uid_mapping["uid"] == leaf, "component_id"
+            ].drop_duplicates().tolist()
+            for component_id in component_ids:
+                rows.append({
+                    "uid": hashlib.sha256(
+                        f"{entity_set_id}|{leaf}|{component_id}".encode()
+                    ).hexdigest(),
+                    "component_id": component_id,
+                    "reactome_id": entity_set_id,
+                    "component_id_or_reference_entity_id":
+                        get_component_id_or_reference_entity_id(component_id),
+                    "input_or_output_uid": leaf,
+                    "input_or_output_reactome_id": None,
+                    "source_entity_id": entity_set_id,
+                    "source_reaction_id": None,
+                    "stoichiometry": 1,
+                })
+        else:
+            rows.append({
+                "uid": hashlib.sha256(
+                    f"{entity_set_id}|{leaf}".encode()
+                ).hexdigest(),
+                "component_id": leaf,
+                "reactome_id": entity_set_id,
+                "component_id_or_reference_entity_id":
+                    get_component_id_or_reference_entity_id(leaf),
+                "input_or_output_uid": None,
+                "input_or_output_reactome_id": leaf,
+                "source_entity_id": entity_set_id,
+                "source_reaction_id": None,
+                "stoichiometry": 1,
+            })
+
+    decomposed_uid_mapping = pd.concat(
+        [decomposed_uid_mapping, pd.DataFrame(rows)], ignore_index=True
+    )
+
+
 def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -> Set[str]:
     """Break apart entity, tracking which parent entity it came from.
 
@@ -321,6 +388,13 @@ def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -
                 member_list.extend(members)
             else:
                 member_list.extend(set(members))
+
+        # Provenance: record each leaf's membership in this EntitySet so that
+        # downstream callers can answer "which EntitySet does this leaf belong
+        # to?" Without these rows, source_entity_id only ever surfaces in the
+        # narrow Complex-containing-EntitySet path; bare-EntitySet inputs lose
+        # their parent on the way back up to the reaction level.
+        _emit_entityset_provenance_rows(entity_id, set(member_list))
 
         return set(member_list)
 
