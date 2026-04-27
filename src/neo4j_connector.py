@@ -21,18 +21,6 @@ def get_graph() -> Graph:
         _graph = Graph(url, auth=(user, password))
     return _graph
 
-
-class _GraphProxy:
-    """Backward-compat shim: callers that do `graph.run(...)` keep working
-    after the lazy refactor. New code should call get_graph() directly.
-    """
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(get_graph(), name)
-
-
-graph = _GraphProxy()
-
 # Module-level caches for bulk pre-fetched data
 _labels_cache: Dict[str, List[str]] = {}
 _components_cache: Dict[str, Dict[str, int]] = {}
@@ -68,16 +56,19 @@ def prefetch_entity_data(reaction_ids: List[str]) -> None:
 
     clear_prefetch_cache()
 
-    ids_str = ", ".join(f"'{rid}'" for rid in reaction_ids)
+    g = get_graph()
+    rid_list = list(reaction_ids)
 
     # Query 1: Get all reaction inputs and outputs
-    logger.info(f"Bulk pre-fetching data for {len(reaction_ids)} reactions...")
-    query_io = f"""
+    logger.info(f"Bulk pre-fetching data for {len(rid_list)} reactions...")
+    io_results = g.run(
+        """
         MATCH (r:ReactionLikeEvent)-[rel:input|output]->(e)
-        WHERE r.stId IN [{ids_str}]
-        RETURN r.stId as reaction_id, type(rel) as rel_type, e.stId as entity_id
-    """
-    io_results = graph.run(query_io).data()
+        WHERE r.stId IN $reaction_ids
+        RETURN r.stId AS reaction_id, type(rel) AS rel_type, e.stId AS entity_id
+        """,
+        reaction_ids=rid_list,
+    ).data()
 
     direct_entity_ids: Set[str] = set()
     for row in io_results:
@@ -96,17 +87,19 @@ def prefetch_entity_data(reaction_ids: List[str]) -> None:
         _prefetch_done = True
         return
 
-    direct_ids_str = ", ".join(f"'{eid}'" for eid in direct_entity_ids)
-
-    # Query 2: Discover all descendant entities and their labels
-    # Follows hasComponent/hasCandidate/hasMember relationships up to 10 levels deep
+    # Query 2: Discover all descendant entities and their labels.
+    # The *0..10 depth bound covers every Reactome nesting we've seen
+    # (real depth maxes out around 5); 10 is a generous safety margin
+    # without being expensive. Bumping it has not been necessary.
     logger.info("Discovering all descendant entities...")
-    query_descendants = f"""
+    desc_results = g.run(
+        """
         MATCH (root)-[:hasComponent|hasCandidate|hasMember*0..10]->(entity)
-        WHERE root.stId IN [{direct_ids_str}]
-        RETURN DISTINCT entity.stId as entity_id, labels(entity) as entity_labels
-    """
-    desc_results = graph.run(query_descendants).data()
+        WHERE root.stId IN $entity_ids
+        RETURN DISTINCT entity.stId AS entity_id, labels(entity) AS entity_labels
+        """,
+        entity_ids=list(direct_entity_ids),
+    ).data()
 
     all_entity_ids: Set[str] = set()
     for row in desc_results:
@@ -115,17 +108,19 @@ def prefetch_entity_data(reaction_ids: List[str]) -> None:
         _labels_cache[eid] = row["entity_labels"]
 
     logger.info(f"Found {len(all_entity_ids)} total entities (including descendants)")
-
-    all_ids_str = ", ".join(f"'{eid}'" for eid in all_entity_ids)
+    all_ids_list = list(all_entity_ids)
 
     # Query 3: All hasComponent relationships (Complex → components) with stoichiometry
     logger.info("Bulk fetching component relationships...")
-    query_components = f"""
+    comp_results = g.run(
+        """
         MATCH (parent)-[rel:hasComponent]->(child)
-        WHERE parent.stId IN [{all_ids_str}]
-        RETURN parent.stId as parent_id, child.stId as child_id, rel.stoichiometry as stoichiometry
-    """
-    comp_results = graph.run(query_components).data()
+        WHERE parent.stId IN $entity_ids
+        RETURN parent.stId AS parent_id, child.stId AS child_id,
+               rel.stoichiometry AS stoichiometry
+        """,
+        entity_ids=all_ids_list,
+    ).data()
     for row in comp_results:
         pid = row["parent_id"]
         cid = row["child_id"]
@@ -136,12 +131,14 @@ def prefetch_entity_data(reaction_ids: List[str]) -> None:
 
     # Query 4: All hasCandidate|hasMember relationships (EntitySet → members)
     logger.info("Bulk fetching member relationships...")
-    query_members = f"""
+    member_results = g.run(
+        """
         MATCH (parent)-[:hasCandidate|hasMember]->(child)
-        WHERE parent.stId IN [{all_ids_str}]
-        RETURN parent.stId as parent_id, child.stId as child_id
-    """
-    member_results = graph.run(query_members).data()
+        WHERE parent.stId IN $entity_ids
+        RETURN parent.stId AS parent_id, child.stId AS child_id
+        """,
+        entity_ids=all_ids_list,
+    ).data()
     for row in member_results:
         pid = row["parent_id"]
         cid = row["child_id"]
@@ -152,14 +149,16 @@ def prefetch_entity_data(reaction_ids: List[str]) -> None:
 
     # Query 5: All HGNC reference entity IDs
     logger.info("Bulk fetching reference entity IDs...")
-    query_ref = f"""
+    ref_results = g.run(
+        """
         MATCH (rd:ReferenceDatabase)<-[:referenceDatabase]-(reg:ReferenceEntity)
               <-[:referenceGene]-(re:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
-        WHERE rd.displayName = "HGNC"
-          AND pe.stId IN [{all_ids_str}]
-        RETURN pe.stId as entity_id, re.stId as reference_id
-    """
-    ref_results = graph.run(query_ref).data()
+        WHERE rd.displayName = 'HGNC'
+          AND pe.stId IN $entity_ids
+        RETURN pe.stId AS entity_id, re.stId AS reference_id
+        """,
+        entity_ids=all_ids_list,
+    ).data()
     for row in ref_results:
         _reference_entity_cache[row["entity_id"]] = row["reference_id"]
     logger.info(f"Cached {len(_reference_entity_cache)} reference entity mappings")
@@ -187,16 +186,19 @@ def prefetch_entity_decomposition_data(entity_ids: List[str]) -> None:
     if not uncached:
         return
 
-    ids_str = ", ".join(f"'{eid}'" for eid in uncached)
+    g = get_graph()
 
-    # Discover all descendant entities and their labels
+    # Discover all descendant entities and their labels.
+    # See prefetch_entity_data for why *0..10 is the depth bound.
     logger.info(f"Pre-fetching decomposition data for {len(uncached)} catalyst/regulator entities...")
-    query_descendants = f"""
+    desc_results = g.run(
+        """
         MATCH (root)-[:hasComponent|hasCandidate|hasMember*0..10]->(entity)
-        WHERE root.stId IN [{ids_str}]
-        RETURN DISTINCT entity.stId as entity_id, labels(entity) as entity_labels
-    """
-    desc_results = graph.run(query_descendants).data()
+        WHERE root.stId IN $entity_ids
+        RETURN DISTINCT entity.stId AS entity_id, labels(entity) AS entity_labels
+        """,
+        entity_ids=uncached,
+    ).data()
 
     new_entity_ids: Set[str] = set()
     for row in desc_results:
@@ -209,15 +211,18 @@ def prefetch_entity_decomposition_data(entity_ids: List[str]) -> None:
         logger.info("No new entities to fetch decomposition data for")
         return
 
-    all_ids_str = ", ".join(f"'{eid}'" for eid in new_entity_ids)
+    new_ids_list = list(new_entity_ids)
 
     # hasComponent relationships (Complex → components) with stoichiometry
-    query_components = f"""
+    comp_results = g.run(
+        """
         MATCH (parent)-[rel:hasComponent]->(child)
-        WHERE parent.stId IN [{all_ids_str}]
-        RETURN parent.stId as parent_id, child.stId as child_id, rel.stoichiometry as stoichiometry
-    """
-    comp_results = graph.run(query_components).data()
+        WHERE parent.stId IN $entity_ids
+        RETURN parent.stId AS parent_id, child.stId AS child_id,
+               rel.stoichiometry AS stoichiometry
+        """,
+        entity_ids=new_ids_list,
+    ).data()
     for row in comp_results:
         pid = row["parent_id"]
         cid = row["child_id"]
@@ -226,12 +231,14 @@ def prefetch_entity_decomposition_data(entity_ids: List[str]) -> None:
         _components_cache[pid][cid] = row.get("stoichiometry") or 1
 
     # hasCandidate|hasMember relationships (EntitySet → members)
-    query_members = f"""
+    member_results = g.run(
+        """
         MATCH (parent)-[:hasCandidate|hasMember]->(child)
-        WHERE parent.stId IN [{all_ids_str}]
-        RETURN parent.stId as parent_id, child.stId as child_id
-    """
-    member_results = graph.run(query_members).data()
+        WHERE parent.stId IN $entity_ids
+        RETURN parent.stId AS parent_id, child.stId AS child_id
+        """,
+        entity_ids=new_ids_list,
+    ).data()
     for row in member_results:
         pid = row["parent_id"]
         cid = row["child_id"]
@@ -260,16 +267,16 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     """
     query: str = """
         MATCH (pathway:Pathway)-[:hasEvent*]->(r1:ReactionLikeEvent)
-        WHERE pathway.stId = '%s'
+        WHERE pathway.stId = $pathway_id
         OPTIONAL MATCH (r1)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway)
-        WHERE pathway.stId = '%s'
+        WHERE pathway.stId = $pathway_id
         RETURN r1.stId AS preceding_reaction_id,
                r2.stId AS following_reaction_id,
                CASE WHEN r2 IS NULL THEN 'No Preceding Event' ELSE 'Has Preceding Event' END AS event_status
-        """ % (pathway_id, pathway_id)
+        """
 
     try:
-        result = graph.run(query).data()
+        result = get_graph().run(query, pathway_id=pathway_id).data()
         df: pd.DataFrame = pd.DataFrame(result)
 
         if df.empty:
@@ -312,7 +319,7 @@ def get_top_level_pathways() -> List[Dict[str, Any]]:
     """
 
     try:
-        result = graph.run(query).data()
+        result = get_graph().run(query).data()
         logger.info(f"Found {len(result)} top-level pathways")
         return result
     except Exception as e:
@@ -337,14 +344,14 @@ def get_pathway_name(pathway_id: str) -> str:
         ValueError: If pathway not found
         ConnectionError: If Neo4j database is not accessible
     """
-    query: str = f"""
+    query: str = """
         MATCH (p:Pathway)
-        WHERE p.stId = '{pathway_id}'
+        WHERE p.stId = $pathway_id
         RETURN p.displayName AS name
     """
 
     try:
-        result = graph.run(query).data()
+        result = get_graph().run(query, pathway_id=pathway_id).data()
         if not result:
             raise ValueError(f"Pathway with ID {pathway_id} not found")
         return result[0]["name"]
@@ -363,15 +370,11 @@ def get_labels(entity_id: str) -> List[str]:
     if entity_id in _labels_cache:
         return _labels_cache[entity_id]
 
-    query_get_labels_template: str = """
-       MATCH (e)
-          WHERE e.stId = '%s'
-       RETURN labels(e) AS labels
-       """
-    query: str = query_get_labels_template % entity_id
-
     try:
-        result = graph.run(query).data()[0]["labels"]
+        result = get_graph().run(
+            "MATCH (e) WHERE e.stId = $entity_id RETURN labels(e) AS labels",
+            entity_id=entity_id,
+        ).data()[0]["labels"]
         _labels_cache[entity_id] = result
         return result
     except Exception:
@@ -385,15 +388,15 @@ def get_complex_components(entity_id: str) -> Dict[str, int]:
     if _prefetch_done:
         return {}  # Not in bulk results means no components
 
-    query_get_components_template: str = """
-       MATCH (entity)-[rel:hasComponent]->(component)
-           WHERE entity.stId = '%s'
-       RETURN component.stId AS component_id, rel.stoichiometry AS stoichiometry
-       """
-    query: str = query_get_components_template % entity_id
-
     try:
-        data = graph.run(query).data()
+        data = get_graph().run(
+            """
+            MATCH (entity)-[rel:hasComponent]->(component)
+            WHERE entity.stId = $entity_id
+            RETURN component.stId AS component_id, rel.stoichiometry AS stoichiometry
+            """,
+            entity_id=entity_id,
+        ).data()
         result = {row["component_id"]: row.get("stoichiometry") or 1 for row in data}
         _components_cache[entity_id] = result
         return result
@@ -408,15 +411,16 @@ def get_set_members(entity_id: str) -> Set[str]:
     if _prefetch_done:
         return set()  # Not in bulk results means no members
 
-    query_get_members_template: str = """
-        MATCH (entity)-[:hasCandidate|hasMember]->(member)
-            WHERE entity.stId = '%s'
-        RETURN collect(member.stId) as member_ids
-        """
-    query: str = query_get_members_template % entity_id
-
     try:
-        result = set(graph.run(query).data()[0]["member_ids"])
+        data = get_graph().run(
+            """
+            MATCH (entity)-[:hasCandidate|hasMember]->(member)
+            WHERE entity.stId = $entity_id
+            RETURN collect(member.stId) AS member_ids
+            """,
+            entity_id=entity_id,
+        ).data()
+        result = set(data[0]["member_ids"])
         _members_cache[entity_id] = result
         return result
     except Exception:
@@ -428,16 +432,21 @@ def get_reaction_input_output_ids(reaction_id: str, input_or_output: str) -> Set
     if reaction_id in _reaction_io_cache:
         return _reaction_io_cache[reaction_id].get(input_or_output, set())
 
-    query_template: str = """
-       MATCH (reaction)-[:%s]-(io)
-           WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) AND reaction.stId='%s'
-       RETURN COLLECT(io.stId) AS io_ids
-    """
-    relation_type: str = "input" if input_or_output == "input" else "output"
-    query: str = query_template % (relation_type, reaction_id)
+    # Cypher syntax doesn't allow parameterizing relationship types, so the
+    # input/output choice has to be embedded — but only after restricting to
+    # the known vocabulary, so it can't be smuggled to anything else.
+    if input_or_output not in {"input", "output"}:
+        raise ValueError(f"input_or_output must be 'input' or 'output', got {input_or_output!r}")
+
+    query: str = (
+        f"MATCH (reaction)-[:{input_or_output}]-(io) "
+        f"WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) "
+        f"AND reaction.stId = $reaction_id "
+        f"RETURN COLLECT(io.stId) AS io_ids"
+    )
 
     try:
-        return set(graph.run(query).data()[0]["io_ids"])
+        return set(get_graph().run(query, reaction_id=reaction_id).data()[0]["io_ids"])
     except Exception:
         logger.error("Error in get_reaction_input_output_ids", exc_info=True)
         raise
@@ -449,16 +458,17 @@ def get_reference_entity_id(entity_id: str) -> Union[str, None]:
     if _prefetch_done:
         return None  # Not in bulk results means no HGNC reference
 
-    query_template: str = """
-        MATCH (reference_database:ReferenceDatabase)<-[:referenceDatabase]-(reference_entity_gene:ReferenceEntity)<-[:referenceGene]-(reference_entity:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
-        WHERE reference_database.displayName = "HGNC"
-            AND pe.stId = '%s'
-        RETURN reference_entity.stId as id
-    """  # noqa
-    query: str = query_template % entity_id
-
     try:
-        data = graph.run(query).data()
+        data = get_graph().run(
+            """
+            MATCH (rd:ReferenceDatabase)<-[:referenceDatabase]-(reg:ReferenceEntity)
+                  <-[:referenceGene]-(re:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
+            WHERE rd.displayName = 'HGNC'
+              AND pe.stId = $entity_id
+            RETURN re.stId AS id
+            """,
+            entity_id=entity_id,
+        ).data()
         if len(data) == 0:
             _reference_entity_cache[entity_id] = None
             return None
