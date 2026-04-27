@@ -39,8 +39,7 @@ def _get_reactome_id_from_hash(decomposed_uid_mapping: pd.DataFrame, hash_value:
 
 def create_reaction_id_map(
     decomposed_uid_mapping: pd.DataFrame,
-    reaction_ids: List[str],
-    best_matches: pd.DataFrame
+    best_matches: pd.DataFrame,
 ) -> pd.DataFrame:
     """Create a mapping between reaction UIDs, Reactome IDs, and input/output hashes.
 
@@ -84,7 +83,6 @@ def create_reaction_id_map(
 
     Args:
         decomposed_uid_mapping: Maps hashes to decomposed physical entities
-        reaction_ids: List of Reactome reaction IDs (currently unused in function)
         best_matches: DataFrame with 'incomming' and 'outgoing' hash columns
                      Each row represents an optimal input/output pairing
 
@@ -111,11 +109,18 @@ def create_reaction_id_map(
     for _, match in best_matches.iterrows():
         incomming_hash = match["incomming"]
         outgoing_hash = match["outgoing"]
-        reactome_id = _get_reactome_id_from_hash(decomposed_uid_mapping, incomming_hash)
+        in_reactome_id = _get_reactome_id_from_hash(decomposed_uid_mapping, incomming_hash)
+        out_reactome_id = _get_reactome_id_from_hash(decomposed_uid_mapping, outgoing_hash)
+        assert in_reactome_id == out_reactome_id, (
+            f"best_matches paired hashes from different reactions: "
+            f"input hash {incomming_hash[:8]}... is from {in_reactome_id}, "
+            f"output hash {outgoing_hash[:8]}... is from {out_reactome_id}. "
+            f"Hungarian assignment must run within a single reaction."
+        )
 
         row = {
             "uid": str(uuid.uuid4()),
-            "reactome_id": reactome_id,
+            "reactome_id": in_reactome_id,
             "input_hash": incomming_hash,
             "output_hash": outgoing_hash,
         }
@@ -260,16 +265,6 @@ def _get_hash_for_reaction(reaction_id_map: pd.DataFrame, uid: str, hash_type: s
     return reaction_id_map.loc[
         reaction_id_map["uid"] == uid, hash_type
     ].iloc[0]
-
-
-def _extract_uid_and_reactome_values(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> tuple:
-    """Extract UID and Reactome ID values for a given hash."""
-    filtered_rows = decomposed_uid_mapping[decomposed_uid_mapping["uid"] == hash_value]
-
-    uid_values = _get_non_null_values(filtered_rows, "input_or_output_uid")
-    reactome_id_values = _get_non_null_values(filtered_rows, "input_or_output_reactome_id")
-
-    return uid_values, reactome_id_values
 
 
 def _build_uid_index(decomposed_uid_mapping: pd.DataFrame) -> Dict[str, tuple]:
@@ -535,43 +530,39 @@ def _resolve_vr_entities(
 
 
 def _decompose_regulator_entity(entity_id: str) -> List[tuple]:
-    """Decompose a catalyst/regulator entity to terminal members.
+    """Decompose a catalyst/regulator entity to (terminal_id, stoichiometry) pairs.
 
-    Returns list of (terminal_id, logic_type, stoichiometry) tuples.
-    Complex members -> "and" (all needed), stoichiometry multiplied through.
-    EntitySet members -> "or" (any suffices), stoichiometry preserved from sub-components.
-    Simple entities -> returned as-is with "and" and stoichiometry 1.
+    The decomposition rules mirror break_apart_entity (matching layer):
+    Complex with EntitySet → cartesian over members; simple Complex
+    returned intact; EntitySet → flat alternatives; ubiquitin sets are
+    treated as atomic to avoid combinatorial explosion. AND/OR semantics
+    for the resulting edges are decided by append_regulators based on
+    pos_neg, not by within-entity decomposition shape.
     """
     from src.neo4j_connector import get_labels, get_complex_components, get_set_members
 
     labels = get_labels(entity_id)
 
     if "Complex" in labels:
-        # Only decompose complexes that contain EntitySets (consistent with break_apart_entity)
         if not _complex_contains_entity_set(entity_id):
-            return [(entity_id, "and", 1)]
+            return [(entity_id, 1)]
         components = get_complex_components(entity_id)  # Dict[str, int]
         result = []
         for member_id, stoich in components.items():
-            sub_results = _decompose_regulator_entity(member_id)
-            for mid, logic, sub_stoich in sub_results:
-                result.append((mid, logic, stoich * sub_stoich))
-        return result if result else [(entity_id, "and", 1)]
+            for mid, sub_stoich in _decompose_regulator_entity(member_id):
+                result.append((mid, stoich * sub_stoich))
+        return result if result else [(entity_id, 1)]
 
-    elif "EntitySet" in labels or "DefinedSet" in labels or "CandidateSet" in labels:
-        # Skip ubiquitin EntitySets (consistent with break_apart_entity)
+    if "EntitySet" in labels or "DefinedSet" in labels or "CandidateSet" in labels:
         if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
-            return [(entity_id, "or", 1)]
+            return [(entity_id, 1)]
         members = get_set_members(entity_id)
         result = []
         for member_id in members:
-            sub_results = _decompose_regulator_entity(member_id)
-            # EntitySet members are OR alternatives — override logic_type
-            result.extend((mid, "or", sub_stoich) for mid, _, sub_stoich in sub_results)
-        return result if result else [(entity_id, "or", 1)]
+            result.extend(_decompose_regulator_entity(member_id))
+        return result if result else [(entity_id, 1)]
 
-    else:
-        return [(entity_id, "and", 1)]
+    return [(entity_id, 1)]
 
 
 def _emit_boundary_decomposition_edges(
@@ -730,7 +721,7 @@ def append_regulators(
             # is preserved in decomposed_uid_mapping.csv.
             and_or = "and" if pos_neg == "pos" else "or"
 
-            for member_id, _member_logic, member_stoich in terminal_members:
+            for member_id, member_stoich in terminal_members:
                 # Reuse existing UUID if this entity already appears in the pathway
                 if member_id in stid_to_existing_uuid:
                     member_uuid = stid_to_existing_uuid[member_id]
@@ -880,7 +871,7 @@ def create_pathway_logic_network(
     _calculate_reaction_statistics(reaction_connections)
     
     # Create mappings and connections
-    reaction_id_map = create_reaction_id_map(decomposed_uid_mapping, reaction_ids, best_matches)
+    reaction_id_map = create_reaction_id_map(decomposed_uid_mapping, best_matches)
     catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
     negative_regulator_map = get_negative_regulators_for_reaction(reaction_id_map, graph)
     positive_regulator_map = get_positive_regulators_for_reaction(reaction_id_map, graph)
@@ -983,7 +974,12 @@ def create_pathway_logic_network(
 
         for eid in output_ids:
             output_uuid = entity_uuid_registry[(eid, vr_uid, "output")]
-            and_or = "or" if entity_producer_count.get(eid, 0) > 1 else ""
+            # 'or' when this entity is produced by multiple VRs (any one
+            # source can supply it). None for single-producer outputs:
+            # there's no AND/OR relationship to express, the entity simply
+            # IS produced. None > "" because "" silently leaks into CSV
+            # as an inconsistent empty string distinct from NaN.
+            and_or = "or" if entity_producer_count.get(eid, 0) > 1 else None
             pathway_logic_network_data.append({
                 "source_id": vr_uid,
                 "target_id": output_uuid,
@@ -1069,36 +1065,17 @@ def create_pathway_logic_network(
     )
 
 def find_root_inputs(pathway_logic_network: pd.DataFrame) -> List[Any]:
-    """Find root input physical entities that are only sources, never targets.
-
-    Args:
-        pathway_logic_network: DataFrame with source_id and target_id columns
-
-    Returns:
-        List of physical entity IDs that appear as sources but never as targets
-    """
-    root_inputs = pathway_logic_network[
-        (pathway_logic_network["source_id"].notnull())
-        & (~pathway_logic_network["source_id"].isin(pathway_logic_network["target_id"]))
-    ]["source_id"].tolist()
-    return root_inputs
+    """Return distinct UUIDs that appear as a source but never as a target."""
+    sources = pathway_logic_network["source_id"].dropna()
+    targets = set(pathway_logic_network["target_id"].dropna().unique())
+    return sources[~sources.isin(targets)].unique().tolist()
 
 
 def find_terminal_outputs(pathway_logic_network: pd.DataFrame) -> List[Any]:
-    """Find terminal output physical entities that are only targets, never sources.
-
-    Args:
-        pathway_logic_network: DataFrame with source_id and target_id columns
-
-    Returns:
-        List of physical entity IDs that appear as targets but never as sources
-    """
-    terminal_outputs = pathway_logic_network[
-        ~pathway_logic_network["target_id"].isin(
-            pathway_logic_network["source_id"].unique()
-        )
-    ]["target_id"].tolist()
-    return terminal_outputs
+    """Return distinct UUIDs that appear as a target but never as a source."""
+    targets = pathway_logic_network["target_id"].dropna()
+    sources = set(pathway_logic_network["source_id"].dropna().unique())
+    return targets[~targets.isin(sources)].unique().tolist()
 
 
 def export_uuid_to_reactome_mapping(

@@ -26,7 +26,7 @@ with patch('py2neo.Graph'):
 
 def _mock_decompose(entity_id):
     """Return entity as-is (no decomposition) for unit tests."""
-    return [(entity_id, "and", 1)]
+    return [(entity_id, 1)]
 
 
 class TestRegulatorsAndCatalysts:
@@ -252,9 +252,9 @@ class TestRegulatorsAndCatalysts:
     def test_complex_catalyst_decomposed_to_and_members(self, mock_decompose):
         """Complex catalysts should be decomposed into AND members."""
         mock_decompose.return_value = [
-            ("R-HSA-301", "and", 1),
-            ("R-HSA-302", "and", 1),
-            ("R-HSA-303", "and", 1),
+            ("R-HSA-301", 1),
+            ("R-HSA-302", 1),
+            ("R-HSA-303", 1),
         ]
 
         catalyst_map = pd.DataFrame([
@@ -295,8 +295,8 @@ class TestRegulatorsAndCatalysts:
         required → 'and'), not within-entity decomposition.
         """
         mock_decompose.return_value = [
-            ("R-HSA-401", "or", 1),
-            ("R-HSA-402", "or", 1),
+            ("R-HSA-401", 1),
+            ("R-HSA-402", 1),
         ]
 
         catalyst_map = pd.DataFrame([
@@ -352,7 +352,7 @@ class TestRegulatorsAndCatalysts:
     def test_nested_complex_stoichiometry_multiplication(self, mock_decompose):
         """Nested Complex with stoichiometry: Complex with 2x SubComplex that has 3x Protein -> stoichiometry 6."""
         mock_decompose.return_value = [
-            ("R-HSA-PROTEIN", "and", 6),  # 2 * 3 = 6
+            ("R-HSA-PROTEIN", 6),  # 2 * 3 = 6
         ]
 
         catalyst_map = pd.DataFrame([
@@ -383,9 +383,9 @@ class TestRegulatorsAndCatalysts:
     def test_complex_with_mixed_stoichiometry(self, mock_decompose):
         """Complex with components having different stoichiometries."""
         mock_decompose.return_value = [
-            ("R-HSA-A", "and", 2),
-            ("R-HSA-B", "and", 1),
-            ("R-HSA-C", "and", 3),
+            ("R-HSA-A", 2),
+            ("R-HSA-B", 1),
+            ("R-HSA-C", 3),
         ]
 
         catalyst_map = pd.DataFrame([
@@ -501,9 +501,7 @@ class TestRegulatorDecompositionConsistency:
         result = _decompose_regulator_entity("R-HSA-SIMPLE-COMPLEX")
 
         assert len(result) == 1, f"Simple complex should return single entity, got {len(result)}"
-        assert result[0][0] == "R-HSA-SIMPLE-COMPLEX"
-        assert result[0][1] == "and"
-        assert result[0][2] == 1
+        assert result[0] == ("R-HSA-SIMPLE-COMPLEX", 1)
 
     @patch('src.neo4j_connector.get_set_members')
     @patch('src.neo4j_connector.get_complex_components')
@@ -535,7 +533,7 @@ class TestRegulatorDecompositionConsistency:
         member_ids = {r[0] for r in result}
         assert member_ids == {"R-HSA-PROTEIN-A", "R-HSA-PROTEIN-B"}
         # Check stoichiometry is preserved
-        stoich_map = {r[0]: r[2] for r in result}
+        stoich_map = dict(result)
         assert stoich_map["R-HSA-PROTEIN-A"] == 2
         assert stoich_map["R-HSA-PROTEIN-B"] == 1
 
