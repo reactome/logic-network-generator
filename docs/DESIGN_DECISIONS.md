@@ -2,6 +2,27 @@
 
 Behaviors that look surprising at first but are intentional. Read this before assuming something is a bug.
 
+## Complex vs EntitySet — they look alike, they aren't
+
+Both are written `{A, B}` in informal notation but they mean opposite things in biology and the pipeline treats them oppositely. Conflating them is the single most common way to misread this codebase.
+
+| | **Complex** | **EntitySet** |
+|---|---|---|
+| Semantic | A bound species (`A:B` dimer is a distinct molecule) | A role marker — *any one of* `{A, B}` plays this role |
+| Cross-reaction matching | **Atomic.** R1 producing complex `A:B` and R2 consuming free `A` are *not* linked. They are different species. To get free A from `A:B` you need a dissociation reaction. | **See-through.** R1 producing set `{A, B}` and R2 consuming free `A` *are* linked — the set's A-alternative *is* free A. |
+| `break_apart_entity` returns | `{A:B}` (itself, intact) when it's a simple complex; cartesian-product UIDs when it contains an EntitySet | A flat set of alternatives `{A, B}` |
+
+If you find yourself thinking "the matcher needs to see components inside a complex," stop. That's the bug, not what you're fixing — it would create biologically false links between unrelated species.
+
+## Two layers of decomposition — don't collapse them
+
+There are two distinct artifacts. Different rules.
+
+- **`decomposed_uid_mapping.csv` — plumbing.** Used by `find_best_reaction_match` to compute which input combinations of a reaction line up with which output combinations (Hungarian assignment over component overlap). EntitySets are decomposed here so cross-reaction linking through alternatives works. Simple Complexes are *not* decomposed here, by design (see above).
+- **`logic_network.csv` — output.** What downstream simulation consumes. Boundary complexes (root inputs, terminal outputs) have synthetic assembly/dissociation edges to their leaf components so individual proteins can be perturbed and read; intermediate complexes are kept as single nodes (they're real species in the pathway).
+
+Adding rows to `decomposed_uid_mapping.csv` does not "expose" an entity to the final output, and removing nodes from `logic_network.csv` doesn't change the matcher's behavior. They are independent.
+
 ## EntitySet expansion produces multiple virtual reactions
 
 Reactome's `EntitySet` represents biological alternatives — "any one of {A, B, C}" — and `Complex` represents a structured combination — "A bound to B". When a reaction's input is an EntitySet (or a Complex containing one), the logic network expands it: one virtual reaction per concrete combination of members.
