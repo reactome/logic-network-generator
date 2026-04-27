@@ -146,7 +146,7 @@ Result: gene1 gets UUID_B (different position)
 - Registry tracks: `(entity_dbId, reaction_uuid, role) → entity_uuid`
 - Results in 0% self-loops in real pathways while maintaining connectivity
 
-See [POSITION_AWARE_UUID_DESIGN.md](../POSITION_AWARE_UUID_DESIGN.md) for detailed design.
+See [UUID_DESIGN.md](UUID_DESIGN.md) for detailed design.
 
 ### 6. AND/OR Logic
 
@@ -352,8 +352,7 @@ poetry run python bin/create-pathways.py --pathway-list pathways.tsv
 ## Additional Documentation
 
 - **Main README**: `../README.md` - Quick start guide and features
-- **Position-Aware UUIDs**: `../POSITION_AWARE_UUID_DESIGN.md` - Design and implementation of UUID system
-- **Validation System**: `../VALIDATION_README.md` - Comprehensive validation documentation
+- **Position-Aware UUIDs**: `UUID_DESIGN.md` - Why and how UUIDs are assigned per pathway position
+- **Design Decisions**: `DESIGN_DECISIONS.md` - Intentional behaviors that look surprising
 - **Examples**: `../examples/README.md` - Usage patterns and troubleshooting
-- **Changelog**: `../CHANGELOG.md` - Version history
 - **Reactome Database**: https://reactome.org/

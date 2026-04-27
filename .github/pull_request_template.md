@@ -45,7 +45,6 @@ Describe any manual testing performed:
 ## Documentation
 
 - [ ] Updated README.md (if needed)
-- [ ] Updated CHANGELOG.md
 - [ ] Added/updated docstrings
 - [ ] Updated relevant documentation in `docs/`
 

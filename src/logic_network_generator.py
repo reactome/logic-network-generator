@@ -694,7 +694,7 @@ def create_pathway_logic_network(
     Notes:
         - Uses entity_uuid_registry to track (entity_dbId, reaction_uuid, role) -> UUID mappings
         - Union-find algorithm merges UUIDs for entities in same connected component
-        - See POSITION_AWARE_UUID_DESIGN.md for detailed design documentation
+        - See docs/UUID_DESIGN.md for detailed design documentation
     """
     logger.debug("Adding reaction pairs to pathway_logic_network")
 

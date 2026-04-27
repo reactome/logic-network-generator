@@ -91,23 +91,6 @@ poetry run python bin/create-db-id-name-mapping-file.py --output my_mapping.tsv
 
 Output columns: `database_identifier`, `node_type`, `display_name`, `reference_entity_name`, `reference_entity_identifier`, `instance_class`
 
-## Validation
-
-Comprehensive validation ensures generated networks match the source database:
-
-```bash
-# Run all validation tests
-poetry run pytest tests/test_pathway_validation.py -v
-
-# Run comprehensive validation (includes loop analysis, regulator matching, identifier resolution)
-poetry run pytest tests/test_comprehensive_validation.py -v
-
-# Quick validation script
-poetry run python validate_pathway.py 69620
-```
-
-See [VALIDATION_README.md](VALIDATION_README.md) for details.
-
 ## Testing
 
 ```bash
@@ -146,11 +129,10 @@ See [examples/README.md](examples/README.md) for more usage patterns and example
 
 ## Documentation
 
-- **[Architecture](docs/ARCHITECTURE.md)** - System architecture, data flow, and design decisions
-- **[Position-Aware UUIDs](POSITION_AWARE_UUID_DESIGN.md)** - Design and implementation of position-aware UUID system
-- **[Validation](VALIDATION_README.md)** - Comprehensive validation system documentation
+- **[Architecture](docs/ARCHITECTURE.md)** - System architecture and data flow
+- **[Position-Aware UUIDs](docs/UUID_DESIGN.md)** - Why and how UUIDs are assigned per pathway position
+- **[Design Decisions](docs/DESIGN_DECISIONS.md)** - Behaviors that look surprising but are intentional
 - **[Examples](examples/README.md)** - Usage examples and patterns
-- **[Changelog](CHANGELOG.md)** - Version history and notable changes
 
 ## Development
 
