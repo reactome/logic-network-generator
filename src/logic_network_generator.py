@@ -129,128 +129,123 @@ def create_reaction_id_map(
     return reaction_id_map
 
 
-def _execute_regulator_query(
+def _bulk_fetch_reaction_links(
     graph: Graph,
-    query: str,
-    reaction_uuid: str,
-    function_name: str
+    reaction_ids: List[str],
+    cypher_template: str,
 ) -> List[Dict[str, Any]]:
-    """Execute a regulator query and return processed results."""
+    """Run a single Cypher query that joins many reactions to their linked
+    entities (catalysts or regulators).
+
+    cypher_template must use $reaction_ids and return one row per
+    (reaction_id, entity_id) pair. Replaces the previous N+1-query loop
+    that hit Neo4j once per reaction.
+    """
+    if not reaction_ids:
+        return []
     try:
-        result = graph.run(query)
-        regulators = []
+        return graph.run(cypher_template, reaction_ids=reaction_ids).data()
+    except Exception:
+        logger.error("Error in _bulk_fetch_reaction_links", exc_info=True)
+        raise
 
-        for record in result:
-            regulator_uuid = str(uuid.uuid4())
-            regulators.append({
-                "reaction": record.get("reaction"),
-                "PhysicalEntity": record.get("PhysicalEntity"),  # Keep stId from query
-                "edge_type": "regulator",
-                "uuid": regulator_uuid,
-                "reaction_uuid": reaction_uuid,
-            })
 
-        return regulators
+_CATALYST_CYPHER = (
+    "UNWIND $reaction_ids AS rid "
+    "MATCH (reaction:ReactionLikeEvent {stId: rid})"
+    "-[:catalystActivity]->(:CatalystActivity)"
+    "-[:physicalEntity]->(catalyst:PhysicalEntity) "
+    "RETURN reaction.stId AS reaction_id, catalyst.stId AS catalyst_id"
+)
 
-    except Exception as e:
-        logger.error(f"Error in {function_name}", exc_info=True)
-        raise e
+_POS_REG_CYPHER = (
+    "UNWIND $reaction_ids AS rid "
+    "MATCH (reaction:ReactionLikeEvent {stId: rid})"
+    "-[:regulatedBy]->(:PositiveRegulation)"
+    "-[:regulator]->(pe:PhysicalEntity) "
+    "RETURN reaction.stId AS reaction_id, pe.stId AS PhysicalEntity"
+)
+
+_NEG_REG_CYPHER = (
+    "UNWIND $reaction_ids AS rid "
+    "MATCH (reaction:ReactionLikeEvent {stId: rid})"
+    "-[:regulatedBy]->(:NegativeRegulation)"
+    "-[:regulator]->(pe:PhysicalEntity) "
+    "RETURN reaction.stId AS reaction_id, pe.stId AS PhysicalEntity"
+)
 
 
 def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:
-    """Get catalysts for reactions using Neo4j graph queries."""
-    catalyst_list = []
-    
+    """Fetch catalysts for all reactions in one bulk Cypher query."""
+    rids_to_uuids: Dict[str, List[str]] = {}
     for _, row in reaction_id_map.iterrows():
-        reaction_id = row["reactome_id"]
-        reaction_uuid = row["uid"]
-        
-        query = (
-            f"MATCH (reaction:ReactionLikeEvent{{stId: '{reaction_id}'}})-[:catalystActivity]->(catalystActivity:CatalystActivity)-[:physicalEntity]->(catalyst:PhysicalEntity) "
-            f"RETURN reaction.stId AS reaction_id, catalyst.stId AS catalyst_id, 'catalyst' AS edge_type"
-        )
-        
-        try:
-            data = graph.run(query).data()
-            for item in data:
-                item["uuid"] = str(uuid.uuid4())
-                item["reaction_uuid"] = reaction_uuid
-            catalyst_list.extend(data)
-            
-        except Exception as e:
-            logger.error("Error in get_catalysts_for_reaction", exc_info=True)
-            raise e
-    
+        rids_to_uuids.setdefault(row["reactome_id"], []).append(row["uid"])
+
+    rows = _bulk_fetch_reaction_links(graph, list(rids_to_uuids.keys()), _CATALYST_CYPHER)
+
+    catalyst_list = []
+    for record in rows:
+        for reaction_uuid in rids_to_uuids.get(record["reaction_id"], []):
+            catalyst_list.append({
+                "reaction_id": record["reaction_id"],
+                "catalyst_id": record["catalyst_id"],
+                "edge_type": "catalyst",
+                "uuid": str(uuid.uuid4()),
+                "reaction_uuid": reaction_uuid,
+            })
+
     return pd.DataFrame(
         catalyst_list,
         columns=["reaction_id", "catalyst_id", "edge_type", "uuid", "reaction_uuid"],
     )
 
 
-def get_positive_regulators_for_reaction(
-    reaction_id_mapping: DataFrame, 
-    graph: Graph
+def _bulk_fetch_regulators(
+    reaction_id_mapping: DataFrame,
+    graph: Graph,
+    cypher: str,
 ) -> DataFrame:
-    """Get positive regulators for reactions using Neo4j graph queries."""
-    regulators_list = []
-    
+    """Shared body for positive and negative regulator fetching."""
+    rids_to_uuids: Dict[str, List[str]] = {}
     for _, row in reaction_id_mapping.iterrows():
-        reaction_id = row["reactome_id"]
-        reaction_uuid = row["uid"]
-        
-        if pd.isna(reaction_uuid):
-            logger.error(f"No UUID found for reaction ID {reaction_id}")
+        if pd.isna(row["uid"]):
+            logger.error(f"No UUID found for reaction ID {row['reactome_id']}")
             continue
-        
-        query = (
-            f"MATCH (reaction)-[:regulatedBy]->(regulator:PositiveRegulation)-[:regulator]->(pe:PhysicalEntity) "
-            f"WHERE reaction.stId = '{reaction_id}' "
-            "RETURN reaction.stId as reaction, pe.stId as PhysicalEntity"
-        )
+        rids_to_uuids.setdefault(row["reactome_id"], []).append(row["uid"])
 
-        regulators = _execute_regulator_query(
-            graph, query, reaction_uuid, "get_positive_regulators_for_reaction"
-        )
-        regulators_list.extend(regulators)
-    
+    rows = _bulk_fetch_reaction_links(graph, list(rids_to_uuids.keys()), cypher)
+
+    regulators_list = []
+    for record in rows:
+        for reaction_uuid in rids_to_uuids.get(record["reaction_id"], []):
+            regulators_list.append({
+                "reaction": record["reaction_id"],
+                "PhysicalEntity": record["PhysicalEntity"],
+                "edge_type": "regulator",
+                "uuid": str(uuid.uuid4()),
+                "reaction_uuid": reaction_uuid,
+            })
+
     return pd.DataFrame(
         regulators_list,
         columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"],
-        index=None,
     )
+
+
+def get_positive_regulators_for_reaction(
+    reaction_id_mapping: DataFrame,
+    graph: Graph,
+) -> DataFrame:
+    """Fetch positive regulators for all reactions in one bulk Cypher query."""
+    return _bulk_fetch_regulators(reaction_id_mapping, graph, _POS_REG_CYPHER)
 
 
 def get_negative_regulators_for_reaction(
-    reaction_id_mapping: DataFrame, 
-    graph: Graph
+    reaction_id_mapping: DataFrame,
+    graph: Graph,
 ) -> DataFrame:
-    """Get negative regulators for reactions using Neo4j graph queries."""
-    regulators_list = []
-    
-    for _, row in reaction_id_mapping.iterrows():
-        reaction_id = row["reactome_id"]
-        reaction_uuid = row["uid"]
-        
-        if pd.isna(reaction_uuid):
-            logger.error(f"No UUID found for reaction ID {reaction_id}")
-            continue
-        
-        query = (
-            f"MATCH (reaction)-[:regulatedBy]->(regulator:NegativeRegulation)-[:regulator]->(pe:PhysicalEntity) "
-            f"WHERE reaction.stId = '{reaction_id}' "
-            "RETURN reaction.stId as reaction, pe.stId as PhysicalEntity"
-        )
-
-        regulators = _execute_regulator_query(
-            graph, query, reaction_uuid, "get_negative_regulators_for_reaction"
-        )
-        regulators_list.extend(regulators)
-    
-    return pd.DataFrame(
-        regulators_list,
-        columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"],
-        index=None,
-    )
+    """Fetch negative regulators for all reactions in one bulk Cypher query."""
+    return _bulk_fetch_regulators(reaction_id_mapping, graph, _NEG_REG_CYPHER)
 
 
 def _get_non_null_values(df: pd.DataFrame, column: str) -> List[Any]:
