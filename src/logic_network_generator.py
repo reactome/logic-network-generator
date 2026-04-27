@@ -107,18 +107,15 @@ def create_reaction_id_map(
     for _, match in best_matches.iterrows():
         incomming_hash = match["incomming"]
         outgoing_hash = match["outgoing"]
-        in_reactome_id = _get_reactome_id_from_hash(decomposed_uid_mapping, incomming_hash)
-        out_reactome_id = _get_reactome_id_from_hash(decomposed_uid_mapping, outgoing_hash)
-        assert in_reactome_id == out_reactome_id, (
-            f"best_matches paired hashes from different reactions: "
-            f"input hash {incomming_hash[:8]}... is from {in_reactome_id}, "
-            f"output hash {outgoing_hash[:8]}... is from {out_reactome_id}. "
-            f"Hungarian assignment must run within a single reaction."
-        )
+        # reaction_id was attached when this best_match was emitted by
+        # decompose_by_reactions, avoiding the ambiguity of reverse-deriving
+        # it from the input hash (the same hash can appear under multiple
+        # reactome_ids in decomposed_uid_mapping).
+        reactome_id = match["reactome_id"]
 
         row = {
             "uid": str(uuid.uuid4()),
-            "reactome_id": in_reactome_id,
+            "reactome_id": reactome_id,
             "input_hash": incomming_hash,
             "output_hash": outgoing_hash,
         }

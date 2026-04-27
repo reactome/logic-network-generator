@@ -128,7 +128,8 @@ def generate_pathway_file(
                 pathway_id, reaction_connections
             )
             best_matches = pd.DataFrame(
-                best_matches_list, columns=["incomming", "outgoing"]
+                best_matches_list,
+                columns=["incomming", "outgoing", "reactome_id"],
             )
 
             try:

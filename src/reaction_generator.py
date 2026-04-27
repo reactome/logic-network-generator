@@ -513,7 +513,12 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
 
     logger.debug("Decomposing reactions")
 
-    all_best_matches = []
+    # Each best_match is a triple (input_hash, output_hash, reaction_id).
+    # Without the reaction_id, create_reaction_id_map has to reverse-derive
+    # it from the hash, which is ambiguous: the same hash can appear under
+    # multiple reactome_ids in decomposed_uid_mapping (hashes are computed
+    # from sorted components, not reactions).
+    all_best_matches: List[tuple] = []
     for reaction_id in reaction_ids:
         input_ids = get_reaction_input_output_ids(reaction_id, "input")
         broken_apart_input_id = [break_apart_entity(input_id) for input_id in input_ids]
@@ -542,7 +547,11 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
             reaction_id=reaction_id
         )
 
-        all_best_matches += best_matches
+        # Tag each (input, output) pair with the reaction it came from
+        # so downstream code doesn't have to reverse-derive it.
+        all_best_matches.extend(
+            (in_hash, out_hash, str(reaction_id)) for in_hash, out_hash in best_matches
+        )
 
     return all_best_matches
 
