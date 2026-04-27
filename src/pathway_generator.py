@@ -37,19 +37,15 @@ def sanitize_filename(name: str) -> str:
 
 def generate_pathway_file(
     pathway_id: str,
-    taxon_id: str,
     pathway_name: str,
     output_dir: str = "output",
-    decompose: bool = False
 ) -> None:
     """Generate pathway logic network file with caching.
 
     Args:
         pathway_id: Reactome pathway database ID
-        taxon_id: Taxonomy ID (currently unused)
         pathway_name: Human-readable pathway name
         output_dir: Base output directory (default: "output")
-        decompose: Whether to decompose complexes/sets (default: False)
 
     Raises:
         ConnectionError: If Neo4j database is not accessible
@@ -87,18 +83,7 @@ def generate_pathway_file(
         if os.path.exists(reaction_connections_file):
             logger.info(f"Loading cached reaction connections from {reaction_connections_file}")
             reaction_connections = pd.read_csv(reaction_connections_file, dtype=str)
-            # Validate cache format — old caches used dbId (numeric), current code uses stId ("R-HSA-...")
-            sample_id = reaction_connections["preceding_reaction_id"].dropna().iloc[0] if not reaction_connections["preceding_reaction_id"].dropna().empty else ""
-            if sample_id and not str(sample_id).startswith("R-"):
-                logger.warning("Stale cache detected (dbId format). Regenerating with stId format.")
-                os.remove(reaction_connections_file)
-                # Also remove downstream caches that depend on reaction IDs
-                for f in [decomposed_uid_mapping_file, best_matches_file]:
-                    if os.path.exists(f):
-                        os.remove(f)
-                reaction_connections = None  # Fall through to regeneration below
-
-        if not os.path.exists(reaction_connections_file):
+        else:
             logger.info(f"Fetching reaction connections from Neo4j for pathway {pathway_id}")
             reaction_connections = get_reaction_connections(pathway_id)
             try:
@@ -107,13 +92,6 @@ def generate_pathway_file(
             except IOError as e:
                 logger.warning(f"Could not cache reaction connections: {e}")
                 # Continue without caching
-
-        # Optional: Limit number of reactions for testing
-        number_of_reaction_connections: int = -1
-        if number_of_reaction_connections > 0:
-            reaction_connections = reaction_connections.iloc[
-                :number_of_reaction_connections
-            ]
 
         # Load or generate decomposition and best matches
         if os.path.exists(decomposed_uid_mapping_file) and os.path.exists(best_matches_file):

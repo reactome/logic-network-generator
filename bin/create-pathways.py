@@ -44,8 +44,6 @@ def main() -> None:
         )
         return
 
-    taxon_id = "9606"
-
     pathway_list: List[Tuple[str, str]] = []
 
     if args.top_level_pathways:
@@ -87,7 +85,7 @@ def main() -> None:
 
     for pathway_id, pathway_name in pathway_list:
         try:
-            generate_pathway_file(pathway_id, taxon_id, pathway_name, output_dir)
+            generate_pathway_file(pathway_id, pathway_name, output_dir)
             successful += 1
         except Exception as e:
             logger.error(f"Failed to process pathway {pathway_id} ({pathway_name}): {e}")

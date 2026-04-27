@@ -286,7 +286,8 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error querying Neo4j for pathway {pathway_id}", exc_info=True)
         raise ConnectionError(
-            f"Failed to connect to Neo4j database at {uri}. "
+            f"Failed to connect to Neo4j database at "
+            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
             f"Ensure Neo4j is running and accessible. Original error: {str(e)}"
         ) from e
 
@@ -317,7 +318,8 @@ def get_top_level_pathways() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error("Error in get_top_level_pathways", exc_info=True)
         raise ConnectionError(
-            f"Failed to query top-level pathways from Neo4j at {uri}. "
+            f"Failed to query top-level pathways from Neo4j at "
+            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
             f"Ensure Neo4j is running and accessible. Original error: {str(e)}"
         ) from e
 
@@ -351,7 +353,8 @@ def get_pathway_name(pathway_id: str) -> str:
     except Exception as e:
         logger.error(f"Error in get_pathway_name for {pathway_id}", exc_info=True)
         raise ConnectionError(
-            f"Failed to query pathway name from Neo4j at {uri}. "
+            f"Failed to query pathway name from Neo4j at "
+            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
             f"Original error: {str(e)}"
         ) from e
 
@@ -421,22 +424,6 @@ def get_set_members(entity_id: str) -> Set[str]:
         raise
 
 
-def get_reactions(pathway_id: str, taxon_id: str) -> List[str]:
-    query_reaction_template: str = """
-        MATCH (reaction)<-[:hasEvent*]-(pathway:Pathway)-[:species]->(species:Species)
-             WHERE (reaction:Reaction OR reaction:ReactionLikeEvent)
-                   AND pathway.stId='%s' AND species.taxId="%s"
-        RETURN COLLECT(reaction.stId) AS reaction_ids
-    """
-    query: str = query_reaction_template % (pathway_id, taxon_id)
-
-    try:
-        return graph.run(query).data()[0]["reaction_ids"]
-    except Exception:
-        logger.error("Error in get_reactions", exc_info=True)
-        raise
-
-
 def get_reaction_input_output_ids(reaction_id: str, input_or_output: str) -> Set[str]:
     if reaction_id in _reaction_io_cache:
         return _reaction_io_cache[reaction_id].get(input_or_output, set())
@@ -483,21 +470,3 @@ def get_reference_entity_id(entity_id: str) -> Union[str, None]:
         raise
 
 
-def contains_reference_gene_product_molecule_or_isoform(entity_id: str) -> bool:
-    query_template = """
-        MATCH (es:EntitySet)-[:hasCandidate|hasMember]->(pe:PhysicalEntity)
-        WHERE es.stId = '%s'
-            AND pe.referenceType IN ["ReferenceGeneProduct", "ReferenceIsoform", "ReferenceMolecule"]
-        RETURN COUNT(pe) > 0 AS contains_reference
-        """
-    query = query_template % entity_id
-
-    try:
-        result = graph.run(query).data()
-        return result[0]["contains_reference"]
-    except Exception as e:
-        logger.error(
-            "Error in contains_reference_gene_product_molecule_or_isoform",
-            exc_info=True,
-        )
-        raise e
