@@ -50,7 +50,8 @@ addopts = [
     "--strict-markers",
 ]
 markers = [
-    "database: tests that require Neo4j database connection",
+    "database: tests that require a live Neo4j connection (excluded from CI)",
+    "integration: tests that require artifacts from a prior pathway generation run in output/ (excluded from CI)",
 ]
 
 [tool.coverage.run]

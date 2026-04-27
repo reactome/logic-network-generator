@@ -30,11 +30,14 @@ def get_generated_pathways():
 
 GENERATED_PATHWAYS = get_generated_pathways()
 
-# Skip all tests if no generated pathways exist
-pytestmark = pytest.mark.skipif(
-    len(GENERATED_PATHWAYS) == 0,
-    reason="No generated pathway directories found in output/"
-)
+# Integration tier: requires generated pathway artifacts in output/
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        len(GENERATED_PATHWAYS) == 0,
+        reason="No generated pathway directories found in output/"
+    ),
+]
 
 
 # Use a smaller representative sample for parametrized tests

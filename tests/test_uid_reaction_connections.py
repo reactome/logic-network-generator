@@ -25,10 +25,14 @@ def find_pathway_dirs():
 
 PATHWAY_DIRS = find_pathway_dirs()
 
-pytestmark = pytest.mark.skipif(
-    len(PATHWAY_DIRS) == 0,
-    reason="No generated pathway directories found in output/"
-)
+# Integration tier: requires generated pathway artifacts in output/
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        len(PATHWAY_DIRS) == 0,
+        reason="No generated pathway directories found in output/"
+    ),
+]
 
 # Use a sample of up to 5 pathways
 SAMPLE_DIRS = PATHWAY_DIRS[:5] if len(PATHWAY_DIRS) > 5 else PATHWAY_DIRS

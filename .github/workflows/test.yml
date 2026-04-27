@@ -24,8 +24,8 @@ jobs:
     - name: Install dependencies
       run: poetry install
 
-    - name: Run tests (excluding database tests)
-      run: poetry run pytest tests/ -v -m "not database"
+    - name: Run unit tests (no Neo4j, no generated artifacts)
+      run: poetry run pytest tests/ -v -m "not database and not integration"
 
     - name: Run type checking
       run: poetry run mypy --ignore-missing-imports src/

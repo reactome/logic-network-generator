@@ -24,6 +24,9 @@ def find_first_pathway_dir():
 
 PATHWAY_DIR = find_first_pathway_dir()
 
+# Integration tier: requires generated pathway artifacts in output/
+pytestmark = pytest.mark.integration
+
 
 class TestUUIDMappingFileStructure:
     """Test the structure and content of generated UUID mapping files."""
