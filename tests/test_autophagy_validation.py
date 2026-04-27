@@ -17,7 +17,9 @@ from py2neo import Graph
 
 
 PATHWAY_ID = 9612973
-PATHWAY_DIR = Path("output/Autophagy_9612973")
+PATHWAY_DIR = Path("output/Autophagy_R-HSA-9612973")
+
+pytestmark = pytest.mark.database
 
 
 @pytest.fixture(scope="module")

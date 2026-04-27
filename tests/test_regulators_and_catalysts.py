@@ -220,10 +220,14 @@ class TestRegulatorsAndCatalysts:
         catalyst_edges = [e for e in pathway_logic_network_data if e['edge_type'] == 'catalyst']
         regulator_edges = [e for e in pathway_logic_network_data if e['edge_type'] == 'regulator']
 
+        # Catalysts (pos) → and; negative regulators (neg) → or
         for edge in catalyst_edges:
             assert edge['and_or'] == "and", f"Catalyst should have and_or='and', got '{edge['and_or']}'"
         for edge in regulator_edges:
-            assert edge['and_or'] == "and", f"Regulator should have and_or='and', got '{edge['and_or']}'"
+            assert edge['pos_neg'] == "neg"
+            assert edge['and_or'] == "or", (
+                f"Negative regulator should have and_or='or', got '{edge['and_or']}'"
+            )
 
     @patch('src.logic_network_generator._decompose_regulator_entity', side_effect=_mock_decompose)
     def test_empty_regulator_maps_create_no_edges(self, mock_decompose):
@@ -284,8 +288,12 @@ class TestRegulatorsAndCatalysts:
         assert mapped_stids == {"R-HSA-301", "R-HSA-302", "R-HSA-303"}
 
     @patch('src.logic_network_generator._decompose_regulator_entity')
-    def test_entityset_catalyst_decomposed_to_or_members(self, mock_decompose):
-        """EntitySet catalysts should be decomposed into OR members."""
+    def test_entityset_catalyst_emits_one_edge_per_member(self, mock_decompose):
+        """EntitySet catalysts should emit one edge per decomposed member.
+
+        and_or reflects reaction-level requirement (all catalysts are
+        required → 'and'), not within-entity decomposition.
+        """
         mock_decompose.return_value = [
             ("R-HSA-401", "or", 1),
             ("R-HSA-402", "or", 1),
@@ -312,7 +320,9 @@ class TestRegulatorsAndCatalysts:
         assert len(pathway_logic_network_data) == 2, "EntitySet with 2 members should create 2 edges"
 
         for edge in pathway_logic_network_data:
-            assert edge['and_or'] == 'or', "EntitySet members should have OR logic"
+            assert edge['edge_type'] == 'catalyst'
+            assert edge['pos_neg'] == 'pos'
+            assert edge['and_or'] == 'and', "Catalyst edges are reaction-required → and"
 
     @patch('src.logic_network_generator._decompose_regulator_entity', side_effect=_mock_decompose)
     def test_stoichiometry_defaults_to_one(self, mock_decompose):

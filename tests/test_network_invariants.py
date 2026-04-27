@@ -83,12 +83,53 @@ class TestNetworkInvariants:
         assert len(invalid) == 0, f"Invalid pos_neg values: {invalid}"
 
     def test_and_logic_consistency(self, network):
-        """Edges with 'and' logic should have edge_type in {'input', 'catalyst'}."""
+        """AND ⇔ contributes to the reaction proceeding.
+
+        Allowed: input, catalyst, positive regulator.
+        Disallowed: output, negative regulator (any one blocker suffices,
+        so neg regulators are OR).
+        """
         and_edges = network[network['and_or'] == 'and']
         if len(and_edges) == 0:
             pytest.skip("No AND edges")
-        incorrect = and_edges[~and_edges['edge_type'].isin({'input', 'catalyst'})]
-        assert len(incorrect) == 0, f"Found {len(incorrect)} AND edges with edge_type not in {{'input', 'catalyst'}}"
+        allowed = (
+            and_edges['edge_type'].isin({'input', 'catalyst'})
+            | (
+                (and_edges['edge_type'] == 'regulator')
+                & (and_edges['pos_neg'] == 'pos')
+            )
+        )
+        incorrect = and_edges[~allowed]
+        assert len(incorrect) == 0, (
+            f"Found {len(incorrect)} AND edges that are neither input/catalyst "
+            f"nor positive regulator"
+        )
+
+    def test_negative_regulators_are_or(self, network):
+        """Negative regulators carry OR logic: any one blocker suffices."""
+        neg_reg = network[
+            (network['edge_type'] == 'regulator') & (network['pos_neg'] == 'neg')
+        ]
+        if len(neg_reg) == 0:
+            pytest.skip("No negative regulator edges")
+        wrong = neg_reg[neg_reg['and_or'] != 'or']
+        assert len(wrong) == 0, (
+            f"Found {len(wrong)} negative regulator edges with and_or != 'or'"
+        )
+
+    def test_positive_regulators_are_and(self, network):
+        """Positive regulators carry AND logic: treated as required at the
+        network level. Conditional dependence is modeled later in parameters.
+        """
+        pos_reg = network[
+            (network['edge_type'] == 'regulator') & (network['pos_neg'] == 'pos')
+        ]
+        if len(pos_reg) == 0:
+            pytest.skip("No positive regulator edges")
+        wrong = pos_reg[pos_reg['and_or'] != 'and']
+        assert len(wrong) == 0, (
+            f"Found {len(wrong)} positive regulator edges with and_or != 'and'"
+        )
 
     def test_or_logic_consistency(self, main_edges):
         """Edges with 'or' logic should have edge_type='output'."""

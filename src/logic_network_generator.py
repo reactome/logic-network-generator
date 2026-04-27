@@ -611,13 +611,20 @@ def append_regulators(
 
             terminal_members = _decompose_regulator_entity(entity_id)
 
-            for member_id, member_logic, member_stoich in terminal_members:
+            # and_or expresses reaction-level requirement, not within-entity
+            # decomposition logic. Anything that contributes to a reaction
+            # proceeding (catalyst, positive regulator) is "and"; anything
+            # that blocks it (negative regulator) is "or" because any one
+            # blocker suffices. The Complex/EntitySet decomposition tree
+            # is preserved in decomposed_uid_mapping.csv.
+            and_or = "and" if pos_neg == "pos" else "or"
+
+            for member_id, _member_logic, member_stoich in terminal_members:
                 # Reuse existing UUID if this entity already appears in the pathway
                 if member_id in stid_to_existing_uuid:
                     member_uuid = stid_to_existing_uuid[member_id]
                 else:
                     member_uuid = str(uuid.uuid4())
-                and_or = member_logic
                 pathway_logic_network_data.append({
                     "source_id": member_uuid,
                     "target_id": row["reaction_uuid"],
