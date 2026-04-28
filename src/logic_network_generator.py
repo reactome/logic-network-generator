@@ -152,7 +152,7 @@ _CATALYST_CYPHER = (
     "MATCH (reaction:ReactionLikeEvent {stId: rid})"
     "-[:catalystActivity]->(:CatalystActivity)"
     "-[:physicalEntity]->(catalyst:PhysicalEntity) "
-    "RETURN reaction.stId AS reaction_id, catalyst.stId AS catalyst_id"
+    "RETURN reaction.stId AS reaction_id, catalyst.stId AS entity_id"
 )
 
 _POS_REG_CYPHER = (
@@ -160,7 +160,7 @@ _POS_REG_CYPHER = (
     "MATCH (reaction:ReactionLikeEvent {stId: rid})"
     "-[:regulatedBy]->(:PositiveRegulation)"
     "-[:regulator]->(pe:PhysicalEntity) "
-    "RETURN reaction.stId AS reaction_id, pe.stId AS PhysicalEntity"
+    "RETURN reaction.stId AS reaction_id, pe.stId AS entity_id"
 )
 
 _NEG_REG_CYPHER = (
@@ -168,43 +168,24 @@ _NEG_REG_CYPHER = (
     "MATCH (reaction:ReactionLikeEvent {stId: rid})"
     "-[:regulatedBy]->(:NegativeRegulation)"
     "-[:regulator]->(pe:PhysicalEntity) "
-    "RETURN reaction.stId AS reaction_id, pe.stId AS PhysicalEntity"
+    "RETURN reaction.stId AS reaction_id, pe.stId AS entity_id"
 )
 
 
-def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:
-    """Fetch catalysts for all reactions in one bulk Cypher query."""
-    rids_to_uuids: Dict[str, List[str]] = {}
-    for _, row in reaction_id_map.iterrows():
-        rids_to_uuids.setdefault(row["reactome_id"], []).append(row["uid"])
-
-    rows = _bulk_fetch_reaction_links(graph, list(rids_to_uuids.keys()), _CATALYST_CYPHER)
-
-    catalyst_list = []
-    for record in rows:
-        for reaction_uuid in rids_to_uuids.get(record["reaction_id"], []):
-            catalyst_list.append({
-                "reaction_id": record["reaction_id"],
-                "catalyst_id": record["catalyst_id"],
-                "edge_type": "catalyst",
-                "uuid": str(uuid.uuid4()),
-                "reaction_uuid": reaction_uuid,
-            })
-
-    return pd.DataFrame(
-        catalyst_list,
-        columns=["reaction_id", "catalyst_id", "edge_type", "uuid", "reaction_uuid"],
-    )
+# Both catalyst and regulator DataFrames share this schema so they can be
+# concatenated and consumed by a single column-name reader downstream.
+_CAT_REG_COLUMNS = ["reaction_id", "entity_id", "edge_type", "uuid", "reaction_uuid"]
 
 
-def _bulk_fetch_regulators(
-    reaction_id_mapping: DataFrame,
+def _bulk_fetch_reaction_entity_links(
+    reaction_id_map: DataFrame,
     graph: Graph,
     cypher: str,
+    edge_type: str,
 ) -> DataFrame:
-    """Shared body for positive and negative regulator fetching."""
+    """Shared body for catalyst and regulator fetching."""
     rids_to_uuids: Dict[str, List[str]] = {}
-    for _, row in reaction_id_mapping.iterrows():
+    for _, row in reaction_id_map.iterrows():
         if pd.isna(row["uid"]):
             logger.error(f"No UUID found for reaction ID {row['reactome_id']}")
             continue
@@ -212,37 +193,45 @@ def _bulk_fetch_regulators(
 
     rows = _bulk_fetch_reaction_links(graph, list(rids_to_uuids.keys()), cypher)
 
-    regulators_list = []
+    out_rows = []
     for record in rows:
         for reaction_uuid in rids_to_uuids.get(record["reaction_id"], []):
-            regulators_list.append({
-                "reaction": record["reaction_id"],
-                "PhysicalEntity": record["PhysicalEntity"],
-                "edge_type": "regulator",
+            out_rows.append({
+                "reaction_id": record["reaction_id"],
+                "entity_id": record["entity_id"],
+                "edge_type": edge_type,
                 "uuid": str(uuid.uuid4()),
                 "reaction_uuid": reaction_uuid,
             })
 
-    return pd.DataFrame(
-        regulators_list,
-        columns=["reaction", "PhysicalEntity", "edge_type", "uuid", "reaction_uuid"],
+    return pd.DataFrame(out_rows, columns=_CAT_REG_COLUMNS)
+
+
+def get_catalysts_for_reaction(reaction_id_map: DataFrame, graph: Graph) -> DataFrame:
+    """Fetch catalysts for all reactions in one bulk Cypher query."""
+    return _bulk_fetch_reaction_entity_links(
+        reaction_id_map, graph, _CATALYST_CYPHER, edge_type="catalyst"
     )
 
 
 def get_positive_regulators_for_reaction(
-    reaction_id_mapping: DataFrame,
+    reaction_id_map: DataFrame,
     graph: Graph,
 ) -> DataFrame:
     """Fetch positive regulators for all reactions in one bulk Cypher query."""
-    return _bulk_fetch_regulators(reaction_id_mapping, graph, _POS_REG_CYPHER)
+    return _bulk_fetch_reaction_entity_links(
+        reaction_id_map, graph, _POS_REG_CYPHER, edge_type="regulator"
+    )
 
 
 def get_negative_regulators_for_reaction(
-    reaction_id_mapping: DataFrame,
+    reaction_id_map: DataFrame,
     graph: Graph,
 ) -> DataFrame:
     """Fetch negative regulators for all reactions in one bulk Cypher query."""
-    return _bulk_fetch_regulators(reaction_id_mapping, graph, _NEG_REG_CYPHER)
+    return _bulk_fetch_reaction_entity_links(
+        reaction_id_map, graph, _NEG_REG_CYPHER, edge_type="regulator"
+    )
 
 
 def _get_non_null_values(df: pd.DataFrame, column: str) -> List[Any]:
@@ -694,14 +683,14 @@ def append_regulators(
                 stid_to_existing_uuid[entity_dbId] = entity_uuid
 
     regulator_configs = [
-        (catalyst_map, "pos", "catalyst", "catalyst_id"),
-        (negative_regulator_map, "neg", "regulator", "PhysicalEntity"),
-        (positive_regulator_map, "pos", "regulator", "PhysicalEntity"),
+        (catalyst_map, "pos", "catalyst"),
+        (negative_regulator_map, "neg", "regulator"),
+        (positive_regulator_map, "pos", "regulator"),
     ]
 
-    for map_df, pos_neg, edge_type, entity_col in regulator_configs:
+    for map_df, pos_neg, edge_type in regulator_configs:
         for _, row in map_df.iterrows():
-            entity_id = str(row[entity_col])
+            entity_id = str(row["entity_id"])
 
             terminal_members = _decompose_regulator_entity(entity_id)
 
@@ -996,12 +985,11 @@ def create_pathway_logic_network(
 
     # Pre-fetch decomposition data for catalyst/regulator entities
     cat_reg_entity_ids: Set[str] = set()
-    for _, row in catalyst_map.iterrows():
-        if pd.notna(row.get("catalyst_id")):
-            cat_reg_entity_ids.add(str(row["catalyst_id"]))
-    for _, row in pd.concat([negative_regulator_map, positive_regulator_map]).iterrows():
-        if pd.notna(row.get("PhysicalEntity")):
-            cat_reg_entity_ids.add(str(row["PhysicalEntity"]))
+    for _, row in pd.concat(
+        [catalyst_map, negative_regulator_map, positive_regulator_map]
+    ).iterrows():
+        if pd.notna(row.get("entity_id")):
+            cat_reg_entity_ids.add(str(row["entity_id"]))
 
     if cat_reg_entity_ids:
         from src.neo4j_connector import prefetch_entity_decomposition_data
@@ -1127,16 +1115,8 @@ def export_uuid_to_reactome_mapping(
     # 3. Add catalyst and regulator UUIDs (from catalyst_regulator_map)
     for _, row in catalyst_regulator_map.iterrows():
         cat_reg_uuid = row['uuid']
-        if cat_reg_uuid in all_uuids:
-            # Get the entity stId (catalyst_id or regulator PhysicalEntity)
-            if 'catalyst_id' in row and pd.notna(row['catalyst_id']):
-                entity_id = str(row['catalyst_id'])
-            elif 'PhysicalEntity' in row and pd.notna(row['PhysicalEntity']):
-                entity_id = str(row['PhysicalEntity'])
-            else:
-                continue  # Skip if we can't find the entity ID
-
-            uuid_to_reactome[cat_reg_uuid] = entity_id
+        if cat_reg_uuid in all_uuids and pd.notna(row.get('entity_id')):
+            uuid_to_reactome[cat_reg_uuid] = str(row['entity_id'])
 
     # Create DataFrame and save
     mapping_rows = [{'uuid': uuid, 'stable_id': stable_id}

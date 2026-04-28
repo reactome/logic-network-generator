@@ -36,9 +36,9 @@ class TestRegulatorsAndCatalysts:
     def test_negative_regulators_have_neg_pos_neg(self, mock_decompose):
         """Negative regulators should have pos_neg = 'neg'."""
         negative_regulator_map = pd.DataFrame([
-            {"reaction": "R-HSA-100", "PhysicalEntity": "R-HSA-200", "edge_type": "regulator",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "regulator",
              "uuid": "neg-regulator-1", "reaction_uuid": "reaction-1"},
-            {"reaction": "R-HSA-101", "PhysicalEntity": "R-HSA-201", "edge_type": "regulator",
+            {"reaction_id": "R-HSA-101", "entity_id": "R-HSA-201", "edge_type": "regulator",
              "uuid": "neg-regulator-2", "reaction_uuid": "reaction-2"},
         ])
 
@@ -65,9 +65,9 @@ class TestRegulatorsAndCatalysts:
     def test_positive_regulators_have_pos_pos_neg(self, mock_decompose):
         """Positive regulators should have pos_neg = 'pos'."""
         positive_regulator_map = pd.DataFrame([
-            {"reaction": "R-HSA-100", "PhysicalEntity": "R-HSA-200", "edge_type": "regulator",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "regulator",
              "uuid": "pos-regulator-1", "reaction_uuid": "reaction-1"},
-            {"reaction": "R-HSA-101", "PhysicalEntity": "R-HSA-201", "edge_type": "regulator",
+            {"reaction_id": "R-HSA-101", "entity_id": "R-HSA-201", "edge_type": "regulator",
              "uuid": "pos-regulator-2", "reaction_uuid": "reaction-2"},
         ])
 
@@ -94,9 +94,9 @@ class TestRegulatorsAndCatalysts:
     def test_catalysts_have_pos_pos_neg(self, mock_decompose):
         """Catalysts should have pos_neg = 'pos' and edge_type = 'catalyst'."""
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-200", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
-            {"reaction_id": "R-HSA-101", "catalyst_id": "R-HSA-201", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-101", "entity_id": "R-HSA-201", "edge_type": "catalyst",
              "uuid": "catalyst-2", "reaction_uuid": "reaction-2"},
         ])
 
@@ -124,17 +124,17 @@ class TestRegulatorsAndCatalysts:
     def test_mixed_regulators_and_catalysts(self, mock_decompose):
         """Test that mixed regulators and catalysts are all correctly marked."""
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-200", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
         negative_regulator_map = pd.DataFrame([
-            {"reaction": "R-HSA-101", "PhysicalEntity": "R-HSA-201", "edge_type": "regulator",
+            {"reaction_id": "R-HSA-101", "entity_id": "R-HSA-201", "edge_type": "regulator",
              "uuid": "neg-reg-1", "reaction_uuid": "reaction-2"},
         ])
 
         positive_regulator_map = pd.DataFrame([
-            {"reaction": "R-HSA-102", "PhysicalEntity": "R-HSA-202", "edge_type": "regulator",
+            {"reaction_id": "R-HSA-102", "entity_id": "R-HSA-202", "edge_type": "regulator",
              "uuid": "pos-reg-1", "reaction_uuid": "reaction-3"},
         ])
 
@@ -169,7 +169,7 @@ class TestRegulatorsAndCatalysts:
     def test_regulator_edges_point_to_reactions(self, mock_decompose):
         """Regulator and catalyst edges should point to reaction UUIDs as targets."""
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-200", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "catalyst",
              "uuid": "catalyst-uuid-1", "reaction_uuid": "reaction-uuid-1"},
         ])
 
@@ -196,12 +196,12 @@ class TestRegulatorsAndCatalysts:
     def test_and_or_logic_per_type(self, mock_decompose):
         """Catalysts and regulators should both propagate AND/OR from decomposition."""
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-200", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
         negative_regulator_map = pd.DataFrame([
-            {"reaction": "R-HSA-101", "PhysicalEntity": "R-HSA-201", "edge_type": "regulator",
+            {"reaction_id": "R-HSA-101", "entity_id": "R-HSA-201", "edge_type": "regulator",
              "uuid": "neg-reg-1", "reaction_uuid": "reaction-2"},
         ])
 
@@ -258,7 +258,7 @@ class TestRegulatorsAndCatalysts:
         ]
 
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-300", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-300", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
@@ -300,7 +300,7 @@ class TestRegulatorsAndCatalysts:
         ]
 
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-400", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-400", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
@@ -328,7 +328,7 @@ class TestRegulatorsAndCatalysts:
     def test_stoichiometry_defaults_to_one(self, mock_decompose):
         """Edges should have stoichiometry=1 by default."""
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-200", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
@@ -356,7 +356,7 @@ class TestRegulatorsAndCatalysts:
         ]
 
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-OUTER-COMPLEX", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-OUTER-COMPLEX", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
@@ -389,7 +389,7 @@ class TestRegulatorsAndCatalysts:
         ]
 
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-COMPLEX", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-COMPLEX", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
@@ -418,7 +418,7 @@ class TestRegulatorUuidReuse:
     def test_regulator_reuses_pathway_uuid(self, mock_decompose):
         """When entity_uuid_registry contains the same stId, its UUID should be reused."""
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-200", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
@@ -451,7 +451,7 @@ class TestRegulatorUuidReuse:
     def test_regulator_creates_fresh_uuid_when_no_pathway_match(self, mock_decompose):
         """When entity_uuid_registry has no matching stId, a fresh UUID should be created."""
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-100", "catalyst_id": "R-HSA-200", "edge_type": "catalyst",
+            {"reaction_id": "R-HSA-100", "entity_id": "R-HSA-200", "edge_type": "catalyst",
              "uuid": "catalyst-1", "reaction_uuid": "reaction-1"},
         ])
 
@@ -497,10 +497,10 @@ class TestRegulatorSharedAcrossReactions:
         # MDM2 (R-HSA-MDM2) is a positive regulator of two different reactions.
         # No entity_uuid_registry — it's a pure regulator, not an input/output.
         positive_regulator_map = pd.DataFrame([
-            {"reaction": "R-HSA-R1", "PhysicalEntity": "R-HSA-MDM2",
+            {"reaction_id": "R-HSA-R1", "entity_id": "R-HSA-MDM2",
              "edge_type": "regulator", "uuid": "reg-link-1",
              "reaction_uuid": "vr-1"},
-            {"reaction": "R-HSA-R2", "PhysicalEntity": "R-HSA-MDM2",
+            {"reaction_id": "R-HSA-R2", "entity_id": "R-HSA-MDM2",
              "edge_type": "regulator", "uuid": "reg-link-2",
              "reaction_uuid": "vr-2"},
         ])
@@ -534,11 +534,11 @@ class TestRegulatorSharedAcrossReactions:
         # Same protein appears as catalyst of R1 and negative regulator of R2.
         # Distinct edges (different edge_type) but the same source node.
         catalyst_map = pd.DataFrame([
-            {"reaction_id": "R-HSA-R1", "catalyst_id": "R-HSA-PROT",
+            {"reaction_id": "R-HSA-R1", "entity_id": "R-HSA-PROT",
              "edge_type": "catalyst", "uuid": "cat-1", "reaction_uuid": "vr-1"},
         ])
         negative_regulator_map = pd.DataFrame([
-            {"reaction": "R-HSA-R2", "PhysicalEntity": "R-HSA-PROT",
+            {"reaction_id": "R-HSA-R2", "entity_id": "R-HSA-PROT",
              "edge_type": "regulator", "uuid": "reg-1", "reaction_uuid": "vr-2"},
         ])
         positive_regulator_map = pd.DataFrame()
