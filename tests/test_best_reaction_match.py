@@ -95,15 +95,20 @@ class TestSquareHungarianMatching:
         assert counts == [0]
 
 
-class TestNonSquarePaddingDrops:
-    """Extra inputs (or outputs) get assigned to padding columns and dropped.
+class TestNonSquareSurplusFansOut:
+    """Surplus inputs/outputs get paired with their best counterpart, not dropped.
 
-    This is the subtle correctness path: padding the cost matrix with zeros
-    lets Hungarian run on a square problem, but the resulting pairs that hit
-    the fake (padded) rows/columns must NOT be returned to the caller.
+    EntitySet expansion routinely produces mismatched input vs output
+    combination counts; cleavage reactions produce one input and several
+    fragment outputs with zero refEntity overlap. In every case the
+    surplus side represents real biology and should appear as virtual
+    reactions, not be discarded. See docs/DESIGN_DECISIONS.md.
     """
 
-    def test_more_inputs_than_outputs_drops_extras(self):
+    def test_more_inputs_than_outputs_pairs_each_input(self):
+        # 2 inputs, 1 output. Hungarian pairs in1↔out1 (both share A,B).
+        # in2 has zero overlap with out1 — but it's still a valid alternative
+        # input alternative, so it pairs with out1 too.
         mapping = _mapping([
             ("in1", "A"), ("in1", "B"),
             ("in2", "X"),
@@ -112,10 +117,12 @@ class TestNonSquarePaddingDrops:
         matches, _ = find_best_reaction_match(
             ["in1", "in2"], ["out1"], mapping
         )
-        assert len(matches) == 1, "extra input must be dropped, not paired with a fake output"
-        assert matches[0] == ("in1", "out1")
+        assert len(matches) == 2, "every input alternative must produce a pair"
+        assert set(matches) == {("in1", "out1"), ("in2", "out1")}
 
-    def test_more_outputs_than_inputs_drops_extras(self):
+    def test_more_outputs_than_inputs_pairs_each_output(self):
+        # 1 input, 2 outputs. Hungarian pairs in1↔out1.
+        # out2 has zero overlap (cleavage-style) — pair it with in1 too.
         mapping = _mapping([
             ("in1", "A"), ("in1", "B"),
             ("out1", "A"), ("out1", "B"),
@@ -124,10 +131,12 @@ class TestNonSquarePaddingDrops:
         matches, _ = find_best_reaction_match(
             ["in1"], ["out1", "out2"], mapping
         )
-        assert len(matches) == 1, "extra output must be dropped, not paired with a fake input"
-        assert matches[0] == ("in1", "out1")
+        assert len(matches) == 2, "every output alternative must produce a pair"
+        assert set(matches) == {("in1", "out1"), ("in1", "out2")}
 
-    def test_non_square_picks_best_match_then_drops(self):
+    def test_non_square_picks_best_match_and_pairs_surplus(self):
+        # 3 inputs, 2 outputs. Hungarian picks the best 1-to-1 (in1↔out1, in2↔out2).
+        # in3 has zero overlap with anything; argmax picks output 0 (out1).
         mapping = _mapping([
             ("in1", "A"), ("in1", "B"), ("in1", "C"),
             ("in2", "X"), ("in2", "Y"),
@@ -138,9 +147,29 @@ class TestNonSquarePaddingDrops:
         matches, counts = find_best_reaction_match(
             ["in1", "in2", "in3"], ["out1", "out2"], mapping
         )
-        assert len(matches) == 2
-        assert set(matches) == {("in1", "out1"), ("in2", "out2")}
-        assert sorted(counts) == [2, 3]
+        assert len(matches) == 3, "all 3 input alternatives must show up"
+        assert ("in1", "out1") in matches
+        assert ("in2", "out2") in matches
+        # in3 pairs with whichever output is its argmax (zero-overlap → first)
+        assert any(m[0] == "in3" for m in matches)
+
+    def test_cleavage_one_input_three_outputs_each_pair(self):
+        # Cleavage: input molecule X is cleaved into 3 fragments F1, F2, F3.
+        # The fragments don't share refEntity with the input, so all overlaps
+        # are zero — but every fragment must still be linked to the input.
+        mapping = _mapping([
+            ("in1", "X"),
+            ("out1", "F1"),
+            ("out2", "F2"),
+            ("out3", "F3"),
+        ])
+        matches, _ = find_best_reaction_match(
+            ["in1"], ["out1", "out2", "out3"], mapping
+        )
+        assert len(matches) == 3, "every cleavage product must be linked to the input"
+        assert {m[1] for m in matches} == {"out1", "out2", "out3"}
+        assert all(m[0] == "in1" for m in matches), \
+            "all fragments come from the same input"
 
 
 class TestEdgeCases:

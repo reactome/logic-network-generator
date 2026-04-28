@@ -58,7 +58,26 @@ def find_best_match_both_decomposed_reactions(
     decomposed_uid_mapping: pd.DataFrame,
     reaction_id: str = None,
 ) -> Tuple[List[Tuple[str, str]], List[int]]:
-    """Run Hungarian on the components-overlap matrix and return matched pairs."""
+    """Run Hungarian on the components-overlap matrix and return matched pairs.
+
+    When the number of input combinations differs from the number of output
+    combinations (typical when EntitySet expansion produces unequal cartesian
+    products on the two sides, or for cleavage reactions where one input
+    yields several fragment outputs), Hungarian alone would drop the surplus.
+    We instead:
+
+      1. Run Hungarian to find an optimal 1-to-1 matching across the square
+         padded matrix.
+      2. For each surplus input (assigned to a padding column by Hungarian),
+         pair it with the output that maximises overlap.
+      3. For each surplus output (assigned to a padding row), pair it with
+         the input that maximises overlap.
+
+    Both directions are symmetric: every input alternative and every output
+    alternative shows up in the resulting list of pairs. Cleavage products
+    (zero refEntity overlap with the input) and EntitySet alternatives both
+    end up represented in the network. See docs/DESIGN_DECISIONS.md.
+    """
     inputs = list(input_reactions)
     outputs = list(output_reactions)
 
@@ -71,10 +90,10 @@ def find_best_match_both_decomposed_reactions(
     if num_rows != num_cols:
         unmatched_count = abs(num_rows - num_cols)
         side = "inputs" if num_rows > num_cols else "outputs"
-        logger.warning(
-            f"Reaction {reaction_id}: Hungarian matching dimension mismatch - "
+        logger.debug(
+            f"Reaction {reaction_id}: matrix mismatch - "
             f"{num_rows} input combinations vs {num_cols} output combinations; "
-            f"{unmatched_count} {side} will be unmatched"
+            f"{unmatched_count} surplus {side} will be paired with their best counterpart"
         )
         max_dim = max(num_rows, num_cols)
         padded_counts = np.zeros((max_dim, max_dim))
@@ -93,6 +112,25 @@ def find_best_match_both_decomposed_reactions(
         for i, j in zip(row_indices, col_indices)
         if i < num_rows and j < num_cols  # filter assignments that hit padding
     ]
+
+    # Pair every surplus input with its best output (and vice versa) instead
+    # of dropping. EntitySet alternatives and cleavage products are both
+    # legitimate biological paths the curator-guide model expects to see.
+    if num_rows > num_cols:
+        matched_input_indices = {i for i, _ in matched_pairs}
+        for i in range(num_rows):
+            if i not in matched_input_indices:
+                j = int(np.argmax(counts[i])) if num_cols > 0 else None
+                if j is not None:
+                    matched_pairs.append((i, j))
+    elif num_cols > num_rows:
+        matched_output_indices = {j for _, j in matched_pairs}
+        for j in range(num_cols):
+            if j not in matched_output_indices:
+                i = int(np.argmax(counts[:, j])) if num_rows > 0 else None
+                if i is not None:
+                    matched_pairs.append((i, j))
+
     matches = [(inputs[i], outputs[j]) for i, j in matched_pairs]
     counts_for_matches = [int(counts[i, j]) for i, j in matched_pairs]
     return matches, counts_for_matches

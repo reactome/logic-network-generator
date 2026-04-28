@@ -23,6 +23,17 @@ There are two distinct artifacts. Different rules.
 
 Adding rows to `decomposed_uid_mapping.csv` does not "expose" an entity to the final output, and removing nodes from `logic_network.csv` doesn't change the matcher's behavior. They are independent.
 
+## Surplus inputs/outputs fan out, they don't get dropped
+
+A reaction's number of input combinations and output combinations need not be equal. Two common cases produce a mismatch:
+
+- **EntitySet expansion is uneven** between input and output. If an input is an EntitySet of 3 alternatives and the output is an EntitySet of 2, the cartesian product gives 3 input combinations and 2 output combinations. Each alternative is a real biological path and should be represented in the network.
+- **Cleavage** (input molecule → multiple fragment outputs). The Reactome curator guide explicitly flags this as a *legitimate* imbalance: the IMBALANCE QA check distinguishes "true imbalance" from cleavage where outputs are fragments of the input. Reference entities won't overlap (the fragments aren't the same species as the input), but the input → fragment edge is still real.
+
+Other natural imbalances (modifications adding/removing phospho or ubiquitin groups, transcription DNA → protein) resolve through `component_id_or_reference_entity_id`: modified and unmodified forms share a reference entity, so the matcher sees them as the same component and pairs them automatically.
+
+For the EntitySet-mismatch and cleavage cases, the matcher doesn't have refEntity overlap to fall back on, so it would otherwise drop the surplus. Instead, `find_best_match_both_decomposed_reactions` runs Hungarian for the optimal 1-to-1 assignment and then **pairs every surplus input with its best-overlap output** (and symmetrically, every surplus output with its best-overlap input). Zero-overlap pairs are still emitted — cleavage products legitimately have zero refEntity overlap with the input molecule, and the input → fragment edge needs to exist regardless.
+
 ## EntitySet expansion produces multiple virtual reactions
 
 Reactome's `EntitySet` represents biological alternatives — "any one of {A, B, C}" — and `Complex` represents a structured combination — "A bound to B". When a reaction's input is an EntitySet (or a Complex containing one), the logic network expands it: one virtual reaction per concrete combination of members.
