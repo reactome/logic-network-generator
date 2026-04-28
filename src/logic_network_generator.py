@@ -317,67 +317,84 @@ def _resolve_to_terminal_reactome_ids(
     return result
 
 
+def _uf_find(uid: str, unions: Dict[str, str]) -> str:
+    """Walk the union-find chain to the root, with path compression."""
+    if uid not in unions:
+        return uid
+    root = uid
+    while root in unions:
+        root = unions[root]
+    cur = uid
+    while cur in unions and unions[cur] != root:
+        nxt = unions[cur]
+        unions[cur] = root
+        cur = nxt
+    return root
+
+
+def _canonicalize_registry(
+    entity_uuid_registry: Dict[tuple, str],
+    uuid_unions: Dict[str, str],
+) -> None:
+    """Rewrite every value in the registry to its union-find root.
+
+    Called once after Phase 2's merges; turns the deferred unions into
+    canonical UUIDs that downstream code can read directly.
+    """
+    if not uuid_unions:
+        return
+    for key, u in entity_uuid_registry.items():
+        entity_uuid_registry[key] = _uf_find(u, uuid_unions)
+
+
 def _get_or_create_entity_uuid(
     entity_dbId: str,
     source_reaction_uuid: str,
     target_reaction_uuid: str,
-    entity_uuid_registry: Dict[tuple, str]
+    entity_uuid_registry: Dict[tuple, str],
+    uuid_unions: Optional[Dict[str, str]] = None,
 ) -> str:
+    """Get or create UUID for entity based on its position in the pathway.
+
+    Uses union-find to merge entities at connected positions in the pathway.
+    Merges record source→target unions in `uuid_unions` rather than scanning
+    the registry on every call — without that, repeated merges over a large
+    registry are O(N²). The caller (`create_pathway_logic_network`) does a
+    single canonicalization pass after Phase 2 finishes.
+
+    If `uuid_unions` is omitted (e.g. tests calling this in isolation), a
+    fresh map is allocated for the call. That keeps the previous semantics
+    for single-shot use without forcing every call site to thread the map.
     """
-    Get or create UUID for entity based on its position in the pathway.
+    if uuid_unions is None:
+        uuid_unions = {}
 
-    Uses union-find logic to ensure entities in the same connected component
-    get the same UUID, while entities at different pathway positions get different UUIDs.
-
-    Args:
-        entity_dbId: Reactome database ID of the entity
-        source_reaction_uuid: UUID of reaction that outputs this entity
-        target_reaction_uuid: UUID of reaction that receives this entity as input
-        entity_uuid_registry: Registry mapping (entity_dbId, reaction_uuid, role) -> entity_uuid
-
-    Returns:
-        UUID for this entity at this position
-    """
-    # Create keys for this connection
     target_key = (entity_dbId, target_reaction_uuid, "input")
     source_key = (entity_dbId, source_reaction_uuid, "output")
 
     target_uuid = entity_uuid_registry.get(target_key)
+    if target_uuid is not None:
+        target_uuid = _uf_find(target_uuid, uuid_unions)
     source_uuid = entity_uuid_registry.get(source_key)
+    if source_uuid is not None:
+        source_uuid = _uf_find(source_uuid, uuid_unions)
 
     if target_uuid and source_uuid and target_uuid == source_uuid:
-        # Already registered with same UUID (shouldn't happen but handle gracefully)
-        logger.debug(f"Entity {entity_dbId} already has same UUID at both positions")
         return target_uuid
     elif target_uuid and source_uuid:
-        # Entity has different UUIDs at source and target - merge them
-        # Keep target_uuid, update all source_uuid references to target_uuid
-        merge_count = 0
-        for key, uuid_val in list(entity_uuid_registry.items()):
-            if uuid_val == source_uuid:
-                entity_uuid_registry[key] = target_uuid
-                merge_count += 1
-        logger.debug(
-            f"Merged UUIDs for entity {entity_dbId}: "
-            f"{source_uuid[:8]}... -> {target_uuid[:8]}... ({merge_count} position entries merged)"
-        )
+        # Different roots — record source → target union (no registry scan)
+        uuid_unions[source_uuid] = target_uuid
         return target_uuid
     elif target_uuid:
-        # Entity already has UUID at target - share it with source
         entity_uuid_registry[source_key] = target_uuid
-        logger.debug(f"Entity {entity_dbId} sharing UUID {target_uuid[:8]}... from target to source")
         return target_uuid
     elif source_uuid:
-        # Entity already has UUID at source - share it with target
         entity_uuid_registry[target_key] = source_uuid
-        logger.debug(f"Entity {entity_dbId} sharing UUID {source_uuid[:8]}... from source to target")
         return source_uuid
     else:
-        # New position - create new UUID
         new_uuid = str(uuid.uuid4())
         entity_uuid_registry[target_key] = new_uuid
         entity_uuid_registry[source_key] = new_uuid
-        logger.debug(f"Created new UUID {new_uuid[:8]}... for entity {entity_dbId}")
         return new_uuid
 
 
@@ -385,23 +402,16 @@ def _assign_uuids(
     reactome_ids: List[str],
     source_reaction_uuid: str,
     target_reaction_uuid: str,
-    entity_uuid_registry: Dict[tuple, str]
+    entity_uuid_registry: Dict[tuple, str],
+    uuid_unions: Optional[Dict[str, str]] = None,
 ) -> List[str]:
-    """
-    Assign position-aware UUIDs to entities based on their connections.
-
-    Args:
-        reactome_ids: List of entity Reactome database IDs
-        source_reaction_uuid: UUID of reaction that outputs these entities
-        target_reaction_uuid: UUID of reaction that receives these entities as inputs
-        entity_uuid_registry: Registry for tracking entity UUIDs by position
-
-    Returns:
-        List of UUIDs for the entities
-    """
+    """Assign position-aware UUIDs to entities based on their connections."""
+    if uuid_unions is None:
+        uuid_unions = {}
     return [
         _get_or_create_entity_uuid(
-            entity_dbId, source_reaction_uuid, target_reaction_uuid, entity_uuid_registry
+            entity_dbId, source_reaction_uuid, target_reaction_uuid,
+            entity_uuid_registry, uuid_unions,
         )
         for entity_dbId in reactome_ids
     ]
@@ -910,6 +920,9 @@ def create_pathway_logic_network(
     # Phase 2: Merge UUIDs based on reaction topology
     # For each (preceding, following) connection, find shared entities
     # (preceding VR's outputs ∩ following VR's inputs) and merge their UUIDs.
+    # Merges accumulate in a union-find map; we canonicalize the registry
+    # once after the loop instead of scanning every entry on every merge.
+    uuid_unions: Dict[str, str] = {}
     merge_count = 0
     for _, conn in reaction_connections.iterrows():
         if pd.isna(conn["preceding_reaction_id"]) or pd.isna(conn["following_reaction_id"]):
@@ -927,10 +940,11 @@ def create_pathway_logic_network(
                 shared = p_outputs & f_inputs
                 for eid in shared:
                     _get_or_create_entity_uuid(
-                        eid, p_vr, f_vr, entity_uuid_registry
+                        eid, p_vr, f_vr, entity_uuid_registry, uuid_unions,
                     )
                     merge_count += 1
 
+    _canonicalize_registry(entity_uuid_registry, uuid_unions)
     logger.debug(f"Phase 2 complete: {merge_count} merges performed")
 
     # Phase 3: Create edges using merged UUIDs

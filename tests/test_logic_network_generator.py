@@ -16,6 +16,7 @@ with patch('py2neo.Graph'):
     from src.logic_network_generator import (
         _assign_uuids,
         _build_entity_producer_count,
+        _canonicalize_registry,
         _emit_boundary_decomposition_edges,
         _register_entity_uuid,
         _get_or_create_entity_uuid,
@@ -155,6 +156,7 @@ class TestInterReactionConnectivity:
     def test_two_reactions_share_entity_uuid(self):
         """Entity shared as output of VR1 and input of VR2 should get one UUID."""
         registry: Dict[tuple, str] = {}
+        unions: Dict[str, str] = {}
 
         # Phase 1: Register
         _register_entity_uuid("A", "vr1", "output", registry)
@@ -164,7 +166,8 @@ class TestInterReactionConnectivity:
         assert registry[("A", "vr1", "output")] != registry[("A", "vr2", "input")]
 
         # Phase 2: Merge
-        _get_or_create_entity_uuid("A", "vr1", "vr2", registry)
+        _get_or_create_entity_uuid("A", "vr1", "vr2", registry, unions)
+        _canonicalize_registry(registry, unions)
 
         # Should now share the same UUID
         assert registry[("A", "vr1", "output")] == registry[("A", "vr2", "input")]
@@ -172,6 +175,7 @@ class TestInterReactionConnectivity:
     def test_three_reaction_chain(self):
         """VR1→A→VR2→B→VR3: A and B have separate merged UUIDs."""
         registry: Dict[tuple, str] = {}
+        unions: Dict[str, str] = {}
 
         # Phase 1: Register all entities
         _register_entity_uuid("A", "vr1", "output", registry)
@@ -180,8 +184,9 @@ class TestInterReactionConnectivity:
         _register_entity_uuid("B", "vr3", "input", registry)
 
         # Phase 2: Merge connections
-        _get_or_create_entity_uuid("A", "vr1", "vr2", registry)
-        _get_or_create_entity_uuid("B", "vr2", "vr3", registry)
+        _get_or_create_entity_uuid("A", "vr1", "vr2", registry, unions)
+        _get_or_create_entity_uuid("B", "vr2", "vr3", registry, unions)
+        _canonicalize_registry(registry, unions)
 
         uuid_a = registry[("A", "vr1", "output")]
         uuid_b = registry[("B", "vr2", "output")]
@@ -218,6 +223,7 @@ class TestInterReactionConnectivity:
     def test_multi_source_convergence(self):
         """VR1→A→VR2 and VR3→A→VR2 should all merge to same UUID."""
         registry: Dict[tuple, str] = {}
+        unions: Dict[str, str] = {}
 
         # Phase 1: Register
         _register_entity_uuid("A", "vr1", "output", registry)
@@ -225,8 +231,9 @@ class TestInterReactionConnectivity:
         _register_entity_uuid("A", "vr2", "input", registry)
 
         # Phase 2: Both VR1 and VR3 feed A into VR2
-        _get_or_create_entity_uuid("A", "vr1", "vr2", registry)
-        _get_or_create_entity_uuid("A", "vr3", "vr2", registry)
+        _get_or_create_entity_uuid("A", "vr1", "vr2", registry, unions)
+        _get_or_create_entity_uuid("A", "vr3", "vr2", registry, unions)
+        _canonicalize_registry(registry, unions)
 
         uuid_from_vr1 = registry[("A", "vr1", "output")]
         uuid_from_vr3 = registry[("A", "vr3", "output")]
