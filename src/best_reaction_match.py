@@ -1,41 +1,71 @@
+"""Hungarian assignment of decomposed inputs to decomposed outputs within one reaction.
+
+Each input combination of a reaction is paired with one output combination based
+on how many physical components they share. When the number of input combinations
+differs from the number of output combinations, the cost matrix is padded with
+zeros so Hungarian can run on a square problem; pairs that hit padding rows or
+columns are filtered out before returning, so extras are dropped rather than
+falsely matched to non-existent partners.
+
+See tests/test_best_reaction_match.py for the contract this module promises.
+"""
+
+from typing import Dict, List, Sequence, Set, Tuple
+
 import numpy as np
+import pandas as pd
 from scipy.optimize import linear_sum_assignment  # type: ignore
 
 from src.argument_parser import logger
 
 
-def create_raw_counts_matrix(input_reactions, output_reactions, decomposed_uid_mapping):
-    input_reactions = list(input_reactions)
-    output_reactions = list(output_reactions)
+def _build_uid_to_components(
+    uids: Sequence[str], decomposed_uid_mapping: pd.DataFrame
+) -> Dict[str, Set[str]]:
+    """One DataFrame scan instead of two-per-pair: pre-index uid → component set."""
+    if not uids:
+        return {}
+    rows = decomposed_uid_mapping[decomposed_uid_mapping["uid"].isin(uids)]
+    return {
+        uid: set(group["component_id_or_reference_entity_id"])
+        for uid, group in rows.groupby("uid")
+    }
 
-    n = len(input_reactions)
-    m = len(output_reactions)
 
-    reaction_to_reaction_counts = np.zeros((n, m))
-    for i, input_reaction in enumerate(input_reactions):
-        input_rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["uid"] == input_reaction
-        ]
-        input_component_ids = set(input_rows["component_id_or_reference_entity_id"])
-        for j, output_reaction in enumerate(output_reactions):
-            output_rows = decomposed_uid_mapping[
-                decomposed_uid_mapping["uid"] == output_reaction
-            ]
-            output_component_ids = set(
-                output_rows["component_id_or_reference_entity_id"]
-            )
-            matching_components = input_component_ids.intersection(output_component_ids)
-            reaction_to_reaction_counts[i, j] = len(matching_components)
+def create_raw_counts_matrix(
+    input_reactions: Sequence[str],
+    output_reactions: Sequence[str],
+    decomposed_uid_mapping: pd.DataFrame,
+) -> np.ndarray:
+    """M[i,j] = |components(input_i) ∩ components(output_j)|."""
+    inputs = list(input_reactions)
+    outputs = list(output_reactions)
 
-    return reaction_to_reaction_counts
+    in_components = _build_uid_to_components(inputs, decomposed_uid_mapping)
+    out_components = _build_uid_to_components(outputs, decomposed_uid_mapping)
+
+    counts = np.zeros((len(inputs), len(outputs)))
+    for i, in_uid in enumerate(inputs):
+        in_set = in_components.get(in_uid, set())
+        for j, out_uid in enumerate(outputs):
+            counts[i, j] = len(in_set & out_components.get(out_uid, set()))
+    return counts
 
 
 def find_best_match_both_decomposed_reactions(
-    input_reactions, output_reactions, decomposed_uid_mapping, reaction_id=None
-):
-    counts = create_raw_counts_matrix(
-        input_reactions, output_reactions, decomposed_uid_mapping
-    )
+    input_reactions: Sequence[str],
+    output_reactions: Sequence[str],
+    decomposed_uid_mapping: pd.DataFrame,
+    reaction_id: str = None,
+) -> Tuple[List[Tuple[str, str]], List[int]]:
+    """Run Hungarian on the components-overlap matrix and return matched pairs."""
+    inputs = list(input_reactions)
+    outputs = list(output_reactions)
+
+    if not inputs or not outputs:
+        return [], []
+
+    counts = create_raw_counts_matrix(inputs, outputs, decomposed_uid_mapping)
     num_rows, num_cols = counts.shape
 
     if num_rows != num_cols:
@@ -46,40 +76,40 @@ def find_best_match_both_decomposed_reactions(
             f"{num_rows} input combinations vs {num_cols} output combinations; "
             f"{unmatched_count} {side} will be unmatched"
         )
-        # Pad the counts matrix with zeros to make it square
         max_dim = max(num_rows, num_cols)
         padded_counts = np.zeros((max_dim, max_dim))
         padded_counts[:num_rows, :num_cols] = counts
     else:
         padded_counts = counts
 
-    # Convert counts to negative values to transform the maximum matching problem into a minimum cost matching problem
-    costs = -padded_counts
-    row_indices, col_indices = linear_sum_assignment(costs)
+    # Negate to turn a maximum-overlap problem into a minimum-cost problem.
+    # Padding rows/cols have cost 0; real pairs with overlap have cost
+    # -count (negative), so Hungarian prefers real assignments and only
+    # uses padding when there's nothing real left.
+    row_indices, col_indices = linear_sum_assignment(-padded_counts)
 
     matched_pairs = [
         (i, j)
         for i, j in zip(row_indices, col_indices)
-        if i < num_rows and j < num_cols
+        if i < num_rows and j < num_cols  # filter assignments that hit padding
     ]
-    matched_counts = [counts[i][j] for i, j in matched_pairs]
-
-    reaction_matches = []
-    for pair, count in zip(matched_pairs, matched_counts):
-        input_id = list(input_reactions)[pair[0]]
-        output_id = list(output_reactions)[pair[1]]
-        reaction_match = (input_id, output_id)
-        reaction_matches.append(reaction_match)
-
-    return [reaction_matches, matched_counts]
+    matches = [(inputs[i], outputs[j]) for i, j in matched_pairs]
+    counts_for_matches = [int(counts[i, j]) for i, j in matched_pairs]
+    return matches, counts_for_matches
 
 
-def find_best_reaction_match(input_reactions, output_reactions, decomposed_uid_mapping, reaction_id=None):
-    if isinstance(input_reactions, str):
-        input_reactions = {input_reactions}
-    if isinstance(output_reactions, str):
-        output_reactions = {output_reactions}
+def find_best_reaction_match(
+    input_reactions: Sequence[str],
+    output_reactions: Sequence[str],
+    decomposed_uid_mapping: pd.DataFrame,
+    reaction_id: str = None,
+) -> Tuple[List[Tuple[str, str]], List[int]]:
+    """Public entry point — same signature, kept for callers.
 
+    Returns (matched_pairs, match_counts). Both are empty if either input
+    is empty.
+    """
     return find_best_match_both_decomposed_reactions(
-        input_reactions, output_reactions, decomposed_uid_mapping, reaction_id=reaction_id
+        input_reactions, output_reactions, decomposed_uid_mapping,
+        reaction_id=reaction_id,
     )
