@@ -681,7 +681,12 @@ def append_regulators(
     and a catalyst). This prevents the same protein from appearing as two
     disconnected nodes.
     """
-    # Build reverse lookup: stId → first existing UUID from the registry
+    # Build stId → UUID lookup. Seeded from entity_uuid_registry so that a
+    # protein appearing both as a regular VR input and as a regulator shares
+    # one UUID. We also UPDATE this map when minting fresh UUIDs below, so
+    # the same regulator entity used across multiple regulator-rows (e.g.
+    # MDM2 regulating R1 and R2) shares a single UUID across emissions
+    # rather than getting disconnected duplicate nodes per emission.
     stid_to_existing_uuid: Dict[str, str] = {}
     if entity_uuid_registry:
         for (entity_dbId, _reaction_uuid, _role), entity_uuid in entity_uuid_registry.items():
@@ -696,10 +701,7 @@ def append_regulators(
 
     for map_df, pos_neg, edge_type, entity_col in regulator_configs:
         for _, row in map_df.iterrows():
-            entity_id = row.get(entity_col)
-            if pd.isna(entity_id):
-                entity_id = row.get("uuid")
-            entity_id = str(entity_id)
+            entity_id = str(row[entity_col])
 
             terminal_members = _decompose_regulator_entity(entity_id)
 
@@ -712,11 +714,11 @@ def append_regulators(
             and_or = "and" if pos_neg == "pos" else "or"
 
             for member_id, member_stoich in terminal_members:
-                # Reuse existing UUID if this entity already appears in the pathway
                 if member_id in stid_to_existing_uuid:
                     member_uuid = stid_to_existing_uuid[member_id]
                 else:
                     member_uuid = str(uuid.uuid4())
+                    stid_to_existing_uuid[member_id] = member_uuid
                 pathway_logic_network_data.append({
                     "source_id": member_uuid,
                     "target_id": row["reaction_uuid"],

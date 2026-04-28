@@ -481,6 +481,85 @@ class TestRegulatorUuidReuse:
         assert edge['source_id'] != "", "Should have a valid UUID"
 
 
+class TestRegulatorSharedAcrossReactions:
+    """Same regulator entity on multiple reactions must share one UUID.
+
+    Without this, MDM2 regulating both R1 and R2 (and not appearing as a
+    regular input/output of either) would get a fresh UUID per regulator-
+    row, leaving the network with two disconnected MDM2 nodes that look
+    like different proteins to a perturbation tool. The fix updates
+    stid_to_existing_uuid as fresh UUIDs are minted, so subsequent
+    emissions for the same stId reuse it.
+    """
+
+    @patch('src.logic_network_generator._decompose_regulator_entity', side_effect=_mock_decompose)
+    def test_same_regulator_on_two_reactions_shares_uuid(self, mock_decompose):
+        # MDM2 (R-HSA-MDM2) is a positive regulator of two different reactions.
+        # No entity_uuid_registry — it's a pure regulator, not an input/output.
+        positive_regulator_map = pd.DataFrame([
+            {"reaction": "R-HSA-R1", "PhysicalEntity": "R-HSA-MDM2",
+             "edge_type": "regulator", "uuid": "reg-link-1",
+             "reaction_uuid": "vr-1"},
+            {"reaction": "R-HSA-R2", "PhysicalEntity": "R-HSA-MDM2",
+             "edge_type": "regulator", "uuid": "reg-link-2",
+             "reaction_uuid": "vr-2"},
+        ])
+        catalyst_map = pd.DataFrame()
+        negative_regulator_map = pd.DataFrame()
+        pathway_logic_network_data: List[Dict[str, Any]] = []
+        reactome_id_to_uuid: Dict[str, str] = {}
+
+        append_regulators(
+            catalyst_map,
+            negative_regulator_map,
+            positive_regulator_map,
+            pathway_logic_network_data,
+            reactome_id_to_uuid,
+        )
+
+        # Two regulator edges emitted — one per reaction
+        assert len(pathway_logic_network_data) == 2
+        # Both must share the same source UUID for MDM2
+        sources = {e["source_id"] for e in pathway_logic_network_data}
+        assert len(sources) == 1, (
+            f"Same regulator on different reactions must share one UUID, "
+            f"got {len(sources)} distinct UUIDs: {sources}"
+        )
+        # And the targets are different reactions
+        targets = {e["target_id"] for e in pathway_logic_network_data}
+        assert targets == {"vr-1", "vr-2"}
+
+    @patch('src.logic_network_generator._decompose_regulator_entity', side_effect=_mock_decompose)
+    def test_catalyst_and_regulator_for_same_protein_share_uuid(self, mock_decompose):
+        # Same protein appears as catalyst of R1 and negative regulator of R2.
+        # Distinct edges (different edge_type) but the same source node.
+        catalyst_map = pd.DataFrame([
+            {"reaction_id": "R-HSA-R1", "catalyst_id": "R-HSA-PROT",
+             "edge_type": "catalyst", "uuid": "cat-1", "reaction_uuid": "vr-1"},
+        ])
+        negative_regulator_map = pd.DataFrame([
+            {"reaction": "R-HSA-R2", "PhysicalEntity": "R-HSA-PROT",
+             "edge_type": "regulator", "uuid": "reg-1", "reaction_uuid": "vr-2"},
+        ])
+        positive_regulator_map = pd.DataFrame()
+        pathway_logic_network_data: List[Dict[str, Any]] = []
+        reactome_id_to_uuid: Dict[str, str] = {}
+
+        append_regulators(
+            catalyst_map,
+            negative_regulator_map,
+            positive_regulator_map,
+            pathway_logic_network_data,
+            reactome_id_to_uuid,
+        )
+
+        assert len(pathway_logic_network_data) == 2
+        sources = {e["source_id"] for e in pathway_logic_network_data}
+        assert len(sources) == 1, (
+            "Same protein in catalyst and regulator role must share one UUID"
+        )
+
+
 class TestRegulatorDecompositionConsistency:
     """Test that regulator decomposition is consistent with pathway decomposition."""
 
