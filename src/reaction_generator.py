@@ -60,11 +60,81 @@ InputOutputID = str
 ReactomeID = str
 DataFrameRow = Dict[str, Any]
 
-decomposed_uid_mapping = pd.DataFrame(
-    columns=decomposed_uid_mapping_column_types.keys()
-).astype(  # type: ignore
-    decomposed_uid_mapping_column_types
-)
+class _DecompositionStore:
+    """Append-mostly buffer for decomposition rows with O(1) lookups.
+
+    This used to be a pandas DataFrame that grew via repeated
+    pd.concat — which is O(N) per call and made decomposition
+    O(N²) in total rows. Profiling showed pd.concat dominating
+    runtime (44% of Autophagy at ~12s of 28s; vastly more on big
+    pathways like Cell_Cycle which took ~4 hours).
+
+    Now the rows live in a Python list, with two side-indexes
+    (uid → row indices, reactome_id → row indices) that the hot
+    lookups in break_apart_entity and friends use. The pandas
+    DataFrame is built exactly once, at the end of decomposition,
+    when get_decomposed_uid_mapping returns.
+    """
+
+    def __init__(self) -> None:
+        self._rows: List[DataFrameRow] = []
+        self._by_uid: Dict[str, List[int]] = {}
+        self._by_reactome_id: Dict[str, List[int]] = {}
+
+    def clear(self) -> None:
+        self._rows.clear()
+        self._by_uid.clear()
+        self._by_reactome_id.clear()
+
+    def add(self, row: DataFrameRow) -> None:
+        idx = len(self._rows)
+        self._rows.append(row)
+        uid = row.get("uid")
+        if uid is not None and not pd.isna(uid):
+            self._by_uid.setdefault(uid, []).append(idx)
+        rid = row.get("reactome_id")
+        if rid is not None and not pd.isna(rid):
+            self._by_reactome_id.setdefault(rid, []).append(idx)
+
+    def add_many(self, rows: List[DataFrameRow]) -> None:
+        for row in rows:
+            self.add(row)
+
+    def rows_by_uid(self, uid: str) -> List[DataFrameRow]:
+        return [self._rows[i] for i in self._by_uid.get(uid, [])]
+
+    def rows_by_reactome_id(self, reactome_id: str) -> List[DataFrameRow]:
+        return [self._rows[i] for i in self._by_reactome_id.get(reactome_id, [])]
+
+    def has_reactome_id(self, reactome_id: str) -> bool:
+        return reactome_id in self._by_reactome_id
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    @property
+    def empty(self) -> bool:
+        return not self._rows
+
+    def to_dataframe(self) -> pd.DataFrame:
+        df = pd.DataFrame(self._rows, columns=list(decomposed_uid_mapping_column_types.keys()))
+        return df.astype(decomposed_uid_mapping_column_types)
+
+    def dataframe_for_uids(self, uids: Set[str]) -> pd.DataFrame:
+        """Build a small DataFrame containing only rows for the given UIDs.
+
+        Used by find_best_reaction_match — it only needs to look up
+        component_id_or_reference_entity_id by uid for a handful of
+        combinations, so building a per-reaction slice is cheap and
+        avoids materializing the full table mid-decomposition.
+        """
+        rows: List[DataFrameRow] = []
+        for uid in uids:
+            rows.extend(self.rows_by_uid(uid))
+        return pd.DataFrame(rows, columns=list(decomposed_uid_mapping_column_types.keys()))
+
+
+_store = _DecompositionStore()
 
 reference_entity_dict: Dict[str, str] = {}
 
@@ -133,10 +203,6 @@ def get_broken_apart_ids(
     source_entity_id: Optional[str] = None
 ) -> Set[UID]:
     """Get broken apart IDs."""
-    global decomposed_uid_mapping
-
-    # Handle empty input - no members means no UIDs to generate
-    # This prevents creating phantom UUIDs that never get stored in the mapping
     if not broken_apart_members:
         logger.debug(f"Empty broken_apart_members for reaction {reactome_id}, returning empty set")
         return set()
@@ -160,31 +226,26 @@ def get_broken_apart_ids(
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
-        row: DataFrameRow
         stoich_lookup = _direct_component_stoichiometry.get(reactome_id, {})
         for member in broken_apart_members:
             member_stoich = stoich_lookup.get(member, 1)
             if is_valid_uuid(member):
-                component_ids = decomposed_uid_mapping.loc[
-                    decomposed_uid_mapping["uid"] == member, "component_id"
-                ].tolist()
-                for component_id in component_ids:
-                    row = {
+                for prev_row in _store.rows_by_uid(member):
+                    rows.append({
                         "uid": uid,
-                        "component_id": component_id,
+                        "component_id": prev_row["component_id"],
                         "reactome_id": reactome_id,
                         "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(
-                            component_id
+                            prev_row["component_id"]
                         ),
                         "input_or_output_uid": member,
                         "input_or_output_reactome_id": None,
                         "source_entity_id": source_entity_id,
-                        "source_reaction_id": None,  # TODO: Populate with original reaction ID for virtual reactions
+                        "source_reaction_id": None,
                         "stoichiometry": member_stoich,
-                    }
-                    rows.append(row)
+                    })
             else:
-                row = {
+                rows.append({
                     "uid": uid,
                     "component_id": member,
                     "reactome_id": reactome_id,
@@ -194,12 +255,11 @@ def get_broken_apart_ids(
                     "input_or_output_uid": None,
                     "input_or_output_reactome_id": member,
                     "source_entity_id": source_entity_id,
-                    "source_reaction_id": None,  # TODO: Populate with original reaction ID for virtual reactions
+                    "source_reaction_id": None,
                     "stoichiometry": member_stoich,
-                }
-                rows.append(row)
+                })
         uids = {uid}
-        decomposed_uid_mapping = pd.concat([decomposed_uid_mapping, pd.DataFrame(rows)])
+        _store.add_many(rows)
 
     return uids
 
@@ -210,20 +270,14 @@ def get_uids_for_iterproduct_components(
     source_entity_id: Optional[str] = None
 ) -> Set[UID]:
     """Get UID for iterproduct components."""
-    global decomposed_uid_mapping
-
     uids: Set[UID] = set()
     stoich_lookup = _direct_component_stoichiometry.get(reactome_id, {})
     for component in iterproduct_components:
         component_to_input_or_output: Dict[ComponentID, InputOutputID] = {}
         for item in component:
             if is_valid_uuid(item):
-                selected_rows = decomposed_uid_mapping.loc[
-                    decomposed_uid_mapping["uid"] == item
-                ]
-                for index, selected_row in selected_rows.iterrows():
-                    component_id = selected_row["component_id"]
-                    component_to_input_or_output[component_id] = item
+                for prev_row in _store.rows_by_uid(item):
+                    component_to_input_or_output[prev_row["component_id"]] = item
             else:
                 component_to_input_or_output[item] = item
 
@@ -231,7 +285,6 @@ def get_uids_for_iterproduct_components(
             str(sorted(component_to_input_or_output.values())).encode()
         ).hexdigest()
 
-        rows: List[DataFrameRow] = []
         for component_id, input_or_output_id in component_to_input_or_output.items():
             input_or_output_uid = (
                 input_or_output_id if is_valid_uuid(input_or_output_id) else None
@@ -240,7 +293,7 @@ def get_uids_for_iterproduct_components(
                 input_or_output_id if not is_valid_uuid(input_or_output_id) else None
             )
             item_stoich = stoich_lookup.get(input_or_output_id, 1)
-            row: DataFrameRow = {
+            _store.add({
                 "uid": uid,
                 "component_id": component_id,
                 "reactome_id": reactome_id,
@@ -250,12 +303,9 @@ def get_uids_for_iterproduct_components(
                 "input_or_output_uid": input_or_output_uid,
                 "input_or_output_reactome_id": input_or_output_reactome_id,
                 "source_entity_id": source_entity_id,
-                "source_reaction_id": None,  # TODO: Populate with original reaction ID for virtual reactions
+                "source_reaction_id": None,
                 "stoichiometry": item_stoich,
-            }
-            rows.append(row)
-
-        decomposed_uid_mapping = pd.concat([decomposed_uid_mapping, pd.DataFrame(rows)])
+            })
         uids.add(uid)
 
     return uids
@@ -316,8 +366,6 @@ def _emit_entityset_provenance_rows(entity_set_id: str, leaves: Set[str]) -> Non
     downstream callers (best_reaction_match, _build_uid_index, etc.) never
     pass them in lookups — they live in the table purely as records.
     """
-    global decomposed_uid_mapping
-
     if not leaves:
         return
 
@@ -327,9 +375,7 @@ def _emit_entityset_provenance_rows(entity_set_id: str, leaves: Set[str]) -> Non
             # Leaf is itself a UID from a nested decomposition (e.g., a
             # Complex inside this set). Expand to its component_ids and
             # record one provenance row per component.
-            component_ids = decomposed_uid_mapping.loc[
-                decomposed_uid_mapping["uid"] == leaf, "component_id"
-            ].drop_duplicates().tolist()
+            component_ids = sorted({r["component_id"] for r in _store.rows_by_uid(leaf)})
             for component_id in component_ids:
                 rows.append({
                     "uid": hashlib.sha256(
@@ -361,9 +407,7 @@ def _emit_entityset_provenance_rows(entity_set_id: str, leaves: Set[str]) -> Non
                 "stoichiometry": 1,
             })
 
-    decomposed_uid_mapping = pd.concat(
-        [decomposed_uid_mapping, pd.DataFrame(rows)], ignore_index=True
-    )
+    _store.add_many(rows)
 
 
 def get_terminal_components(entity_id: str) -> Set[str]:
@@ -420,21 +464,19 @@ def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -
     The key change: Simple complexes are NO LONGER decomposed. This preserves
     intermediate complexes in the pathway, maintaining biological feedback loops.
     """
-    global decomposed_uid_mapping
-
     labels = get_labels(entity_id)
     if "EntitySet" in labels or "Complex" in labels:
-        filtered_rows = decomposed_uid_mapping[
-            decomposed_uid_mapping["reactome_id"] == entity_id
-        ]
-        if not filtered_rows.empty:
-            input_output_uid_values = filtered_rows["input_or_output_uid"]
-            input_output_reactome_id_values = filtered_rows[
-                "input_or_output_reactome_id"
-            ]
-            return set(input_output_uid_values.dropna()) | set(
-                input_output_reactome_id_values.dropna()
-            )
+        cached = _store.rows_by_reactome_id(entity_id)
+        if cached:
+            leaves: Set[str] = set()
+            for r in cached:
+                v = r["input_or_output_uid"]
+                if v is not None and not pd.isna(v):
+                    leaves.add(v)
+                v = r["input_or_output_reactome_id"]
+                if v is not None and not pd.isna(v):
+                    leaves.add(v)
+            return leaves
 
     if "EntitySet" in labels:
         if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
@@ -509,8 +551,6 @@ def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -
 
 def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
     """Decompose by reactions."""
-    global decomposed_uid_mapping
-
     logger.debug("Decomposing reactions")
 
     # Each best_match is a triple (input_hash, output_hash, reaction_id).
@@ -542,8 +582,13 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
             )
             continue
 
+        # Hand the matcher only the rows it actually needs, not the full
+        # accumulated decomposition table. find_best_reaction_match looks
+        # up component sets by uid, and the relevant uids are exactly the
+        # input/output combinations of this reaction.
+        mini_df = _store.dataframe_for_uids(input_combinations | output_combinations)
         [best_matches, _] = find_best_reaction_match(
-            input_combinations, output_combinations, decomposed_uid_mapping,
+            input_combinations, output_combinations, mini_df,
             reaction_id=reaction_id
         )
 
@@ -560,10 +605,10 @@ def get_decomposed_uid_mapping(
     pathway_id: str, reaction_connections: pd.DataFrame
 ) -> Tuple[pd.DataFrame, List[Any]]:
     """Get decomposed UID mapping."""
-    global decomposed_uid_mapping, reference_entity_dict, _complex_contains_set_cache
+    global reference_entity_dict, _complex_contains_set_cache
     global _direct_component_stoichiometry
 
-    decomposed_uid_mapping.drop(decomposed_uid_mapping.index, inplace=True)
+    _store.clear()
     reference_entity_dict.clear()
     _complex_contains_set_cache.clear()
     _direct_component_stoichiometry.clear()
@@ -575,7 +620,7 @@ def get_decomposed_uid_mapping(
         ].values.ravel("K")
     )
 
-    reaction_ids = reaction_ids[~pd.isna(reaction_ids)]  # removing NA value from list
+    reaction_ids = reaction_ids[~pd.isna(reaction_ids)]
     reaction_ids = reaction_ids.tolist()
 
     # Bulk pre-fetch all entity data from Neo4j (replaces thousands of individual queries)
@@ -583,4 +628,8 @@ def get_decomposed_uid_mapping(
 
     best_matches = decompose_by_reactions(list(reaction_ids))
 
-    return (decomposed_uid_mapping, best_matches)
+    # Materialize the DataFrame exactly once now that decomposition is done.
+    # During decomposition all writes/reads went through _store (list +
+    # dict indexes) instead of pd.concat, which dropped the per-row append
+    # cost from O(N) to O(1).
+    return (_store.to_dataframe(), best_matches)

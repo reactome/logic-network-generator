@@ -28,12 +28,22 @@ import src.reaction_generator as rg
 
 @pytest.fixture(autouse=True)
 def reset_module_state():
-    """Each test runs against a fresh decomposition table and caches."""
-    rg.decomposed_uid_mapping.drop(rg.decomposed_uid_mapping.index, inplace=True)
+    """Each test runs against a fresh decomposition store and caches."""
+    rg._store.clear()
     rg.reference_entity_dict.clear()
     rg._complex_contains_set_cache.clear()
     rg._direct_component_stoichiometry.clear()
     yield
+
+
+def _store_df():
+    """Materialize the decomposition store as a DataFrame for assertions.
+
+    The store now holds rows in a list with dict indexes; tests pull a
+    DataFrame view at assertion time so the existing filter expressions
+    still read naturally.
+    """
+    return rg._store.to_dataframe()
 
 
 def _label_map(mapping):
@@ -88,9 +98,8 @@ class TestEntitySetIsFlatAlternatives:
              patch.object(rg, "get_reference_entity_id", _ref_entity_map({})):
             rg.break_apart_entity("S")
 
-        prov = rg.decomposed_uid_mapping[
-            rg.decomposed_uid_mapping["source_entity_id"] == "S"
-        ]
+        df = _store_df()
+        prov = df[df["source_entity_id"] == "S"]
         assert set(prov["component_id"]) == {"A", "B"}, (
             "EntitySet decomposition must record provenance for each leaf so "
             "downstream queries can answer 'which set does leaf X belong to?'"
@@ -122,9 +131,8 @@ class TestSimpleComplexIsAtomic:
              patch.object(rg, "get_reference_entity_id", _ref_entity_map({})):
             rg.break_apart_entity("C")
 
-        rows_for_c = rg.decomposed_uid_mapping[
-            rg.decomposed_uid_mapping["reactome_id"] == "C"
-        ]
+        df = _store_df()
+        rows_for_c = df[df["reactome_id"] == "C"]
         assert len(rows_for_c) == 0, (
             "Atomic complex must not write decomposition rows."
         )
@@ -175,9 +183,8 @@ class TestComplexWithEntitySetIsCartesian:
             rg.break_apart_entity("C")
 
         # Each combination has 2 components → 4 rows total under reactome_id=C
-        rows_for_c = rg.decomposed_uid_mapping[
-            rg.decomposed_uid_mapping["reactome_id"] == "C"
-        ]
+        df = _store_df()
+        rows_for_c = df[df["reactome_id"] == "C"]
         assert len(rows_for_c) == 4
         assert set(rows_for_c["component_id"]) == {"A", "B", "P"}
 
@@ -230,9 +237,8 @@ class TestCrossCallStability:
             second = rg.break_apart_entity("S")
         assert first == second
         # Provenance rows should NOT be duplicated by the second call.
-        prov = rg.decomposed_uid_mapping[
-            rg.decomposed_uid_mapping["source_entity_id"] == "S"
-        ]
+        df = _store_df()
+        prov = df[df["source_entity_id"] == "S"]
         assert len(prov) == 2, (
             "Cache short-circuit must prevent duplicate provenance rows on re-entry."
         )
