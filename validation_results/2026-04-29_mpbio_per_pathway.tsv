@@ -1,0 +1,92 @@
+pathway	status	total	correct	accuracy	valid_total	valid_correct	valid_accuracy
+RAF_MAP_kinase_cascade	ok	84	6	0.07142857142857142	0.0	0.0	0.0
+Signaling_by_ERBB2	no key-output column (saw ['GeneID', 'ERBB2_2', 'ERBB2_0']...)	0	0	0.0			
+DNA_Double_Strand_Break_Response	ok	130	69	0.5307692307692308	88.0	57.0	0.6477272727272727
+HDR_through_Homologous_Recombination_HRR_or_Single_Strand_Annealing_SSA_	ok	360	145	0.4027777777777778	120.0	69.0	0.575
+HDR_through_MMEJ_alt-NHEJ_	ok	20	6	0.3	12.0	6.0	0.5
+Nonhomologous_End-Joining_NHEJ_	ok	32	7	0.21875	22.0	7.0	0.3181818181818182
+Mismatch_Repair	ok	30	10	0.3333333333333333	20.0	10.0	0.5
+Fanconi_Anemia_Pathway	ok	48	10	0.20833333333333334	8.0	4.0	0.5
+Nucleotide_Excision_Repair	ok	66	24	0.36363636363636365	12.0	4.0	0.3333333333333333
+DDX58_IFIH1-mediated_induction_of_interferon-alpha_beta	ok	88	50	0.5681818181818182	18.0	14.0	0.7777777777777778
+DNA_Damage_Reversal	ok	64	37	0.578125	16.0	13.0	0.8125
+DNA_Damage_Bypass	ok	126	77	0.6111111111111112	14.0	5.0	0.35714285714285715
+Base_Excision_Repair	ok	196	102	0.5204081632653061	96.0	40.0	0.4166666666666667
+Signaling_by_Rho_GTPases	no_curator_file	0	0	0.0			
+Cellular_Senescence	no key-output column (saw ['output_reactome_dbid', 'TP53_0', 'TP53_2']...)	0	0	0.0			
+FCERI_mediated_MAPK_activation	no_curator_file	0	0	0.0			
+Signaling_by_ERBB4	ok	144	113	0.7847222222222222	30.0	25.0	0.8333333333333334
+Regulation_of_mRNA_stability_by_proteins_that_bind_AU-rich_elements	no_curator_file	0	0	0.0			
+Signaling_by_WNT	ok	518	277	0.5347490347490348	154.0	98.0	0.6363636363636364
+Signaling_by_PTK6	ok	210	45	0.21428571428571427	182.0	41.0	0.22527472527472528
+Cell_Cycle_Checkpoints	ok	196	124	0.6326530612244898	154.0	107.0	0.6948051948051948
+Mitotic_G1-G1_S_phases	ok	884	300	0.3393665158371041	714.0	216.0	0.3025210084033613
+G0_and_Early_G1	no_curator_file	0	0	0.0			
+Mitotic_G2-G2_M_phases	ok	132	86	0.6515151515151515	100.0	56.0	0.56
+Transcriptional_Regulation_by_TP53	ok	1836	1096	0.5969498910675382	1728.0	1032.0	0.5972222222222222
+Intrinsic_Pathway_for_Apoptosis	ok	264	124	0.4696969696969697	176.0	94.0	0.5340909090909091
+Signaling_by_TGF-beta_Receptor_Complex	ok	192	73	0.3802083333333333	120.0	53.0	0.44166666666666665
+Signaling_by_Hedgehog	ok	130	66	0.5076923076923077	80.0	34.0	0.425
+Semaphorin_interactions	no_curator_file	0	0	0.0			
+NCAM_signaling_for_neurite_out-growth	ok	100	72	0.72	48.0	36.0	0.75
+Netrin-1_signaling	ok	360	308	0.8555555555555555	120.0	112.0	0.9333333333333333
+Cell_junction_organization	ok	806	768	0.9528535980148883	546.0	546.0	1.0
+Signaling_by_ROBO_receptors	ok	816	727	0.8909313725490197	320.0	299.0	0.934375
+L1CAM_interactions	no_curator_file	0	0	0.0			
+EPH-Ephrin_signaling	no_curator_file	0	0	0.0			
+PIP3_activates_AKT_signaling	ok	448	99	0.22098214285714285	234.0	99.0	0.4230769230769231
+RHO_GTPases_activate_PKNs	ok	110	45	0.4090909090909091	40.0	23.0	0.575
+RHO_GTPases_Activate_ROCKs	ok	88	39	0.4431818181818182	22.0	15.0	0.6818181818181818
+Signaling_by_FGFR1	ok	120	65	0.5416666666666666	10.0	9.0	0.9
+Signaling_by_FGFR2	ok	160	97	0.60625	14.0	13.0	0.9285714285714286
+Signaling_by_FGFR3	ok	120	68	0.5666666666666667	10.0	10.0	1.0
+Signaling_by_FGFR4	ok	126	55	0.4365079365079365	12.0	7.0	0.5833333333333334
+RHO_GTPases_activate_CIT	ok	90	28	0.3111111111111111	0.0	0.0	0.0
+DNA_Double-Strand_Break_Repair	ok	1584	1045	0.6597222222222222	780.0	509.0	0.6525641025641026
+Pre-NOTCH_Expression_and_Processing	ok	204	116	0.5686274509803921	128.0	112.0	0.875
+Signaling_by_NOTCH1	ok	154	64	0.4155844155844156	140.0	64.0	0.45714285714285713
+Signaling_by_NOTCH2	ok	110	61	0.5545454545454546	100.0	53.0	0.53
+Signaling_by_Activin	ok	78	8	0.10256410256410256	0.0	0.0	0.0
+Signaling_by_NODAL	ok	120	18	0.15	0.0	0.0	0.0
+Signaling_by_BMP	ok	112	56	0.5	24.0	22.0	0.9166666666666666
+Signaling_by_VEGF	ok	98	6	0.061224489795918366	28.0	6.0	0.21428571428571427
+Caspase_activation_via_Death_Receptors_in_the_presence_of_ligand	ok	20	3	0.15	10.0	1.0	0.1
+Caspase_activation_via_Dependence_Receptors_in_the_absence_of_ligand	error: [Errno 2] No such file or directory: 'output/Caspase_activation_via_Dependence_Receptors_in_the_absence_of_ligand_R-HSA-418889/logic_network.csv'	0	0	0.0			
+Signaling_by_MET	ok	400	215	0.5375	204.0	117.0	0.5735294117647058
+Apoptotic_execution_phase	ok	1332	1249	0.9376876876876877	1314.0	1235.0	0.9398782343987824
+Signaling_by_Insulin_receptor	ok	50	14	0.28	30.0	8.0	0.26666666666666666
+Chromatin_modifying_enzymes	ok	216	182	0.8425925925925926	40.0	38.0	0.95
+Transcriptional_regulation_by_RUNX3	no_curator_file	0	0	0.0			
+Transcriptional_regulation_by_RUNX1	ok	2436	2067	0.8485221674876847	2146.0	1841.0	0.8578751164958062
+Transcriptional_regulation_by_the_AP-2_TFAP2_family_of_transcription_factors	ok	504	404	0.8015873015873016	476.0	388.0	0.8151260504201681
+DAP12_interactions	ok	456	367	0.8048245614035088	336.0	303.0	0.9017857142857143
+Interleukin-4_and_Interleukin-13_signaling	ok	1242	929	0.7479871175523349	324.0	271.0	0.8364197530864198
+Insulin-like_Growth_Factor-2_mRNA_Binding_Proteins_IGF2BPs_IMPs_VICKZs_bind_RNA	error: [Errno 2] No such file or directory: 'output/Insulin-like_Growth_Factor-2_mRNA_Binding_Proteins_IGF2BPs_IMPs_VICKZs_bind_RNA_R-HSA-428359/logic_network.csv'	0	0	0.0			
+TET1,2,3_and_TDG_demethylate_DNA	ok	4	0	0.0	0.0	0.0	0.0
+Costimulation_by_the_CD28_family	ok	192	148	0.7708333333333334	40.0	34.0	0.85
+Signaling_by_EGFR	ok	144	43	0.2986111111111111	80.0	27.0	0.3375
+Signaling_by_Type_1_Insulin-like_Growth_Factor_1_Receptor_IGF1R_	ok	24	7	0.2916666666666667	8.0	1.0	0.125
+Signaling_by_SCF-KIT	ok	252	160	0.6349206349206349	84.0	62.0	0.7380952380952381
+Signaling_by_PDGF	ok	286	190	0.6643356643356644	20.0	14.0	0.7
+Interleukin-7_signaling	ok	48	16	0.3333333333333333	16.0	8.0	0.5
+Transcriptional_regulation_by_RUNX2	ok	880	721	0.8193181818181818	308.0	251.0	0.814935064935065
+Transcriptional_regulation_of_pluripotent_stem_cells	ok	440	141	0.32045454545454544	440.0	141.0	0.32045454545454544
+GPVI-mediated_activation_cascade	ok	96	32	0.3333333333333333	20.0	14.0	0.7
+RHO_GTPases_activate_IQGAPs	ok	36	19	0.5277777777777778	9.0	5.0	0.5555555555555556
+Mitotic_Prophase	ok	264	193	0.7310606060606061	40.0	35.0	0.875
+Nephrin_family_interactions	ok	42	24	0.5714285714285714	18.0	14.0	0.7777777777777778
+S_Phase	ok	198	150	0.7575757575757576	54.0	44.0	0.8148148148148148
+Interleukin-2_family_signaling	ok	260	166	0.6384615384615384	0.0	0.0	0.0
+Interleukin-20_family_signaling	ok	80	59	0.7375	64.0	45.0	0.703125
+RET_signaling	ok	144	108	0.75	0.0	0.0	0.0
+MAP_kinase_activation	ok	208	133	0.6394230769230769	110.0	63.0	0.5727272727272728
+Interleukin-3,_Interleukin-5_and_GM-CSF_signaling	ok	162	76	0.4691358024691358	0.0	0.0	0.0
+Activation_of_anterior_HOX_genes_in_hindbrain_development_during_early_embryogenesis	ok	144	73	0.5069444444444444	72.0	37.0	0.5138888888888888
+Class_I_MHC_mediated_antigen_processing_presentation	ok	120	34	0.2833333333333333	0.0	0.0	0.0
+Immunoregulatory_interactions_between_a_Lymphoid_and_a_non-Lymphoid_cell	ok	504	466	0.9246031746031746	192.0	180.0	0.9375
+Interferon_gamma_signaling	error: [Errno 2] No such file or directory: 'output/Interferon_gamma_signaling_R-HSA-877300/logic_network.csv'	0	0	0.0			
+Interferon_alpha_beta_signaling	no_output	0	0	0.0			
+NoRC_negatively_regulates_rRNA_expression	no_output	0	0	0.0			
+DNA_Repair	no_curator_file	0	0	0.0			
+Neurexins_and_neuroligins	no_output	0	0	0.0			
+Regulation_of_beta-cell_development	no_output	0	0	0.0			
