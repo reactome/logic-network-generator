@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - Poetry
 - Docker (for Neo4j database)
 - Git
@@ -24,12 +24,13 @@ Thank you for your interest in contributing! This document provides guidelines f
    poetry install
    ```
 
-3. **Start Neo4j database** (for integration tests)
+3. **Start Neo4j database** (for database-tier tests)
    ```bash
-   docker run -p 7474:7474 -p 7687:7687 \
-     -e NEO4J_dbms_memory_heap_maxSize=8g \
-     public.ecr.aws/reactome/graphdb:Release94
+   docker-compose up -d
    ```
+   The image and version are pinned in `docker-compose.yml`; bump
+   the `Release<N>` tag when a new Reactome ships and re-run the
+   database tier (see "Tracking new Reactome releases" in the README).
 
 4. **Install pre-commit hooks**
    ```bash
@@ -68,14 +69,19 @@ Branch naming conventions:
 - Add tests to the appropriate file in `tests/`
 - Ensure tests pass locally before pushing
 
-Run unit tests (fast, no database required):
+Run unit tests (fast, no database, no generated artifacts — what CI runs):
 ```bash
-poetry run pytest tests/ -v -m "not database"
+poetry run pytest tests/ -v -m "not database and not integration"
 ```
 
-Run all tests including integration tests (requires Neo4j):
+Run integration tests (require artifacts in `output/` from a prior run):
 ```bash
-poetry run pytest tests/ -v
+poetry run pytest tests/ -v -m integration
+```
+
+Run database-tier tests (require a running Reactome Neo4j):
+```bash
+poetry run pytest tests/ -v -m database
 ```
 
 ### 4. Code Quality
@@ -84,13 +90,18 @@ Before committing, ensure your code passes all quality checks:
 
 **Run linter:**
 ```bash
-poetry run ruff check src/
-poetry run ruff format src/
+poetry run ruff check src/ bin/
+poetry run ruff format src/ bin/
 ```
 
-**Run type checker (optional but recommended):**
+**Run type checker (CI enforces this — must be clean):**
 ```bash
-poetry run mypy --ignore-missing-imports src/
+poetry run mypy src/
+```
+
+**Run unit tests with coverage (CI gate is 40%):**
+```bash
+poetry run pytest tests/ -m "not database and not integration" --cov=src
 ```
 
 **Or use pre-commit to run all checks:**
@@ -184,12 +195,18 @@ def generate_logic_network(pathway_id: str) -> pd.DataFrame:
 - No database required
 - Mark with default pytest markers
 
-### Integration Tests
+### Integration Tests (`@pytest.mark.integration`)
 
-- Test end-to-end functionality
-- Require Neo4j database
-- Slower to run (seconds per test)
-- Mark with `@pytest.mark.database`
+- Operate on artifacts produced by a prior `bin/create-pathways.py` run
+  (files under `output/`). No database connection.
+- Use these for end-to-end shape checks on the generated network.
+
+### Database Tests (`@pytest.mark.database`)
+
+- Require a running Reactome Neo4j (`docker-compose up -d`).
+- Use these to validate generation logic against live Reactome data.
+- Version-agnostic: discover pathways from the loaded graph rather
+  than hard-coding stable IDs, so they survive Reactome version bumps.
 
 Example:
 ```python
@@ -197,11 +214,10 @@ import pytest
 
 @pytest.mark.database
 class TestPathwayValidation:
-    """Integration tests requiring Neo4j."""
+    """Tests requiring a live Reactome Neo4j."""
 
     def test_validates_against_database(self):
-        # Test implementation
-        pass
+        ...
 ```
 
 ## Pull Request Process
@@ -212,8 +228,7 @@ class TestPathwayValidation:
 
 2. **Update documentation**
    - Update README.md if adding features
-   - Add entry to CHANGELOG.md
-   - Update docstrings
+   - Update docstrings on changed public functions
 
 3. **Request review**
    - Tag relevant maintainers

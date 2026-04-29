@@ -22,5 +22,8 @@ repos:
     rev: v1.14.0
     hooks:
       - id: mypy
-        args: [--ignore-missing-imports]
-        additional_dependencies: [types-all]
+        files: ^src/
+        # Match CI: no --ignore-missing-imports, real stubs for our deps.
+        # types-all was archived; replaced with the specific stubs we need.
+        additional_dependencies:
+          - pandas-stubs
