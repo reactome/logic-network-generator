@@ -113,9 +113,53 @@ not network.
 The 156 bug candidates concentrate in 9 pathways — most heavily in
 Transcriptional_Regulation_by_TP53 (80 cases, all involving MDM2
 perturbation) and PIP3_activates_AKT_signaling (18 cases involving PTEN).
-That clustering suggests one or two specific issues rather than a
-pervasive bug — worth investigating individually if we want to push past
-~71%.
+
+### Tracing the cluster: not a generation bug
+
+End-to-end inspection of the MDM2/TP53 cluster (and a confirming check
+on the PTEN/AKT cluster) showed every "bug candidate" we examined was
+the same structural pattern:
+
+> **The biological prediction depends on substrate consumption.**
+
+Concrete example. The reaction `MDM2 ubiquitinates TP53` consumes
+the MDM2:TP53 complex (containing TP53) and produces PolyUb-TP53
+Tetramer. The curator-implicit chain to TIGAR upregulation reads:
+
+> Knock out MDM2 → less ubiquitination → **less TP53 consumed** → more
+> free TP53 → more TP53 Tetramer → more TIGAR transcription.
+
+The bolded step is mass-action depletion: when a reaction consumes
+its input, less of that input remains for other reactions. Our
+directed-flow network correctly emits every Reactome reaction with
+its inputs and outputs as edges, but it does **not** emit a "this
+reaction depletes its substrate" edge — i.e., the negative effect of
+flux-on-substrate isn't represented in the graph topology.
+
+The PTEN/AKT cluster shows the same pattern: PTEN catalyzes
+"PTEN dephosphorylates PIP3" (consuming PIP3); the curator-predicted
+effect on AKT-downstream targets (p-S356-RPS6KB2, p-S939-TSC2, etc.)
+hinges on PIP3 depletion rather than on a forward-flow path the
+graph could carry.
+
+So the 156 bug candidates are **not** generation bugs to fix in the
+pipeline — Reactome's reactions are all there, with the right inputs,
+outputs, catalysts, and regulators. They reflect a known limitation
+of pathway-diagram-derived directed-flow Boolean networks. Two ways
+to address them if needed:
+
+1. **Add explicit consumption edges**: emit a `pos_neg='neg'` edge
+   from each reaction back to each of its inputs, modeling
+   substrate depletion as a negative effect. A meaningful semantic
+   addition; would push validation accuracy higher.
+2. **Let parameter learning capture it**: alphaSignal's learned
+   parameters can absorb mass-action steady-state implicitly without
+   a structural change to the network — the model can learn that
+   "this reaction's flux depletes this substrate" from the
+   correlation in training data.
+
+Either is a forward-looking improvement. Neither is a fix to a
+generation bug.
 
 ## Vs experimental data (10-pathway subset, 499 valid tests)
 
