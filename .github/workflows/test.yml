@@ -26,7 +26,3 @@ jobs:
 
     - name: Run unit tests (no Neo4j, no generated artifacts)
       run: poetry run pytest tests/ -v -m "not database and not integration"
-
-    - name: Run type checking
-      run: poetry run mypy --ignore-missing-imports src/
-      continue-on-error: true  # Don't fail build yet
