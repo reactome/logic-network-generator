@@ -75,23 +75,66 @@ curator agreement with experimental data ≈ 81%.
 
 ## Failure breakdown (valid cases only, 3,798 wrong)
 
-| Category | Count | % of failures | Interpretation |
-|---|---|---|---|
-| `propagator_missed` | 2,278 | 60.0% | Path exists; the simple Boolean propagator couldn't carry the perturbation. The MIN-of-inputs rule for AND gates can't propagate "up" signals when other inputs sit at 1 — a structural limit of this propagator, not a network bug. Goes away with learned parameters. |
-| `no_path` | 1,422 | 37.4% | Both endpoints exist but no directed path connects them. Could be a real generation bug, *or* a genuine v96 change where Reactome removed an intermediate reaction between 2018 and 2026. Needs per-case inspection to disambiguate. |
-| `false_positive_change` | 98 | 2.6% | Predicted change but curator said normal. |
+| Category | Count | % of failures | % of valid tests | Interpretation |
+|---|---|---|---|---|
+| `propagator_missed` | 2,278 | 60.0% | 17.7% | Path exists; the simple Boolean propagator couldn't carry the perturbation. The MIN-of-inputs rule for AND gates can't propagate "up" signals when other inputs sit at 1 — a structural limit of this propagator, not a network bug. Goes away with learned parameters. |
+| `no_path` | 1,422 | 37.4% | 11.0% | Both endpoints exist but no directed path connects them. **Resolved further below by Neo4j cross-check.** |
+| `false_positive_change` | 98 | 2.6% | 0.8% | Predicted change but curator said normal. |
 
-So at most ~11% of valid tests *could* indicate a generation bug, and that
-slice is shared with genuine pathway changes in current Reactome.
+## Neo4j cross-check on the no_path slice
+
+For each `no_path` failure case, we built the equivalent reaction-flow
+graph from current Neo4j and asked: does the original pathway have a
+path from the perturbed gene's entities to the key-output entity? If
+Neo4j has a path but our logic network doesn't, the network is missing
+something — that's a generation-bug candidate. If Neo4j has no path
+either, the curator's prediction was based on v86 connectivity that
+v96 has dropped, and the failure is just test-set staleness.
+
+| Bucket | Count | % of no_path | % of valid tests |
+|---|---|---|---|
+| `bug_candidate` (Neo4j has path; we missed it) | **156** | 11.0% | **1.2%** |
+| `pathway_changed` (Neo4j has no path either) | 1,266 | 89.0% | 9.8% |
+
+**~1.2% of valid tests are potential network-generation bugs.** If every
+one of those were a real bug and we fixed them all, accuracy would rise
+from 70.55% to roughly 71.8%. Most of the remaining gap is propagator,
+not network.
+
+The 156 bug candidates concentrate in 9 pathways — most heavily in
+Transcriptional_Regulation_by_TP53 (80 cases, all involving MDM2
+perturbation) and PIP3_activates_AKT_signaling (18 cases involving PTEN).
+That clustering suggests one or two specific issues rather than a
+pervasive bug — worth investigating individually if we want to push past
+~71%.
+
+## Vs experimental data (10-pathway subset, 499 valid tests)
+
+| Metric | Cases | Correct | Accuracy |
+|---|---|---|---|
+| Raw                              | 849   | 188     | 22.14%   |
+| Valid-only                       | 499   | 170     | 34.07%   |
+
+Dramatically lower than vs curator (70.55%) and lower than MP-BioPath's
+published 75% vs experimental. The reason is structural to the
+propagator: experimental data heavily samples cases where the
+perturbation **caused a measured change** (only 10% are "normal";
+curator data is 61% "normal"). The simple Boolean MIN-of-inputs
+under-predicts changes (and especially can't propagate "up" through
+AND gates), so it does much worse on a dataset that's mostly changes.
+
+This is a propagator limitation, not a network limitation. With
+parameter learning (alphaSignal), the same network should recover
+performance against experimental data.
 
 ## Files
 
-- `2026-04-29_mpbio_per_pathway.tsv` — one row per pathway: total cases,
-  raw accuracy, valid-only accuracy.
-- `2026-04-29_mpbio_per_pathway_failures.tsv` — one row per failing test
-  case with predicted, expected, and a failure category.
-- `2026-04-29_mpbio_console.log` — full run output including overall
-  accuracy and confusion matrix.
+- `2026-04-29_mpbio_per_pathway.tsv` — vs curator, per-pathway
+- `2026-04-29_mpbio_per_pathway_failures.tsv` — vs curator, per-case failures with category
+- `2026-04-29_mpbio_per_pathway_experimental.tsv` — vs experimental, per-pathway
+- `2026-04-29_mpbio_per_pathway_experimental_failures.tsv` — vs experimental, per-case failures
+- `2026-04-29_no_path_neo4j_check.tsv` — Neo4j cross-check classifying every `no_path` case as bug_candidate or pathway_changed
+- `2026-04-29_mpbio_console.log` — full run output
 
 ## Failure categories
 

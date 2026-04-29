@@ -163,7 +163,24 @@ def parse_perturbation_columns(curator_df: pd.DataFrame) -> list[tuple[str, int]
     return out
 
 
-_KEY_OUTPUT_ALIASES = ("key_output", "key output", "key_outout", "key outout")
+_KEY_OUTPUT_ALIASES = ("key_output", "key output", "key_outout", "key outout", "key_ouput")
+
+
+def _load_truth_table(pathway_name: str, ground_truth: str) -> pd.DataFrame | None:
+    """Load curator-prediction or experimental-result TSV with schema fixups."""
+    if ground_truth == "curator":
+        truth_path = MP_BIOPATH_DIR / "reactome_curator_predictions" / f"{pathway_name}_reactome_curator_results.tsv"
+    else:
+        truth_path = MP_BIOPATH_DIR / "experimental_results" / f"{pathway_name}_experimental_results.tsv"
+    if not truth_path.exists():
+        return None
+    df = pd.read_csv(truth_path, sep="\t", engine="python", on_bad_lines="warn")
+    for alias in _KEY_OUTPUT_ALIASES:
+        if alias in df.columns:
+            if alias != "key_output":
+                df = df.rename(columns={alias: "key_output"})
+            return df
+    return None
 
 
 def build_adjacency(network: pd.DataFrame) -> dict[str, list[str]]:
@@ -225,23 +242,16 @@ def categorize_failure(
     return "propagator_missed"
 
 
-def validate_one_pathway(pathway_dir: Path, pathway_name: str, pathway_dbid: str, graph) -> dict:
+def validate_one_pathway(
+    pathway_dir: Path, pathway_name: str, pathway_dbid: str, graph,
+    ground_truth: str = "curator",
+) -> dict:
     """Validate one pathway, return per-pathway metrics."""
-    curator_path = MP_BIOPATH_DIR / "reactome_curator_predictions" / f"{pathway_name}_reactome_curator_results.tsv"
-    if not curator_path.exists():
+    curator = _load_truth_table(pathway_name, ground_truth)
+    if curator is None:
+        if ground_truth == "experimental":
+            return {"status": "no_experimental_file", "name": pathway_name}
         return {"status": "no_curator_file", "name": pathway_name}
-
-    # Lenient parser tolerates trailing tabs and other small formatting drift
-    # (some files have stray empty cells on certain rows).
-    curator = pd.read_csv(curator_path, sep="\t", engine="python", on_bad_lines="warn")
-    # Normalize the key-output column name to a single canonical "key_output"
-    for alias in _KEY_OUTPUT_ALIASES:
-        if alias in curator.columns:
-            if alias != "key_output":
-                curator = curator.rename(columns={alias: "key_output"})
-            break
-    else:
-        return {"status": f"no key-output column (saw {list(curator.columns)[:3]}...)", "name": pathway_name}
     network = load_network(pathway_dir)
     stid_to_uuids = build_stid_to_uuids(pathway_dir)
 
@@ -304,6 +314,8 @@ def validate_one_pathway(pathway_dir: Path, pathway_name: str, pathway_dbid: str
                 expected = int(row[col])
             except (ValueError, TypeError):
                 continue  # skip malformed cells
+            if expected == -999:
+                continue  # experimental table marks unmeasured cells with -999
             confusion[(predicted, expected)] += 1
             total += 1
             is_valid = bool(gene_uuids) and bool(ko_uuids)
@@ -348,6 +360,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="output", help="Where regenerated pathway dirs live")
     ap.add_argument("--report", default="/tmp/mpbio_validation.tsv", help="Per-pathway report tsv")
+    ap.add_argument(
+        "--ground-truth", choices=["curator", "experimental"], default="curator",
+        help="Compare predictions against curator predictions or experimental measurements. "
+             "Experimental is only available for 10 pathways and contains -999 (not measured) "
+             "cells which are skipped.",
+    )
     args = ap.parse_args()
 
     output_root = Path(args.output_dir)
@@ -373,7 +391,7 @@ def main():
             continue
 
         try:
-            result = validate_one_pathway(pathway_dir, name, pid, graph)
+            result = validate_one_pathway(pathway_dir, name, pid, graph, ground_truth=args.ground_truth)
         except Exception as e:
             logger.error(f"Failed validation for {name}: {e}", exc_info=True)
             rows.append({"pathway": name, "status": f"error: {e}", "total": 0, "correct": 0, "accuracy": 0.0})
