@@ -30,6 +30,8 @@ def find_pathway_dir(pathway_id: str) -> Path:
     "Foo_12345" and "Foo_R-HSA-12345".
     """
     output_dir = Path("output")
+    if not output_dir.exists():
+        return None
     for d in output_dir.iterdir():
         if d.is_dir():
             match = re.search(r"(\d+)$", d.name)
