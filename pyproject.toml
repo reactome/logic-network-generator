@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "mp-biopath-pathway-generator"
+name = "logic-network-generator"
 version = "0.1.0"
 description = "Generator of pairwise interaction files from Reactome Graph database"
 authors = ["Adam Wright <adam.wright@wormbase.org>"]
@@ -7,16 +7,17 @@ license = "Apache 2.0"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.10"
 py2neo = "^2021.2.4"
 pandas = "^2.2.0"
 numpy = "^1.26.3"
-pyarrow = "^15.0.0"
+pyarrow = "^17.0.0"
 scipy = "^1.12.0"
 mypy = "^1.8.0"
 isort = "^5.13.2"
 click = "^8.1.7"
-python-dotenv = "^1.0.1"
+python-dotenv = "^1.2.2"
+networkx = "^3.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.8.0"
@@ -24,6 +25,8 @@ pandas-stubs = "^2.1.4.231227"
 isort = "^5.10.3"
 ruff = "^0.3.4"
 pre-commit = "^3.7.0"
+pytest = "^9.0.3"
+pytest-cov = "^7.0.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -35,4 +38,35 @@ plugins = ["flake8-mypy"]
 
 [tool.black]
 line-length = 88  # Adjust line length as needed
-target-version = ['py39'] 
+target-version = ['py39']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--verbose",
+    "--strict-markers",
+]
+markers = [
+    "database: tests that require a live Neo4j connection (excluded from CI)",
+    "integration: tests that require artifacts from a prior pathway generation run in output/ (excluded from CI)",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+] 

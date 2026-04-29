@@ -1,10 +1,15 @@
-import pandas as pd
+from typing import Any, Dict
 
-decomposed_uid_mapping_column_types = {
+# Annotated as Dict[str, Any] so pandas' over-strict dtype overloads accept it
+# (mixed `type` and string-alias values otherwise narrow to dict[str, object]).
+decomposed_uid_mapping_column_types: Dict[str, Any] = {
     "uid": str,
-    "reactome_id": int,
-    "component_id": int,
-    "component_id_or_reference_entity_id": pd.Int64Dtype(),
+    "reactome_id": str,  # The reaction stId this entity participates in
+    "component_id": str,
+    "component_id_or_reference_entity_id": str,
     "input_or_output_uid": str,
-    "input_or_output_reactome_id": pd.Int64Dtype(),
+    "input_or_output_reactome_id": str,
+    "source_entity_id": str,  # The parent entity (Complex or EntitySet) that was decomposed
+    "source_reaction_id": str,  # The original Reactome reaction (for virtual reactions)
+    "stoichiometry": "Int64",  # Stoichiometric coefficient from Neo4j hasComponent relationships
 }

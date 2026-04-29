@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  neo4j:
+    # Bump this tag when a new Reactome release lands; the version sentinel
+    # test in tests/test_reactome_version.py records what we ran against.
+    image: public.ecr.aws/reactome/graphdb:Release96
+    container_name: reactome-neo4j
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    environment:
+      - NEO4J_dbms_memory_heap_maxSize=8g
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local

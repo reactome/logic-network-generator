@@ -1,0 +1,92 @@
+pathway	status	total	correct	accuracy	valid_total	valid_correct	valid_accuracy
+RAF_MAP_kinase_cascade	ok	49	1	0.02040816326530612	0.0	0.0	0.0
+Signaling_by_ERBB2	ok	49	7	0.14285714285714285	7.0	3.0	0.42857142857142855
+DNA_Double_Strand_Break_Response	no_experimental_file	0	0	0.0			
+HDR_through_Homologous_Recombination_HRR_or_Single_Strand_Annealing_SSA_	ok	48	8	0.16666666666666666	20.0	6.0	0.3
+HDR_through_MMEJ_alt-NHEJ_	no_experimental_file	0	0	0.0			
+Nonhomologous_End-Joining_NHEJ_	no_experimental_file	0	0	0.0			
+Mismatch_Repair	no_experimental_file	0	0	0.0			
+Fanconi_Anemia_Pathway	no_experimental_file	0	0	0.0			
+Nucleotide_Excision_Repair	no_experimental_file	0	0	0.0			
+DDX58_IFIH1-mediated_induction_of_interferon-alpha_beta	no_experimental_file	0	0	0.0			
+DNA_Damage_Reversal	no_experimental_file	0	0	0.0			
+DNA_Damage_Bypass	no_experimental_file	0	0	0.0			
+Base_Excision_Repair	no_experimental_file	0	0	0.0			
+Signaling_by_Rho_GTPases	no_experimental_file	0	0	0.0			
+Cellular_Senescence	no_experimental_file	0	0	0.0			
+FCERI_mediated_MAPK_activation	no_experimental_file	0	0	0.0			
+Signaling_by_ERBB4	no_experimental_file	0	0	0.0			
+Regulation_of_mRNA_stability_by_proteins_that_bind_AU-rich_elements	no_experimental_file	0	0	0.0			
+Signaling_by_WNT	ok	51	7	0.13725490196078433	23.0	6.0	0.2608695652173913
+Signaling_by_PTK6	no_experimental_file	0	0	0.0			
+Cell_Cycle_Checkpoints	ok	55	14	0.2545454545454545	45.0	14.0	0.3111111111111111
+Mitotic_G1-G1_S_phases	ok	89	37	0.4157303370786517	85.0	37.0	0.43529411764705883
+G0_and_Early_G1	no_experimental_file	0	0	0.0			
+Mitotic_G2-G2_M_phases	no_experimental_file	0	0	0.0			
+Transcriptional_Regulation_by_TP53	ok	257	67	0.2607003891050584	240.0	64.0	0.26666666666666666
+Intrinsic_Pathway_for_Apoptosis	no_experimental_file	0	0	0.0			
+Signaling_by_TGF-beta_Receptor_Complex	no_experimental_file	0	0	0.0			
+Signaling_by_Hedgehog	no_experimental_file	0	0	0.0			
+Semaphorin_interactions	no_experimental_file	0	0	0.0			
+NCAM_signaling_for_neurite_out-growth	no_experimental_file	0	0	0.0			
+Netrin-1_signaling	no_experimental_file	0	0	0.0			
+Cell_junction_organization	no_experimental_file	0	0	0.0			
+Signaling_by_ROBO_receptors	no_experimental_file	0	0	0.0			
+L1CAM_interactions	no_experimental_file	0	0	0.0			
+EPH-Ephrin_signaling	no_experimental_file	0	0	0.0			
+PIP3_activates_AKT_signaling	ok	200	42	0.21	74.0	37.0	0.5
+RHO_GTPases_activate_PKNs	no_experimental_file	0	0	0.0			
+RHO_GTPases_Activate_ROCKs	no_experimental_file	0	0	0.0			
+Signaling_by_FGFR1	no_experimental_file	0	0	0.0			
+Signaling_by_FGFR2	no_experimental_file	0	0	0.0			
+Signaling_by_FGFR3	no_experimental_file	0	0	0.0			
+Signaling_by_FGFR4	no_experimental_file	0	0	0.0			
+RHO_GTPases_activate_CIT	no_experimental_file	0	0	0.0			
+DNA_Double-Strand_Break_Repair	no_experimental_file	0	0	0.0			
+Pre-NOTCH_Expression_and_Processing	no_experimental_file	0	0	0.0			
+Signaling_by_NOTCH1	no_experimental_file	0	0	0.0			
+Signaling_by_NOTCH2	no_experimental_file	0	0	0.0			
+Signaling_by_Activin	no_experimental_file	0	0	0.0			
+Signaling_by_NODAL	no_experimental_file	0	0	0.0			
+Signaling_by_BMP	no_experimental_file	0	0	0.0			
+Signaling_by_VEGF	no_experimental_file	0	0	0.0			
+Caspase_activation_via_Death_Receptors_in_the_presence_of_ligand	no_experimental_file	0	0	0.0			
+Caspase_activation_via_Dependence_Receptors_in_the_absence_of_ligand	no_experimental_file	0	0	0.0			
+Signaling_by_MET	no_experimental_file	0	0	0.0			
+Apoptotic_execution_phase	no_experimental_file	0	0	0.0			
+Signaling_by_Insulin_receptor	no_experimental_file	0	0	0.0			
+Chromatin_modifying_enzymes	no_experimental_file	0	0	0.0			
+Transcriptional_regulation_by_RUNX3	no_experimental_file	0	0	0.0			
+Transcriptional_regulation_by_RUNX1	no_experimental_file	0	0	0.0			
+Transcriptional_regulation_by_the_AP-2_TFAP2_family_of_transcription_factors	no_experimental_file	0	0	0.0			
+DAP12_interactions	no_experimental_file	0	0	0.0			
+Interleukin-4_and_Interleukin-13_signaling	no_experimental_file	0	0	0.0			
+Insulin-like_Growth_Factor-2_mRNA_Binding_Proteins_IGF2BPs_IMPs_VICKZs_bind_RNA	no_experimental_file	0	0	0.0			
+TET1,2,3_and_TDG_demethylate_DNA	no_experimental_file	0	0	0.0			
+Costimulation_by_the_CD28_family	no_experimental_file	0	0	0.0			
+Signaling_by_EGFR	no_experimental_file	0	0	0.0			
+Signaling_by_Type_1_Insulin-like_Growth_Factor_1_Receptor_IGF1R_	no_experimental_file	0	0	0.0			
+Signaling_by_SCF-KIT	no_experimental_file	0	0	0.0			
+Signaling_by_PDGF	no_experimental_file	0	0	0.0			
+Interleukin-7_signaling	no_experimental_file	0	0	0.0			
+Transcriptional_regulation_by_RUNX2	no_experimental_file	0	0	0.0			
+Transcriptional_regulation_of_pluripotent_stem_cells	no_experimental_file	0	0	0.0			
+GPVI-mediated_activation_cascade	no_experimental_file	0	0	0.0			
+RHO_GTPases_activate_IQGAPs	no_experimental_file	0	0	0.0			
+Mitotic_Prophase	ok	26	2	0.07692307692307693	1.0	1.0	1.0
+Nephrin_family_interactions	no_experimental_file	0	0	0.0			
+S_Phase	ok	25	3	0.12	4.0	2.0	0.5
+Interleukin-2_family_signaling	no_experimental_file	0	0	0.0			
+Interleukin-20_family_signaling	no_experimental_file	0	0	0.0			
+RET_signaling	no_experimental_file	0	0	0.0			
+MAP_kinase_activation	no_experimental_file	0	0	0.0			
+Interleukin-3,_Interleukin-5_and_GM-CSF_signaling	no_experimental_file	0	0	0.0			
+Activation_of_anterior_HOX_genes_in_hindbrain_development_during_early_embryogenesis	no_experimental_file	0	0	0.0			
+Class_I_MHC_mediated_antigen_processing_presentation	no_experimental_file	0	0	0.0			
+Immunoregulatory_interactions_between_a_Lymphoid_and_a_non-Lymphoid_cell	no_experimental_file	0	0	0.0			
+Interferon_gamma_signaling	no_experimental_file	0	0	0.0			
+Interferon_alpha_beta_signaling	no_output	0	0	0.0			
+NoRC_negatively_regulates_rRNA_expression	no_output	0	0	0.0			
+DNA_Repair	no_experimental_file	0	0	0.0			
+Neurexins_and_neuroligins	no_output	0	0	0.0			
+Regulation_of_beta-cell_development	no_output	0	0	0.0			
