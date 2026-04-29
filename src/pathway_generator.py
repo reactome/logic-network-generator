@@ -97,7 +97,8 @@ def generate_pathway_file(
         if os.path.exists(decomposed_uid_mapping_file) and os.path.exists(best_matches_file):
             logger.info(f"Loading cached decomposition from {decomposed_uid_mapping_file}")
             decomposed_uid_mapping = pd.read_csv(
-                decomposed_uid_mapping_file, dtype=decomposed_uid_mapping_column_types
+                decomposed_uid_mapping_file,
+                dtype=decomposed_uid_mapping_column_types,  # type: ignore[arg-type]
             )
             best_matches = pd.read_csv(best_matches_file)
         else:

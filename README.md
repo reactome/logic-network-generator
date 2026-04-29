@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/reactome/logic-network-generator/actions/workflows/test.yml/badge.svg)](https://github.com/reactome/logic-network-generator/actions/workflows/test.yml)
 [![Code Style](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 Generate logic networks from Reactome pathways by decomposing complexes and EntitySets into their components, expanding alternatives, and emitting a graph of input/output/catalyst/regulator/assembly/dissociation edges suitable for perturbation modeling.
@@ -20,7 +20,7 @@ Generate logic networks from Reactome pathways by decomposing complexes and Enti
 
 ### Prerequisites
 
-- [Python 3.9+](https://www.python.org/downloads/)
+- [Python 3.10+](https://www.python.org/downloads/)
 - [Poetry](https://python-poetry.org/)
 - [Docker](https://www.docker.com/) (for the Reactome Neo4j database)
 
@@ -118,6 +118,23 @@ poetry run pytest -m database
 ```
 
 See `tests/README.md` for details on each tier.
+
+### Tracking new Reactome releases
+
+The database-tier tests are version-agnostic — they discover pathways
+from the loaded graph rather than hard-coding stable IDs — so they
+should survive a Reactome bump. The workflow when a new Reactome
+release ships:
+
+1. Update the image tag in `docker-compose.yml`
+   (`public.ecr.aws/reactome/graphdb:Release<N>`).
+2. `docker-compose pull && docker-compose up -d`.
+3. `poetry run pytest -m database -v` — `test_reactome_version.py`
+   records which release the run actually used; other tests will
+   surface anything Reactome changed schematically.
+4. If accuracy numbers in `validation_results/` matter for that
+   release, re-run `poetry run python bin/validate-against-mpbiopath.py`
+   and update the README headline numbers.
 
 ## Documentation
 

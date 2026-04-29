@@ -431,11 +431,11 @@ def main():
     print(f"=== VALID-ONLY (drift removed): {overall_valid_correct}/{overall_valid_total} = "
           f"{(overall_valid_correct / overall_valid_total * 100 if overall_valid_total else 0):.2f}% ===")
     print(f"    ({drift_skipped} cases skipped because gene or key-output absent in current network)")
-    print(f"Confusion (predicted, expected) → count:")
+    print("Confusion (predicted, expected) → count:")
     for (pred, exp), n in sorted(overall_confusion.items()):
         print(f"  pred={pred}, exp={exp}: {n}")
     print()
-    print(f"Failure categorization (network bug vs propagator limit):")
+    print("Failure categorization (network bug vs propagator limit):")
     fail_total = sum(overall_failures.values())
     for cat in sorted(overall_failures, key=overall_failures.get, reverse=True):
         n = overall_failures[cat]

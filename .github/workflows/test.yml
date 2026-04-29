@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
 
@@ -27,5 +27,9 @@ jobs:
     - name: Type check (mypy on src/)
       run: poetry run mypy src/
 
-    - name: Run unit tests (no Neo4j, no generated artifacts)
-      run: poetry run pytest tests/ -v -m "not database and not integration"
+    - name: Run unit tests with coverage (no Neo4j, no generated artifacts)
+      # 40% floor reflects unit-tier scope only: pathway_generator and
+      # neo4j_connector are exercised in the integration/database tiers and
+      # naturally lower the unit number. Raise the floor as those tiers
+      # become CI-runnable.
+      run: poetry run pytest tests/ -v -m "not database and not integration" --cov=src --cov-report=term --cov-fail-under=40
