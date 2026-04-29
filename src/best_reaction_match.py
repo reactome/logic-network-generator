@@ -10,7 +10,7 @@ falsely matched to non-existent partners.
 See tests/test_best_reaction_match.py for the contract this module promises.
 """
 
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -27,7 +27,7 @@ def _build_uid_to_components(
         return {}
     rows = decomposed_uid_mapping[decomposed_uid_mapping["uid"].isin(uids)]
     return {
-        uid: set(group["component_id_or_reference_entity_id"])
+        str(uid): set(group["component_id_or_reference_entity_id"])
         for uid, group in rows.groupby("uid")
     }
 
@@ -53,10 +53,10 @@ def create_raw_counts_matrix(
 
 
 def find_best_match_both_decomposed_reactions(
-    input_reactions: Sequence[str],
-    output_reactions: Sequence[str],
+    input_reactions: Iterable[str],
+    output_reactions: Iterable[str],
     decomposed_uid_mapping: pd.DataFrame,
-    reaction_id: str = None,
+    reaction_id: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, str]], List[int]]:
     """Run Hungarian on the components-overlap matrix and return matched pairs.
 
@@ -118,18 +118,16 @@ def find_best_match_both_decomposed_reactions(
     # legitimate biological paths the curator-guide model expects to see.
     if num_rows > num_cols:
         matched_input_indices = {i for i, _ in matched_pairs}
-        for i in range(num_rows):
-            if i not in matched_input_indices:
-                j = int(np.argmax(counts[i])) if num_cols > 0 else None
-                if j is not None:
-                    matched_pairs.append((i, j))
+        for surplus_i in range(num_rows):
+            if surplus_i not in matched_input_indices and num_cols > 0:
+                best_j = int(np.argmax(counts[surplus_i]))
+                matched_pairs.append((surplus_i, best_j))
     elif num_cols > num_rows:
         matched_output_indices = {j for _, j in matched_pairs}
-        for j in range(num_cols):
-            if j not in matched_output_indices:
-                i = int(np.argmax(counts[:, j])) if num_rows > 0 else None
-                if i is not None:
-                    matched_pairs.append((i, j))
+        for surplus_j in range(num_cols):
+            if surplus_j not in matched_output_indices and num_rows > 0:
+                best_i = int(np.argmax(counts[:, surplus_j]))
+                matched_pairs.append((best_i, surplus_j))
 
     matches = [(inputs[i], outputs[j]) for i, j in matched_pairs]
     counts_for_matches = [int(counts[i, j]) for i, j in matched_pairs]
@@ -137,10 +135,10 @@ def find_best_match_both_decomposed_reactions(
 
 
 def find_best_reaction_match(
-    input_reactions: Sequence[str],
-    output_reactions: Sequence[str],
+    input_reactions: Iterable[str],
+    output_reactions: Iterable[str],
     decomposed_uid_mapping: pd.DataFrame,
-    reaction_id: str = None,
+    reaction_id: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, str]], List[int]]:
     """Public entry point — same signature, kept for callers.
 

@@ -30,7 +30,7 @@ import hashlib
 import itertools
 import uuid
 import warnings
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import pandas as pd
 
@@ -198,7 +198,7 @@ def is_valid_uuid(identifier: Any) -> bool:
 
 
 def get_broken_apart_ids(
-    broken_apart_members: list[set[str]],
+    broken_apart_members: Sequence[Union[Set[str], str]],
     reactome_id: ReactomeID,
     source_entity_id: Optional[str] = None
 ) -> Set[UID]:
@@ -209,7 +209,7 @@ def get_broken_apart_ids(
 
     uids: Set[UID]
     if any(isinstance(member, set) for member in broken_apart_members):
-        new_broken_apart_members = []
+        new_broken_apart_members: List[Set[str]] = []
         for member in broken_apart_members:
             if isinstance(member, set):
                 new_broken_apart_members.append(member)
@@ -227,10 +227,13 @@ def get_broken_apart_ids(
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []
         stoich_lookup = _direct_component_stoichiometry.get(reactome_id, {})
-        for member in broken_apart_members:
-            member_stoich = stoich_lookup.get(member, 1)
-            if is_valid_uuid(member):
-                for prev_row in _store.rows_by_uid(member):
+        for flat_member in broken_apart_members:
+            assert isinstance(flat_member, str), (
+                "All-strings branch reached with a non-string member"
+            )
+            member_stoich = stoich_lookup.get(flat_member, 1)
+            if is_valid_uuid(flat_member):
+                for prev_row in _store.rows_by_uid(flat_member):
                     rows.append({
                         "uid": uid,
                         "component_id": prev_row["component_id"],
@@ -238,7 +241,7 @@ def get_broken_apart_ids(
                         "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(
                             prev_row["component_id"]
                         ),
-                        "input_or_output_uid": member,
+                        "input_or_output_uid": flat_member,
                         "input_or_output_reactome_id": None,
                         "source_entity_id": source_entity_id,
                         "source_reaction_id": None,
@@ -247,13 +250,13 @@ def get_broken_apart_ids(
             else:
                 rows.append({
                     "uid": uid,
-                    "component_id": member,
+                    "component_id": flat_member,
                     "reactome_id": reactome_id,
                     "component_id_or_reference_entity_id": get_component_id_or_reference_entity_id(
-                        member
+                        flat_member
                     ),
                     "input_or_output_uid": None,
-                    "input_or_output_reactome_id": member,
+                    "input_or_output_reactome_id": flat_member,
                     "source_entity_id": source_entity_id,
                     "source_reaction_id": None,
                     "stoichiometry": member_stoich,
@@ -510,10 +513,10 @@ def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -
             # Complex contains EntitySets → decompose to handle alternatives
             logger.debug(f"Decomposing complex {entity_id} (contains EntitySet)")
             broken_apart_members: List[Set[str]] = []
-            member_ids = get_complex_components(entity_id)
+            complex_components = get_complex_components(entity_id)
 
-            for member_id in member_ids:
-                stoich = member_ids[member_id]
+            for member_id in complex_components:
+                stoich = complex_components[member_id]
                 # Pass through the parent EntitySet ID when decomposing complex components
                 members = break_apart_entity(member_id, source_entity_id=source_entity_id)
                 broken_apart_members.append(members)
@@ -614,19 +617,18 @@ def get_decomposed_uid_mapping(
     _direct_component_stoichiometry.clear()
     clear_prefetch_cache()
 
-    reaction_ids = pd.unique(
+    reaction_ids_arr = pd.unique(
         reaction_connections[
             ["preceding_reaction_id", "following_reaction_id"]
         ].values.ravel("K")
     )
-
-    reaction_ids = reaction_ids[~pd.isna(reaction_ids)]
-    reaction_ids = reaction_ids.tolist()
+    reaction_ids_arr = reaction_ids_arr[~pd.isna(reaction_ids_arr)]
+    reaction_ids: List[str] = [str(r) for r in reaction_ids_arr]
 
     # Bulk pre-fetch all entity data from Neo4j (replaces thousands of individual queries)
     prefetch_entity_data(reaction_ids)
 
-    best_matches = decompose_by_reactions(list(reaction_ids))
+    best_matches = decompose_by_reactions(reaction_ids)
 
     # Materialize the DataFrame exactly once now that decomposition is done.
     # During decomposition all writes/reads went through _store (list +

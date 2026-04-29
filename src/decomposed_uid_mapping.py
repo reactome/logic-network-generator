@@ -1,6 +1,8 @@
-import pandas as pd
+from typing import Any, Dict
 
-decomposed_uid_mapping_column_types = {
+# Annotated as Dict[str, Any] so pandas' over-strict dtype overloads accept it
+# (mixed `type` and string-alias values otherwise narrow to dict[str, object]).
+decomposed_uid_mapping_column_types: Dict[str, Any] = {
     "uid": str,
     "reactome_id": str,  # The reaction stId this entity participates in
     "component_id": str,

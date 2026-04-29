@@ -258,23 +258,20 @@ def _build_uid_index(decomposed_uid_mapping: pd.DataFrame) -> Dict[str, tuple]:
         terminal_ids = _get_non_null_values(group, "input_or_output_reactome_id")
         stoich_map: Dict[str, int] = {}
         for _, row in group.iterrows():
-            stoich = row.get("stoichiometry")
-            if pd.isna(stoich):
-                stoich = 1
-            else:
-                stoich = int(stoich)
+            stoich_raw = row.get("stoichiometry")
+            stoich = 1 if stoich_raw is None or pd.isna(stoich_raw) else int(stoich_raw)
             if pd.notna(row.get("input_or_output_uid")):
                 stoich_map[row["input_or_output_uid"]] = stoich
             if pd.notna(row.get("input_or_output_reactome_id")):
                 stoich_map[row["input_or_output_reactome_id"]] = stoich
-        index[uid_val] = (nested_uids, terminal_ids, stoich_map)
+        index[str(uid_val)] = (nested_uids, terminal_ids, stoich_map)
     return index
 
 
 def _resolve_to_terminal_reactome_ids(
     uid_index: Dict[str, tuple],
     hash_value: str,
-    visited: set = None
+    visited: Optional[Set[str]] = None
 ) -> Dict[str, int]:
     """Recursively resolve a hash to its terminal Reactome IDs with stoichiometry.
 
@@ -851,13 +848,6 @@ def create_pathway_logic_network(
     }
     pathway_logic_network_data: List[Dict[str, Any]] = []
     
-    # Extract unique reaction IDs
-    reaction_ids = pd.unique(
-        reaction_connections[["preceding_reaction_id", "following_reaction_id"]]
-        .stack()
-        .dropna()
-    )
-    
     # Calculate and print statistics
     _calculate_reaction_statistics(reaction_connections)
     
@@ -1034,7 +1024,7 @@ def create_pathway_logic_network(
     )
 
     # Create final DataFrame
-    pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=columns.keys())
+    pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=list(columns.keys()))
     
     # Find root inputs and terminal outputs
     root_inputs = find_root_inputs(pathway_logic_network)
