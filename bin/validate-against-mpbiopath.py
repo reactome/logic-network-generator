@@ -159,13 +159,26 @@ def parse_perturbation_columns(curator_df: pd.DataFrame) -> list[tuple[str, int]
     return out
 
 
+_KEY_OUTPUT_ALIASES = ("key_output", "key output", "key_outout", "key outout")
+
+
 def validate_one_pathway(pathway_dir: Path, pathway_name: str, pathway_dbid: str, graph) -> dict:
     """Validate one pathway, return per-pathway metrics."""
     curator_path = MP_BIOPATH_DIR / "reactome_curator_predictions" / f"{pathway_name}_reactome_curator_results.tsv"
     if not curator_path.exists():
         return {"status": "no_curator_file", "name": pathway_name}
 
-    curator = pd.read_csv(curator_path, sep="\t")
+    # Lenient parser tolerates trailing tabs and other small formatting drift
+    # (some files have stray empty cells on certain rows).
+    curator = pd.read_csv(curator_path, sep="\t", engine="python", on_bad_lines="warn")
+    # Normalize the key-output column name to a single canonical "key_output"
+    for alias in _KEY_OUTPUT_ALIASES:
+        if alias in curator.columns:
+            if alias != "key_output":
+                curator = curator.rename(columns={alias: "key_output"})
+            break
+    else:
+        return {"status": f"no key-output column (saw {list(curator.columns)[:3]}...)", "name": pathway_name}
     network = load_network(pathway_dir)
     stid_to_uuids = build_stid_to_uuids(pathway_dir)
 
