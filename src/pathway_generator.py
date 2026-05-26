@@ -8,6 +8,7 @@ from src.argument_parser import logger
 from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.logic_network_generator import (
     create_pathway_logic_network,
+    export_entity_reaction_proxy_mapping,
     export_uuid_to_reactome_mapping,
 )
 from src.neo4j_connector import get_reaction_connections
@@ -148,6 +149,25 @@ def generate_pathway_file(
             logger.info(f"Successfully exported stable ID to UUID mapping: {uuid_to_reactome_file}")
         except IOError as e:
             logger.error(f"Failed to write stable ID to UUID mapping file {uuid_to_reactome_file}: {e}")
+            # Don't raise - this is supplementary
+
+        # Export entity→reaction proxy mapping. Curated species (often Complexes)
+        # that were expanded into virtual variants lose their own stId from the
+        # UUID mapping; this file points each such species at the UUIDs of the
+        # reactions that produce (or, failing that, consume) it, so consumers can
+        # read reaction flux as a proxy for the species' state.
+        proxy_mapping_file = pathway_output_dir / "entity_reaction_proxy_mapping.csv"
+        try:
+            export_entity_reaction_proxy_mapping(
+                result.logic_network,
+                result.reaction_id_map,
+                result.uuid_mapping,
+                pathway_id,
+                str(proxy_mapping_file),
+            )
+            logger.info(f"Successfully exported entity-reaction proxy mapping: {proxy_mapping_file}")
+        except Exception as e:
+            logger.error(f"Failed to write entity-reaction proxy mapping file {proxy_mapping_file}: {e}")
             # Don't raise - this is supplementary
 
         logger.info(f"Output directory: {pathway_output_dir}")

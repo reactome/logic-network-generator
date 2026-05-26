@@ -1131,3 +1131,107 @@ def export_uuid_to_reactome_mapping(
 
     mapping_df.to_csv(output_file, index=False)
     logger.info(f"Exported UUID to Reactome stable ID mapping with {len(mapping_df)} entries")
+
+
+def export_entity_reaction_proxy_mapping(
+    pathway_logic_network: pd.DataFrame,
+    reaction_id_map: pd.DataFrame,
+    reactome_id_to_uuid: Dict[str, str],
+    pathway_id: str,
+    output_file: str,
+) -> None:
+    """Map curated species absent from the UUID mapping to a reaction-flux proxy.
+
+    Complexes/EntitySets that contain an EntitySet are expanded into virtual
+    variants when the logic network is built (see docs/DESIGN_DECISIONS.md,
+    "EntitySet expansion produces multiple virtual reactions"). The variants get
+    their own UUIDs but the *parent's* stId is not preserved anywhere in
+    ``stid_to_uuid_mapping.csv`` — so a consumer that knows a curated species by
+    its Reactome stId (e.g. MP-BioPath key-outputs, which are predominantly
+    Complexes) can't find it, even though the reaction that produces it *is* in
+    the network.
+
+    The right proxy for "is species S present?" is the flux through the reaction
+    that produces it: if S is the output of reaction R, then R's node activity is
+    a direct, tight readout of S's production. Mapping S to its *terminal
+    components* instead would be far too lax — a hub protein like β-catenin
+    appears in dozens of reaction contexts, so a max over its component UUIDs
+    reads "active" almost everywhere and discriminates nothing.
+
+    For each PhysicalEntity that participates in the pathway but is not directly
+    present in the UUID mapping, we therefore record the UUIDs of the reactions
+    that **output** it (the producing reactions). If a species has no producing
+    reaction in the network we fall back to reactions that **consume** it as an
+    input — its presence is still implied by that reaction's activity.
+
+    The primary ``stid_to_uuid_mapping.csv`` is intentionally left untouched: it
+    keeps its one-row-per-UUID identity contract, and this supplementary file
+    carries the (many-to-many) species → proxy-reaction relationship.
+
+    Output CSV columns:
+        - entity_stable_id: a species stId absent from the UUID mapping
+        - proxy_uuid: a reaction UUID present in the network whose flux proxies it
+        - proxy_role: 'producing' (entity is the reaction's output) or
+                      'consuming' (entity is the reaction's input)
+    """
+    from src.neo4j_connector import (
+        get_pathway_participating_entities,
+        get_pathway_entity_reactions,
+    )
+
+    network_uuids: Set[str] = set()
+    network_uuids.update(pathway_logic_network['source_id'].dropna().unique())
+    network_uuids.update(pathway_logic_network['target_id'].dropna().unique())
+
+    # stable_id of every entity directly addressable in the mapping.
+    present_stids: Set[str] = set()
+    if reactome_id_to_uuid:
+        sample_key = next(iter(reactome_id_to_uuid.keys()))
+        uuid_keyed = '-' in str(sample_key)
+        for k, v in reactome_id_to_uuid.items():
+            entity_uuid, stid = (k, v) if uuid_keyed else (v, k)
+            if entity_uuid in network_uuids:
+                present_stids.add(str(stid))
+
+    # reaction stId -> [reaction UUIDs present in the network]
+    reaction_stid_to_uuids: Dict[str, List[str]] = {}
+    for _, row in reaction_id_map.iterrows():
+        ruuid = str(row['uid'])
+        if ruuid in network_uuids:
+            reaction_stid_to_uuids.setdefault(str(row['reactome_id']), []).append(ruuid)
+
+    participating = get_pathway_participating_entities(pathway_id)
+    missing = {e for e in participating if e not in present_stids}
+    if not missing:
+        pd.DataFrame(columns=['entity_stable_id', 'proxy_uuid', 'proxy_role']).to_csv(
+            output_file, index=False)
+        logger.info("Entity-reaction proxy mapping: no missing species to proxy")
+        return
+
+    # entity stId -> {'output': [reaction stIds], 'input': [reaction stIds]}
+    entity_reactions = get_pathway_entity_reactions(pathway_id, list(missing))
+
+    rows: List[Dict[str, str]] = []
+    for entity_stid in missing:
+        roles = entity_reactions.get(entity_stid, {})
+        # Prefer producing reactions; fall back to consuming if none are present.
+        for role_name, rel_key in (('producing', 'output'), ('consuming', 'input')):
+            proxy_uuids: List[str] = []
+            for rxn_stid in roles.get(rel_key, []):
+                proxy_uuids.extend(reaction_stid_to_uuids.get(str(rxn_stid), []))
+            if proxy_uuids:
+                for puuid in dict.fromkeys(proxy_uuids):  # de-dup, keep order
+                    rows.append({'entity_stable_id': str(entity_stid),
+                                 'proxy_uuid': puuid,
+                                 'proxy_role': role_name})
+                break  # don't also emit consuming rows once producing matched
+
+    out_df = pd.DataFrame(rows, columns=['entity_stable_id', 'proxy_uuid', 'proxy_role'])
+    if not out_df.empty:
+        out_df = out_df.sort_values(['entity_stable_id', 'proxy_uuid'])
+    out_df.to_csv(output_file, index=False)
+    n_entities = out_df['entity_stable_id'].nunique() if not out_df.empty else 0
+    logger.info(
+        f"Exported entity-reaction proxy mapping: {len(out_df)} rows "
+        f"covering {n_entities} of {len(missing)} missing species"
+    )

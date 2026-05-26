@@ -21,6 +21,7 @@ with patch('py2neo.Graph'):
         _register_entity_uuid,
         _get_or_create_entity_uuid,
         _resolve_vr_entities,
+        export_entity_reaction_proxy_mapping,
     )
 
 
@@ -414,3 +415,105 @@ class TestBoundaryLeavesReuseExistingUUIDs:
         # Each fresh UUID is also used as a source on an assembly edge
         for u in new_uuids:
             assert any(e["source_id"] == u and e["edge_type"] == "assembly" for e in edges)
+
+
+class TestEntityReactionProxyMapping:
+    """Tests for export_entity_reaction_proxy_mapping.
+
+    A curated species (often a Complex containing an EntitySet) gets expanded
+    into virtual variants during generation, so its own stId never appears in
+    stid_to_uuid_mapping.csv. This export restores addressability by pointing
+    the species at the UUIDs of the reaction that produces it.
+    """
+
+    def _write(self, tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+               participating, entity_reactions):
+        out = tmp_path / "proxy.csv"
+        with patch('src.neo4j_connector.get_pathway_participating_entities',
+                   return_value=participating), \
+             patch('src.neo4j_connector.get_pathway_entity_reactions',
+                   return_value=entity_reactions):
+            export_entity_reaction_proxy_mapping(
+                network, reaction_id_map, reactome_id_to_uuid,
+                "R-HSA-1", str(out),
+            )
+        return pd.read_csv(out)
+
+    # Fake UUIDs must contain a dash: export_*_mapping detects the dict
+    # orientation with the same `'-' in key` heuristic the rest of the module
+    # uses, and real position-aware UUIDs always have dashes.
+    def test_missing_complex_maps_to_producing_reaction(self, tmp_path):
+        # Network: reaction R1 (uuid u-r1) outputs the expanded variant nodes;
+        # the parent complex C is absent from the mapping.
+        network = pd.DataFrame({
+            "source_id": ["u-in", "u-r1"],
+            "target_id": ["u-r1", "u-out"],
+        })
+        reaction_id_map = pd.DataFrame({"uid": ["u-r1"], "reactome_id": ["R-HSA-R1"]})
+        # Mapping has the reaction and some leaves, but NOT complex C.
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-in": "R-HSA-IN", "u-out": "R-HSA-OUT"}
+
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C", "R-HSA-IN", "R-HSA-OUT"},
+            entity_reactions={"R-HSA-C": {"output": ["R-HSA-R1"]}},
+        )
+        rows = df[df["entity_stable_id"] == "R-HSA-C"]
+        assert list(rows["proxy_uuid"]) == ["u-r1"]
+        assert set(rows["proxy_role"]) == {"producing"}
+
+    def test_entity_already_in_mapping_is_skipped(self, tmp_path):
+        network = pd.DataFrame({"source_id": ["u-r1"], "target_id": ["u-out"]})
+        reaction_id_map = pd.DataFrame({"uid": ["u-r1"], "reactome_id": ["R-HSA-R1"]})
+        # R-HSA-OUT is directly present, so it must not be proxied.
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-out": "R-HSA-OUT"}
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-OUT"},
+            entity_reactions={"R-HSA-OUT": {"output": ["R-HSA-R1"]}},
+        )
+        assert df.empty or "R-HSA-OUT" not in set(df["entity_stable_id"])
+
+    def test_consuming_fallback_when_no_producer(self, tmp_path):
+        network = pd.DataFrame({"source_id": ["u-r1"], "target_id": ["u-out"]})
+        reaction_id_map = pd.DataFrame({"uid": ["u-r1"], "reactome_id": ["R-HSA-R1"]})
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-out": "R-HSA-OUT"}
+        # C is only ever consumed (input) — no producing reaction in-pathway.
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C"},
+            entity_reactions={"R-HSA-C": {"input": ["R-HSA-R1"]}},
+        )
+        rows = df[df["entity_stable_id"] == "R-HSA-C"]
+        assert list(rows["proxy_uuid"]) == ["u-r1"]
+        assert set(rows["proxy_role"]) == {"consuming"}
+
+    def test_producing_preferred_over_consuming(self, tmp_path):
+        network = pd.DataFrame({
+            "source_id": ["u-r1", "u-r2"], "target_id": ["u-x", "u-y"],
+        })
+        reaction_id_map = pd.DataFrame(
+            {"uid": ["u-r1", "u-r2"], "reactome_id": ["R-HSA-R1", "R-HSA-R2"]})
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-r2": "R-HSA-R2"}
+        # C is produced by R1 and consumed by R2 — only the producer should win.
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C"},
+            entity_reactions={"R-HSA-C": {"output": ["R-HSA-R1"], "input": ["R-HSA-R2"]}},
+        )
+        rows = df[df["entity_stable_id"] == "R-HSA-C"]
+        assert list(rows["proxy_uuid"]) == ["u-r1"]
+        assert set(rows["proxy_role"]) == {"producing"}
+
+    def test_reaction_not_in_network_yields_no_row(self, tmp_path):
+        # The producing reaction exists in Reactome but its UUID never made it
+        # into the network (e.g. dropped for having no I/O) — nothing to proxy.
+        network = pd.DataFrame({"source_id": ["u-a"], "target_id": ["u-b"]})
+        reaction_id_map = pd.DataFrame({"uid": [], "reactome_id": []})
+        reactome_id_to_uuid = {"u-a": "R-HSA-A", "u-b": "R-HSA-B"}
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C"},
+            entity_reactions={"R-HSA-C": {"output": ["R-HSA-MISSING"]}},
+        )
+        assert df.empty or "R-HSA-C" not in set(df["entity_stable_id"])
