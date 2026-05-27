@@ -553,42 +553,47 @@ def _decompose_regulator_entity(entity_id: str) -> List[tuple]:
 
 def _emit_boundary_decomposition_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
-    root_input_eids: Set[str],
-    terminal_output_eids: Set[str],
-    root_input_uuid_cache: Dict[str, str],
-    terminal_output_uuid_cache: Dict[str, str],
     reactome_id_to_uuid: Dict[str, str],
 ) -> None:
-    """Append synthetic edges that expose leaves of root/terminal complexes.
+    """Expose the members of every root-input and terminal-output complex.
 
-    For each root-input complex C with components {A, B, ...}, emit
-    ``A → C``, ``B → C``, ... edges of edge_type='assembly'. For each
-    terminal-output complex, emit ``C → A``, ``C → B``, ... of
-    edge_type='dissociation'. Each leaf shares a single UUID across all
-    boundary contexts so that perturbing a leaf at the assembly side
-    propagates through any downstream dissociation that reads the same
-    species.
+    Boundary membership is decided **positionally, per network occurrence** —
+    not by a global stId set difference. A node is a *root input* if it is a
+    source but never a target (no reaction produces it); a *terminal output* if
+    it is a target but never a source (no reaction consumes it). The same
+    complex stId can appear at several positions: the occurrences that are root
+    inputs get decomposed, the occurrence sitting intermediate between two
+    reactions is left intact — exactly as a real species should be.
 
-    Intermediate complexes (those produced by some reaction AND consumed
-    by another in this pathway) are intentionally NOT expanded — they're
-    real biological species flowing between reactions, and the AB dimer
-    is a different molecule from free A and free B. See
-    docs/DESIGN_DECISIONS.md, "Two layers of decomposition."
+    (The previous implementation used ``all_input_eids - all_output_eids`` over
+    the whole pathway, which removed a complex's stId entirely the moment it was
+    produced *anywhere*, leaving its genuine root-input occurrences undecomposed.
+    Curator perturbations target individual proteins, so those proteins must be
+    addressable wherever they enter or leave the pathway.)
 
-    Simple-leaf root/terminal entities (proteins, small molecules) are
-    skipped: they're already perturbable as themselves.
+    For each root-input complex C with terminal members {A, B, ...}, emit
+    ``A → C``, ``B → C`` (``edge_type='assembly'``). For each terminal-output
+    complex, emit ``C → A``, ``C → B`` (``edge_type='dissociation'``).
 
-    A leaf reuses any UUID the entity already has elsewhere in the network
-    (regular VR inputs/outputs, regulators, catalysts) so that perturbing a
-    protein in one role propagates through every other role. Without this,
-    boundary leaves would be disconnected duplicate nodes for the same
-    biological entity.
+    Members are **not duplicated**: a member reuses any UUID it already has in
+    the network, else a single freshly-minted UUID shared across every boundary
+    occurrence. So if complex C appears as a root input at 15 positions, member A
+    is one node with 15 assembly edges — one to each occurrence. Perturbing A
+    then propagates into all of them.
     """
     from src.neo4j_connector import get_labels
 
-    # Build stId → existing UUID lookup from everything assigned so far
-    # (entity registry from VR phases, plus regulator/catalyst UUIDs added
-    # by append_regulators). reactome_id_to_uuid is keyed by UUID, so invert.
+    # Positional roots / terminals from the current edge list.
+    sources: Set[str] = set()
+    targets: Set[str] = set()
+    for edge in pathway_logic_network_data:
+        sources.add(edge["source_id"])
+        targets.add(edge["target_id"])
+    root_uuids = sources - targets       # produced by no reaction in this pathway
+    terminal_uuids = targets - sources   # consumed by no reaction in this pathway
+
+    # stId → existing UUID, so a member reuses the node it already has elsewhere
+    # (free protein, regulator, catalyst) rather than becoming a disconnected dup.
     stid_to_existing_uuid: Dict[str, str] = {}
     for existing_uuid, stid in reactome_id_to_uuid.items():
         if stid not in stid_to_existing_uuid:
@@ -607,20 +612,22 @@ def _emit_boundary_decomposition_edges(
     def _is_complex(entity_id: str) -> bool:
         return "Complex" in get_labels(entity_id)
 
+    seen_edges: Set[tuple] = set()
     assembly_count = 0
-    for eid in root_input_eids:
-        if not _is_complex(eid):
+    for complex_uuid in root_uuids:
+        stid = reactome_id_to_uuid.get(complex_uuid)
+        if not stid or not _is_complex(stid):
             continue
-        complex_uuid = root_input_uuid_cache.get(eid)
-        if not complex_uuid:
-            continue
-        leaves = get_terminal_components(eid)
-        # If the only "leaf" is the complex itself, there's nothing to expose.
-        if leaves == {str(eid)}:
+        leaves = get_terminal_components(stid)
+        if leaves == {str(stid)}:  # nothing below the complex to expose
             continue
         for leaf in leaves:
+            leaf_uuid = _leaf_uuid(leaf)
+            if (leaf_uuid, complex_uuid) in seen_edges:
+                continue
+            seen_edges.add((leaf_uuid, complex_uuid))
             pathway_logic_network_data.append({
-                "source_id": _leaf_uuid(leaf),
+                "source_id": leaf_uuid,
                 "target_id": complex_uuid,
                 "pos_neg": "pos",
                 "and_or": "and",
@@ -630,19 +637,21 @@ def _emit_boundary_decomposition_edges(
             assembly_count += 1
 
     dissociation_count = 0
-    for eid in terminal_output_eids:
-        if not _is_complex(eid):
+    for complex_uuid in terminal_uuids:
+        stid = reactome_id_to_uuid.get(complex_uuid)
+        if not stid or not _is_complex(stid):
             continue
-        complex_uuid = terminal_output_uuid_cache.get(eid)
-        if not complex_uuid:
-            continue
-        leaves = get_terminal_components(eid)
-        if leaves == {str(eid)}:
+        leaves = get_terminal_components(stid)
+        if leaves == {str(stid)}:
             continue
         for leaf in leaves:
+            leaf_uuid = _leaf_uuid(leaf)
+            if (complex_uuid, leaf_uuid) in seen_edges:
+                continue
+            seen_edges.add((complex_uuid, leaf_uuid))
             pathway_logic_network_data.append({
                 "source_id": complex_uuid,
-                "target_id": _leaf_uuid(leaf),
+                "target_id": leaf_uuid,
                 "pos_neg": "pos",
                 "and_or": "and",
                 "edge_type": "dissociation",
@@ -652,9 +661,9 @@ def _emit_boundary_decomposition_edges(
 
     if assembly_count or dissociation_count:
         logger.info(
-            f"Boundary expansion: {assembly_count} assembly edges, "
+            f"Boundary expansion (positional): {assembly_count} assembly edges, "
             f"{dissociation_count} dissociation edges, "
-            f"{len(leaf_uuid_registry)} unique boundary leaves"
+            f"{len(leaf_uuid_registry)} new member leaves"
         )
 
 
@@ -1008,18 +1017,14 @@ def create_pathway_logic_network(
         entity_uuid_registry=entity_uuid_registry,
     )
 
-    # Boundary expansion: root-input and terminal-output complexes get
-    # synthetic assembly / dissociation edges to their leaf components so
-    # individual proteins are perturbable / readable at the network
-    # boundary. Intermediate complexes are deliberately left intact —
-    # they're the actual biological species flowing between reactions.
-    # See docs/DESIGN_DECISIONS.md, "Two layers of decomposition."
+    # Boundary expansion: every root-input and terminal-output complex
+    # occurrence gets synthetic assembly / dissociation edges to its member
+    # proteins, so individual subunits are perturbable / readable wherever
+    # they enter or leave the pathway. Decided positionally per occurrence
+    # (a complex that is also intermediate elsewhere keeps that intermediate
+    # node intact). See docs/DESIGN_DECISIONS.md, "Two layers of decomposition."
     _emit_boundary_decomposition_edges(
         pathway_logic_network_data=pathway_logic_network_data,
-        root_input_eids=root_input_eids,
-        terminal_output_eids=terminal_output_eids,
-        root_input_uuid_cache=root_input_uuid_cache,
-        terminal_output_uuid_cache=terminal_output_uuid_cache,
         reactome_id_to_uuid=reactome_id_to_uuid,
     )
 

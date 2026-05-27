@@ -347,11 +347,18 @@ class TestBoundaryLeavesReuseExistingUUIDs:
     boundary expansion exists to enable.
     """
 
+    def _root_edge(self, complex_uuid):
+        # Seed an edge that makes complex_uuid a root input: a source that is
+        # never a target (its target is an unmapped reaction node).
+        return [{"source_id": complex_uuid, "target_id": "u-reaction",
+                 "pos_neg": "pos", "and_or": "and",
+                 "edge_type": "input", "stoichiometry": 1}]
+
     def test_leaf_reuses_uuid_when_entity_already_in_registry(self):
         """If MDM2 already has UUID U_existing in reactome_id_to_uuid (e.g.
         because it's a regular VR input or a regulator elsewhere), the
-        boundary expansion of MDM2:TP53 must use U_existing for the MDM2
-        leaf — not a fresh one.
+        boundary expansion of root-input MDM2:TP53 must use U_existing for
+        the MDM2 leaf — not a fresh one.
         """
         existing_mdm2_uuid = "u-existing-mdm2"
         complex_uuid = "u-complex"
@@ -359,7 +366,7 @@ class TestBoundaryLeavesReuseExistingUUIDs:
             existing_mdm2_uuid: "MDM2",  # MDM2 already has a UUID elsewhere
             complex_uuid: "MDM2:TP53",
         }
-        edges: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = self._root_edge(complex_uuid)
 
         with patch('src.neo4j_connector.get_labels',
                    return_value=["Complex"]), \
@@ -367,15 +374,9 @@ class TestBoundaryLeavesReuseExistingUUIDs:
                    return_value={"MDM2", "TP53"}):
             _emit_boundary_decomposition_edges(
                 pathway_logic_network_data=edges,
-                root_input_eids={"MDM2:TP53"},
-                terminal_output_eids=set(),
-                root_input_uuid_cache={"MDM2:TP53": complex_uuid},
-                terminal_output_uuid_cache={},
                 reactome_id_to_uuid=reactome_id_to_uuid,
             )
 
-        # Find the assembly edge whose target is the complex and whose
-        # source maps back to MDM2.
         mdm2_assembly = [
             e for e in edges
             if e["edge_type"] == "assembly"
@@ -394,7 +395,7 @@ class TestBoundaryLeavesReuseExistingUUIDs:
         """
         complex_uuid = "u-complex"
         reactome_id_to_uuid: Dict[str, str] = {complex_uuid: "C"}
-        edges: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = self._root_edge(complex_uuid)
 
         with patch('src.neo4j_connector.get_labels',
                    return_value=["Complex"]), \
@@ -402,19 +403,60 @@ class TestBoundaryLeavesReuseExistingUUIDs:
                    return_value={"L1", "L2"}):
             _emit_boundary_decomposition_edges(
                 pathway_logic_network_data=edges,
-                root_input_eids={"C"},
-                terminal_output_eids=set(),
-                root_input_uuid_cache={"C": complex_uuid},
-                terminal_output_uuid_cache={},
                 reactome_id_to_uuid=reactome_id_to_uuid,
             )
 
-        # Two new leaf UUIDs added to the mapping
         new_uuids = [u for u, sid in reactome_id_to_uuid.items() if sid in {"L1", "L2"}]
         assert len(new_uuids) == 2
-        # Each fresh UUID is also used as a source on an assembly edge
         for u in new_uuids:
             assert any(e["source_id"] == u and e["edge_type"] == "assembly" for e in edges)
+
+    def test_same_complex_at_many_roots_shares_one_member_node(self):
+        """A complex appearing as a root input at N positions yields ONE member
+        node with N assembly edges — members are not duplicated (the user's
+        requirement)."""
+        c1, c2, c3 = "u-c1", "u-c2", "u-c3"   # three root-input occurrences
+        reactome_id_to_uuid: Dict[str, str] = {
+            c1: "MDC1c", c2: "MDC1c", c3: "MDC1c",  # same complex stId, 3 UUIDs
+        }
+        edges: List[Dict[str, Any]] = []
+        for c in (c1, c2, c3):
+            edges += self._root_edge(c)
+
+        with patch('src.neo4j_connector.get_labels', return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"MDC1"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+
+        asm = [e for e in edges if e["edge_type"] == "assembly"]
+        member_uuids = {e["source_id"] for e in asm}
+        complex_targets = {e["target_id"] for e in asm}
+        assert len(member_uuids) == 1, "MDC1 member must be a single shared node"
+        assert complex_targets == {c1, c2, c3}, "one assembly edge to each occurrence"
+
+    def test_intermediate_occurrence_not_decomposed(self):
+        """A complex that is produced and consumed (intermediate) is left intact."""
+        cx = "u-cx"
+        reactome_id_to_uuid: Dict[str, str] = {cx: "INT"}
+        # cx is both a target (produced) and a source (consumed) → intermediate.
+        edges: List[Dict[str, Any]] = [
+            {"source_id": "u-rxn1", "target_id": cx, "pos_neg": "pos",
+             "and_or": "and", "edge_type": "output", "stoichiometry": 1},
+            {"source_id": cx, "target_id": "u-rxn2", "pos_neg": "pos",
+             "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+        ]
+        with patch('src.neo4j_connector.get_labels', return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"M1", "M2"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+        assert not any(e["edge_type"] in ("assembly", "dissociation") for e in edges), \
+            "intermediate complex must not be decomposed"
 
 
 class TestEntityReactionProxyMapping:

@@ -6,15 +6,20 @@ logic_network.csv + stid_to_uuid_mapping.csv and only adds the new proxy file
 (which just needs Neo4j + those two artifacts). Going forward the generator
 emits the file itself; this is a one-time catch-up for the existing catalog.
 """
+import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 
-from src.neo4j_connector import prefetch_entity_data
-from src.logic_network_generator import export_entity_reaction_proxy_mapping
+# Allow running as `bin/backfill-proxy-mapping.py` — put the repo root on the
+# path so `src` imports resolve regardless of cwd.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-OUTPUT = Path("output")
+from src.neo4j_connector import prefetch_entity_data  # noqa: E402
+from src.logic_network_generator import export_entity_reaction_proxy_mapping  # noqa: E402
+
+OUTPUT = Path(__file__).resolve().parent.parent / "output"
 
 
 def backfill(pathway_dir: Path) -> None:
