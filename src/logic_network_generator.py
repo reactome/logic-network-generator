@@ -571,15 +571,27 @@ def _emit_boundary_decomposition_edges(
     Curator perturbations target individual proteins, so those proteins must be
     addressable wherever they enter or leave the pathway.)
 
-    For each root-input complex C with terminal members {A, B, ...}, emit
-    ``A → C``, ``B → C`` (``edge_type='assembly'``). For each terminal-output
-    complex, emit ``C → A``, ``C → B`` (``edge_type='dissociation'``).
+    The two boundary directions produce deliberately OPPOSITE kinds of node:
 
-    Members are **not duplicated**: a member reuses any UUID it already has in
-    the network, else a single freshly-minted UUID shared across every boundary
-    occurrence. So if complex C appears as a root input at 15 positions, member A
-    is one node with 15 assembly edges — one to each occurrence. Perturbing A
-    then propagates into all of them.
+    * **Assembly** (root input): for complex C with members {A, B, ...} emit
+      ``A → C``, ``B → C`` (``edge_type='assembly'``). Members are *shared*
+      upstream perturbation handles — a member reuses any UUID it already has in
+      the network (else one freshly-minted UUID shared across occurrences). So a
+      complex appearing as a root input at 15 positions gives member A one node
+      with 15 assembly edges; knocking out A then propagates into all of them
+      (the complex requires A — a real forward dependency).
+
+    * **Dissociation** (terminal output): for complex C emit ``C → A``, ``C → B``
+      (``edge_type='dissociation'``) where each member is a FRESH, SEPARATE
+      readout node — one per (terminal-complex occurrence, member), carrying the
+      member's stId, value inherited from the complex, and with NO outgoing
+      edges. These are downstream *sinks*, NOT shared with the member's
+      functional/assembly node. A terminal output is by definition consumed by
+      nothing, so its members carry no forward signal; sharing them with the
+      functional protein would (wrongly) inject the complex's activity into every
+      other reaction that protein touches. Keeping them separate lets you measure
+      how affected each member is *at that location* (read the sink; aggregate
+      across a member's sinks for an overall figure) without any cross-talk.
     """
     from src.neo4j_connector import get_labels
 
@@ -645,13 +657,13 @@ def _emit_boundary_decomposition_edges(
         if leaves == {str(stid)}:
             continue
         for leaf in leaves:
-            leaf_uuid = _leaf_uuid(leaf)
-            if (complex_uuid, leaf_uuid) in seen_edges:
-                continue
-            seen_edges.add((complex_uuid, leaf_uuid))
+            # Fresh per-occurrence readout sink — NOT _leaf_uuid (which would
+            # share the member's functional node and re-introduce cross-talk).
+            readout_uuid = str(uuid.uuid4())
+            reactome_id_to_uuid[readout_uuid] = leaf
             pathway_logic_network_data.append({
                 "source_id": complex_uuid,
-                "target_id": leaf_uuid,
+                "target_id": readout_uuid,
                 "pos_neg": "pos",
                 "and_or": "and",
                 "edge_type": "dissociation",
@@ -661,9 +673,9 @@ def _emit_boundary_decomposition_edges(
 
     if assembly_count or dissociation_count:
         logger.info(
-            f"Boundary expansion (positional): {assembly_count} assembly edges, "
-            f"{dissociation_count} dissociation edges, "
-            f"{len(leaf_uuid_registry)} new member leaves"
+            f"Boundary expansion (positional): {assembly_count} assembly edges "
+            f"(shared member handles), {dissociation_count} dissociation edges "
+            f"(separate readout sinks), {len(leaf_uuid_registry)} new assembly leaves"
         )
 
 

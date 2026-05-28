@@ -458,6 +458,44 @@ class TestBoundaryLeavesReuseExistingUUIDs:
         assert not any(e["edge_type"] in ("assembly", "dissociation") for e in edges), \
             "intermediate complex must not be decomposed"
 
+    def test_dissociation_members_are_separate_readout_sinks(self):
+        """Terminal-output complex members come out as FRESH sink nodes — not the
+        member's functional node — with no outgoing edges, so the complex can't
+        inject its activity into the member's other roles."""
+        functional_mdc1 = "u-functional-mdc1"
+        term_complex = "u-termc"
+        reactome_id_to_uuid: Dict[str, str] = {
+            functional_mdc1: "MDC1",        # MDC1 already a functional node
+            term_complex: "MDC1:partner",   # the terminal-output complex
+        }
+        edges: List[Dict[str, Any]] = [
+            # functional MDC1 is intermediate (produced + consumed) → left intact
+            {"source_id": "u-rxn0", "target_id": functional_mdc1, "pos_neg": "pos",
+             "and_or": "and", "edge_type": "output", "stoichiometry": 1},
+            {"source_id": functional_mdc1, "target_id": "u-rxn2", "pos_neg": "pos",
+             "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+            # term_complex is produced, never consumed → terminal output
+            {"source_id": "u-rxn", "target_id": term_complex, "pos_neg": "pos",
+             "and_or": "and", "edge_type": "output", "stoichiometry": 1},
+        ]
+        with patch('src.neo4j_connector.get_labels', return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"MDC1", "PARTNER"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+        diss = [e for e in edges if e["edge_type"] == "dissociation"]
+        assert len(diss) == 2, "one readout sink per member"
+        sinks = {e["target_id"] for e in diss}
+        assert functional_mdc1 not in sinks, \
+            "dissociation must NOT reuse the member's functional node"
+        all_sources = {e["source_id"] for e in edges}
+        for s in sinks:
+            assert s not in all_sources, "readout sink must have no outgoing edges"
+            assert reactome_id_to_uuid[s] in {"MDC1", "PARTNER"}, \
+                "sink must carry the member's stId for measurement"
+
 
 class TestEntityReactionProxyMapping:
     """Tests for export_entity_reaction_proxy_mapping.
