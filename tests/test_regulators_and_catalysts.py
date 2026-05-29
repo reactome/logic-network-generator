@@ -24,7 +24,7 @@ with patch('py2neo.Graph'):
     from src.logic_network_generator import append_regulators
 
 
-def _mock_decompose(entity_id):
+def _mock_decompose(entity_id, variant_decomposition=False):
     """Return entity as-is (no decomposition) for unit tests."""
     return [(entity_id, 1)]
 

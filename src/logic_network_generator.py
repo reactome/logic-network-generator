@@ -515,15 +515,35 @@ def _resolve_vr_entities(
     return vr_entities
 
 
-def _decompose_regulator_entity(entity_id: str) -> List[tuple]:
+def _decompose_regulator_entity(
+    entity_id: str,
+    variant_decomposition: bool = False,
+) -> List[tuple]:
     """Decompose a catalyst/regulator entity to (terminal_id, stoichiometry) pairs.
 
-    The decomposition rules mirror break_apart_entity (matching layer):
-    Complex with EntitySet → cartesian over members; simple Complex
-    returned intact; EntitySet → flat alternatives; ubiquitin sets are
-    treated as atomic to avoid combinatorial explosion. AND/OR semantics
-    for the resulting edges are decided by append_regulators based on
-    pos_neg, not by within-entity decomposition shape.
+    Two decomposition modes:
+
+    **subunit decomposition** (default, used for catalysts and positive
+    regulators): Complex with EntitySet → cartesian over members down to
+    terminal proteins; simple Complex returned intact; EntitySet → flat
+    alternatives. Each terminal subunit becomes its own edge — biologically
+    appropriate for catalysts where every subunit of the holoenzyme is
+    required (AND).
+
+    **variant decomposition** (``variant_decomposition=True``, used for
+    negative regulators): Complex with EntitySet → one entity per cartesian
+    variant of the EntitySet expansion, but the complex itself is preserved
+    (NOT broken into individual proteins). A bare EntitySet expands to its
+    member alternatives. This is what you want for inhibitors, because:
+    the inhibitor complex acts as a single biological unit; breaking it
+    into individual proteins (HSP90, CDC37, etc.) would make those
+    bystander proteins act as standalone inhibitors, which spuriously
+    crushes downstream signal whenever unrelated reactions produce them.
+
+    Ubiquitin sets are treated as atomic in both modes to avoid
+    combinatorial explosion. AND/OR semantics for the resulting edges are
+    decided by ``append_regulators`` based on pos_neg, not by within-entity
+    decomposition shape.
     """
     from src.neo4j_connector import get_labels, get_complex_components, get_set_members
 
@@ -532,10 +552,14 @@ def _decompose_regulator_entity(entity_id: str) -> List[tuple]:
     if "Complex" in labels:
         if not _complex_contains_entity_set(entity_id):
             return [(entity_id, 1)]
+        if variant_decomposition:
+            return _expand_complex_variants(entity_id)
         components = get_complex_components(entity_id)  # Dict[str, int]
         result = []
         for member_id, stoich in components.items():
-            for mid, sub_stoich in _decompose_regulator_entity(member_id):
+            for mid, sub_stoich in _decompose_regulator_entity(
+                member_id, variant_decomposition=variant_decomposition
+            ):
                 result.append((mid, stoich * sub_stoich))
         return result if result else [(entity_id, 1)]
 
@@ -545,10 +569,80 @@ def _decompose_regulator_entity(entity_id: str) -> List[tuple]:
         members = get_set_members(entity_id)
         result = []
         for member_id in members:
-            result.extend(_decompose_regulator_entity(member_id))
+            result.extend(
+                _decompose_regulator_entity(
+                    member_id, variant_decomposition=variant_decomposition
+                )
+            )
         return result if result else [(entity_id, 1)]
 
     return [(entity_id, 1)]
+
+
+def _expand_complex_variants(complex_id: str) -> List[tuple]:
+    """Expand a Complex-with-EntitySet into its cartesian-product variants.
+
+    Each variant is itself a complex (same proteins, one specific choice
+    per internal EntitySet), kept as a single biological entity. Returns
+    [(variant_id, 1), ...] where each variant_id is a deterministic
+    synthetic ID of the form ``{parent_stid}::variant::{sorted_member_ids}``.
+    The synthetic ID is content-addressed: the same combination of leaf
+    members under the same parent complex always produces the same ID, so
+    cross-pathway references to "the same variant" are consistent.
+
+    For a simple Complex (no EntitySet inside) the input is returned
+    unchanged — caller already short-circuits on this case, but we
+    re-check here for safety.
+    """
+    import itertools
+    from src.neo4j_connector import get_labels, get_complex_components, get_set_members
+
+    if not _complex_contains_entity_set(complex_id):
+        return [(complex_id, 1)]
+
+    components = get_complex_components(complex_id)
+    if not components:
+        return [(complex_id, 1)]
+
+    # For each component, collect the list of identities it can take in a
+    # single variant. A simple member contributes [member_id]; an internal
+    # EntitySet contributes [alt_1, alt_2, ...]; a nested Complex (rare)
+    # contributes its own variant IDs.
+    per_component_choices: List[List[str]] = []
+    for member_id, _stoich in components.items():
+        labels = get_labels(member_id)
+        if "Complex" in labels:
+            sub_variants = _expand_complex_variants(member_id)
+            per_component_choices.append([vid for vid, _ in sub_variants])
+        elif (
+            ("EntitySet" in labels or "DefinedSet" in labels or "CandidateSet" in labels)
+            and member_id not in _UBIQUITIN_ENTITY_SET_IDS
+        ):
+            alts: List[str] = []
+            for set_member in get_set_members(member_id):
+                set_member_labels = get_labels(set_member)
+                if (
+                    "Complex" in set_member_labels
+                    and _complex_contains_entity_set(set_member)
+                ):
+                    alts.extend(vid for vid, _ in _expand_complex_variants(set_member))
+                else:
+                    alts.append(set_member)
+            per_component_choices.append(alts if alts else [member_id])
+        else:
+            per_component_choices.append([member_id])
+
+    variants: List[tuple] = []
+    seen_variant_ids: set = set()
+    for combo in itertools.product(*per_component_choices):
+        combo_sorted = sorted(combo)
+        variant_id = f"{complex_id}::variant::{'_'.join(combo_sorted)}"
+        if variant_id in seen_variant_ids:
+            continue
+        seen_variant_ids.add(variant_id)
+        variants.append((variant_id, 1))
+
+    return variants if variants else [(complex_id, 1)]
 
 
 def _emit_boundary_decomposition_edges(
@@ -622,6 +716,13 @@ def _emit_boundary_decomposition_edges(
         return leaf_uuid_registry[leaf_stid]
 
     def _is_complex(entity_id: str) -> bool:
+        # Synthetic variant IDs (from negative-regulator variant decomposition)
+        # are not in Neo4j and shouldn't be further decomposed at the boundary
+        # — each variant already represents one specific composition of the
+        # inhibitor complex. Skipping them here also avoids the IndexError
+        # that get_labels raises on unknown stIds.
+        if "::variant::" in entity_id:
+            return False
         return "Complex" in get_labels(entity_id)
 
     seen_edges: Set[tuple] = set()
@@ -717,10 +818,26 @@ def append_regulators(
     ]
 
     for map_df, pos_neg, edge_type in regulator_configs:
+        # Negative regulators use VARIANT decomposition: an inhibitor complex
+        # with an internal EntitySet expands into one entity per cartesian
+        # variant of that EntitySet, but each variant is kept as a single
+        # complex — NOT broken down into individual subunits. Without this,
+        # HSP90 / CDC37 / ERBIN of an ERBB2 inhibitor complex would each
+        # become standalone inhibitor edges, and any unrelated reaction
+        # producing those bystander proteins would spuriously crush
+        # downstream signal.
+        #
+        # Catalysts and positive regulators keep SUBUNIT decomposition: each
+        # holoenzyme subunit is biologically AND-required for catalysis, so
+        # decomposing to terminal proteins is correct there.
+        variant_decomposition = (pos_neg == "neg")
+
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])
 
-            terminal_members = _decompose_regulator_entity(entity_id)
+            terminal_members = _decompose_regulator_entity(
+                entity_id, variant_decomposition=variant_decomposition
+            )
 
             # and_or expresses reaction-level requirement, not within-entity
             # decomposition logic. Anything that contributes to a reaction
