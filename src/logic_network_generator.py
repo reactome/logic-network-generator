@@ -645,6 +645,114 @@ def _expand_complex_variants(complex_id: str) -> List[tuple]:
     return variants if variants else [(complex_id, 1)]
 
 
+_COFACTOR_STIDS: frozenset = frozenset({
+    "R-ALL-113592",  # ATP
+    "R-ALL-29358",   # ATP variant
+    "R-ALL-113582",  # ADP
+    "R-ALL-29370",   # ADP variant
+    "R-ALL-29360",   # ADP variant
+    "R-ALL-29356",   # H2O
+    "R-ALL-29372",   # Pi
+    "R-ALL-29390",   # Pi variant
+    "R-ALL-29438",   # PPi
+    "R-ALL-217093",  # NADP+
+    "R-ALL-110114",  # NADPH
+    "R-ALL-29986",   # NAD+
+    "R-ALL-73473",   # NADH
+})
+
+
+def _emit_substrate_depletion_edges(
+    pathway_logic_network_data: List[Dict[str, Any]],
+    reactome_id_to_uuid: Dict[str, str],
+    catalyst_map: pd.DataFrame,
+) -> None:
+    """Emit catalyst→input "depletion" edges ONLY for genuinely depletive
+    reactions (phosphatases, ubiquitin ligases, proteases, etc.).
+
+    The biology to capture: when a catalyst REMOVES its substrate from the
+    available pool, the substrate's level should respond to the catalyst's
+    activity. PTEN dephosphorylates PIP3, MDM2 ubiquitinates TP53 → both
+    are depletion mechanisms. Generic kinases (X → p-X) are NOT depletion
+    in the same sense — both forms remain in the cell and serve as nodes
+    in the network; the signal travels via p-X anyway.
+
+    SELECTION CRITERION (conservative): emit depletion edges only when the
+    reaction's OUTPUTS include the small molecule Pi (R-ALL-29372). This
+    cleanly identifies phosphatases without needing reaction-name heuristics
+    or biological annotations. Adds 3–10 depletion edges per pathway in our
+    test set — small enough not to disrupt non-depletive cascades, but
+    enough to unlock PTEN-class substrate biology.
+
+    The deltasignal solver applies divide-form inhibition to depletion edges
+    specifically. The H_max cap (DS_DEPLETION_H_MAX) bounds the de-repression
+    boost. With H_max=10: catalyst KO → substrate × 10 above baseline.
+
+    Future work: extend the criterion to ubiquitination/degradation
+    reactions (MDM2-TP53 case) — those need a separate identifier since they
+    don't output Pi.
+    """
+    # Build reaction_uuid → list of input edges + list of catalyst edges
+    # + list of output edges (to detect phosphatases by Pi output).
+    by_target_inputs: Dict[str, List[str]] = {}
+    by_target_catalysts: Dict[str, List[str]] = {}
+    by_source_outputs: Dict[str, List[str]] = {}  # reaction_uuid → output stids
+    PI_STID = "R-ALL-29372"  # inorganic phosphate
+    for edge in pathway_logic_network_data:
+        if edge.get("pos_neg") != "pos":
+            continue
+        et = edge.get("edge_type", "")
+        if et == "input":
+            by_target_inputs.setdefault(edge["target_id"], []).append(edge["source_id"])
+        elif et == "catalyst":
+            by_target_catalysts.setdefault(edge["target_id"], []).append(edge["source_id"])
+        elif et == "output":
+            # source is the reaction, target is the output entity
+            by_source_outputs.setdefault(edge["source_id"], []).append(edge["target_id"])
+
+    # Identify phosphatase reactions: those whose outputs include Pi (R-ALL-29372).
+    phosphatase_rxn_uuids = set()
+    for rxn_uuid, output_uuids in by_source_outputs.items():
+        output_stids = {reactome_id_to_uuid.get(u, "") for u in output_uuids}
+        if PI_STID in output_stids:
+            phosphatase_rxn_uuids.add(rxn_uuid)
+
+    # For each phosphatase reaction with both catalysts and inputs, emit
+    # depletion edges from each catalyst to each non-cofactor input.
+    seen_edges: set = set()
+    n_emitted = 0
+    for rxn_uuid in phosphatase_rxn_uuids:
+        catalyst_uuids = by_target_catalysts.get(rxn_uuid, [])
+        inputs = by_target_inputs.get(rxn_uuid, [])
+        if not catalyst_uuids or not inputs:
+            continue
+        for cat_uuid in catalyst_uuids:
+            cat_stid = reactome_id_to_uuid.get(cat_uuid, "")
+            for inp_uuid in inputs:
+                if cat_uuid == inp_uuid:
+                    continue
+                inp_stid = reactome_id_to_uuid.get(inp_uuid, "")
+                if inp_stid == cat_stid and inp_stid:
+                    continue  # same biological entity at different positions
+                if inp_stid in _COFACTOR_STIDS:
+                    continue
+                key = (cat_uuid, inp_uuid)
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                pathway_logic_network_data.append({
+                    "source_id": cat_uuid,
+                    "target_id": inp_uuid,
+                    "pos_neg": "neg",
+                    "and_or": "and",
+                    "edge_type": "depletion",
+                    "stoichiometry": 1.0,
+                })
+                n_emitted += 1
+    logger.info(f"Emitted {n_emitted} substrate-depletion edges "
+                f"({len(phosphatase_rxn_uuids)} phosphatase reactions)")
+
+
 def _emit_boundary_decomposition_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -717,13 +825,16 @@ def _emit_boundary_decomposition_edges(
 
     def _is_complex(entity_id: str) -> bool:
         # Synthetic variant IDs (from negative-regulator variant decomposition)
-        # are not in Neo4j and shouldn't be further decomposed at the boundary
-        # — each variant already represents one specific composition of the
-        # inhibitor complex. Skipping them here also avoids the IndexError
-        # that get_labels raises on unknown stIds.
+        # are not in Neo4j and shouldn't be further decomposed at the boundary.
+        # Tolerate any other unknown stIds too (e.g., entities added by other
+        # synthetic emissions) — if the lookup fails, assume it's not a complex
+        # and skip decomposition rather than crashing.
         if "::variant::" in entity_id:
             return False
-        return "Complex" in get_labels(entity_id)
+        try:
+            return "Complex" in get_labels(entity_id)
+        except IndexError:
+            return False
 
     seen_edges: Set[tuple] = set()
     assembly_count = 0
@@ -1144,6 +1255,19 @@ def create_pathway_logic_network(
         pathway_logic_network_data,
         reactome_id_to_uuid,
         entity_uuid_registry=entity_uuid_registry,
+    )
+
+    # Substrate-depletion edges: for each catalytic reaction, emit edges
+    # `catalyst → input` with edge_type="depletion". These capture the
+    # biology that a catalyst REMOVES its substrate (PTEN dephosphorylates
+    # PIP3, MDM2 ubiquitinates TP53, etc.). The deltasignal solver applies
+    # divide-form inhibition to these edges specifically, so catalyst-knockout
+    # boosts the substrate via de-repression. Skips small-molecule cofactor
+    # inputs (ATP/H2O/Pi/etc.) to avoid noise.
+    _emit_substrate_depletion_edges(
+        pathway_logic_network_data=pathway_logic_network_data,
+        reactome_id_to_uuid=reactome_id_to_uuid,
+        catalyst_map=catalyst_map,
     )
 
     # Boundary expansion: every root-input and terminal-output complex
