@@ -667,30 +667,31 @@ def _emit_substrate_depletion_edges(
     reactome_id_to_uuid: Dict[str, str],
     catalyst_map: pd.DataFrame,
 ) -> None:
-    """Emit catalyst→input "depletion" edges ONLY for genuinely depletive
-    reactions (phosphatases, ubiquitin ligases, proteases, etc.).
+    """Emit catalyst→input "depletion" edges for PHOSPHATASE reactions only.
 
     The biology to capture: when a catalyst REMOVES its substrate from the
     available pool, the substrate's level should respond to the catalyst's
-    activity. PTEN dephosphorylates PIP3, MDM2 ubiquitinates TP53 → both
-    are depletion mechanisms. Generic kinases (X → p-X) are NOT depletion
-    in the same sense — both forms remain in the cell and serve as nodes
-    in the network; the signal travels via p-X anyway.
+    activity. PTEN dephosphorylates PIP3 → PTEN-KO needs to BOOST PIP3 in
+    the propagator (de-repression via divide-form H on the depletion edge).
 
-    SELECTION CRITERION (conservative): emit depletion edges only when the
-    reaction's OUTPUTS include the small molecule Pi (R-ALL-29372). This
-    cleanly identifies phosphatases without needing reaction-name heuristics
-    or biological annotations. Adds 3–10 depletion edges per pathway in our
-    test set — small enough not to disrupt non-depletive cascades, but
-    enough to unlock PTEN-class substrate biology.
+    SELECTION CRITERION: the reaction's OUTPUTS include Pi (R-ALL-29372).
+    Cleanly identifies dephosphorylation reactions (PTEN, PTPN12, PHLPP,
+    PP1, PP2A, etc.) without name heuristics. The free substrate is the
+    direct input, so catalyst→input depletion targets the right node.
+
+    NOTE: ubiquitin-ligase reactions look superficially similar but
+    Reactome models them more precisely — the "MDM2 ubiquitinates TP53"
+    reaction takes the ASSEMBLED `p-MDM2:MDM4:TP53` complex as input, not
+    free TP53. So a catalyst→input depletion edge points MDM2 → complex,
+    not MDM2 → TP53, and the heuristic doesn't help (empirically -0.5pp
+    on the experimental benchmark). Capturing ubiquitin-driven depletion
+    would require modeling the multi-step bind→ubiquitinate→degrade chain.
 
     The deltasignal solver applies divide-form inhibition to depletion edges
-    specifically. The H_max cap (DS_DEPLETION_H_MAX) bounds the de-repression
-    boost. With H_max=10: catalyst KO → substrate × 10 above baseline.
+    specifically (DS_DEPLETION_H_MAX caps the de-repression boost, default
+    10). Regular regulator edges stay on devspec (no false boost).
 
-    Future work: extend the criterion to ubiquitination/degradation
-    reactions (MDM2-TP53 case) — those need a separate identifier since they
-    don't output Pi.
+    Cofactor inputs (ATP/ADP/H2O/Pi/etc.) are excluded.
     """
     # Build reaction_uuid → list of input edges + list of catalyst edges
     # + list of output edges (to detect phosphatases by Pi output).
@@ -717,8 +718,21 @@ def _emit_substrate_depletion_edges(
         if PI_STID in output_stids:
             phosphatase_rxn_uuids.add(rxn_uuid)
 
-    # For each phosphatase reaction with both catalysts and inputs, emit
-    # depletion edges from each catalyst to each non-cofactor input.
+    # NOTE: We previously also enabled ubiquitin-ligase reactions
+    # (display name contains "ubiquitinat") but they net REGRESSED the
+    # benchmark by -0.5pp. Reactome models ubiquitination biology too
+    # precisely for the simple catalyst→input depletion heuristic to
+    # capture: in "MDM2 ubiquitinates TP53", the reaction's input is the
+    # ASSEMBLED complex `p-MDM2:MDM4:TP53`, not free TP53. So the catalyst→
+    # input edge points MDM2 → complex, not MDM2 → TP53. Bias-corrected
+    # depletion for ubiquitination requires modeling the multi-step
+    # bind→ubiquitinate→degrade chain (likely via an "MDM2 → TP53
+    # sequestration" edge that tracks total free TP53 pool), which is
+    # outside the scope of this single-reaction heuristic. Phosphatases
+    # work because dephosphorylation typically has the unphosphorylated
+    # substrate directly as input.
+
+    # Emit depletion edges for the phosphatase reactions identified above.
     seen_edges: set = set()
     n_emitted = 0
     for rxn_uuid in phosphatase_rxn_uuids:
@@ -749,8 +763,10 @@ def _emit_substrate_depletion_edges(
                     "stoichiometry": 1.0,
                 })
                 n_emitted += 1
-    logger.info(f"Emitted {n_emitted} substrate-depletion edges "
-                f"({len(phosphatase_rxn_uuids)} phosphatase reactions)")
+    logger.info(
+        f"Emitted {n_emitted} substrate-depletion edges "
+        f"({len(phosphatase_rxn_uuids)} phosphatase reactions)"
+    )
 
 
 def _emit_boundary_decomposition_edges(
