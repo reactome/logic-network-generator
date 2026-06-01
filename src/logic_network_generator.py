@@ -1,5 +1,5 @@
 import uuid
-from typing import Dict, List, Any, NamedTuple, Optional, Set
+from typing import Dict, List, Any, NamedTuple, Optional, Set, Tuple
 
 import pandas as pd
 from pandas import DataFrame
@@ -661,6 +661,16 @@ _COFACTOR_STIDS: frozenset = frozenset({
     "R-ALL-73473",   # NADH
 })
 
+# Ubiquitin entity stIds (human + cross-species variants). A reaction that
+# takes one of these as INPUT is a ubiquitination reaction (Ub is consumed
+# and attached to a target protein). Reactions whose OUTPUT is Ub are
+# deubiquitinations (we don't emit depletion for those).
+_UBIQUITIN_STIDS: frozenset = frozenset({
+    "R-HSA-68524",   # Ub [nucleoplasm]
+    "R-HSA-113595",  # Ub [cytosol]
+    "R-HSA-9660007", # Ub [lysosomal lumen]
+})
+
 
 def _emit_substrate_depletion_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
@@ -718,23 +728,114 @@ def _emit_substrate_depletion_edges(
         if PI_STID in output_stids:
             phosphatase_rxn_uuids.add(rxn_uuid)
 
-    # NOTE: We previously also enabled ubiquitin-ligase reactions
-    # (display name contains "ubiquitinat") but they net REGRESSED the
-    # benchmark by -0.5pp. Reactome models ubiquitination biology too
-    # precisely for the simple catalyst→input depletion heuristic to
-    # capture: in "MDM2 ubiquitinates TP53", the reaction's input is the
-    # ASSEMBLED complex `p-MDM2:MDM4:TP53`, not free TP53. So the catalyst→
-    # input edge points MDM2 → complex, not MDM2 → TP53. Bias-corrected
-    # depletion for ubiquitination requires modeling the multi-step
-    # bind→ubiquitinate→degrade chain (likely via an "MDM2 → TP53
-    # sequestration" edge that tracks total free TP53 pool), which is
-    # outside the scope of this single-reaction heuristic. Phosphatases
-    # work because dephosphorylation typically has the unphosphorylated
-    # substrate directly as input.
+    # Identify ubiquitin-ligase reactions TOPOLOGICALLY: those that take
+    # ubiquitin (Ub) as an INPUT. Reactome models ubiquitination by
+    # consuming free Ub and producing a ubiquitinated form of the target,
+    # so this is a clean structural signal (no display-name string matching
+    # required). For each such reaction we then identify the SUBSTRATE by
+    # gene-level matching between input-complex members and output members:
+    # the protein appearing in both (by referenceEntity gene) is the one
+    # being modified, and its free-form network nodes are the correct
+    # depletion targets — NOT the assembled complex that appears as the
+    # literal reaction input.
 
-    # Emit depletion edges for the phosphatase reactions identified above.
+    # Collect all Reactome reaction ids in this pathway from catalyst_map
+    # (each catalyst row has a reaction_id and reaction_uuid).
+    rxn_uuid_to_rstid: Dict[str, str] = {}
+    if not catalyst_map.empty:
+        for _, row in catalyst_map.iterrows():
+            ru = str(row["reaction_uuid"]); rs = str(row["reaction_id"])
+            if ru and rs:
+                rxn_uuid_to_rstid[ru] = rs
+    unique_rstids = list({rs for rs in rxn_uuid_to_rstid.values() if rs})
+
+    # For each candidate reaction, ask neo4j: is Ub an input? Then collect
+    # input/output protein gene names (decomposing complexes/sets to leaves).
+    # Returns reaction_stid → (set of substrate genes, set of input-protein stids).
+    ubiquitin_subst_by_rstid: Dict[str, Tuple[Set[str], Set[str]]] = {}
+    if unique_rstids:
+        from src.neo4j_connector import get_graph
+        try:
+            # Reactions with any Ub stId as input
+            ub_rows = get_graph().run(
+                "UNWIND $ids AS id "
+                "MATCH (rle:ReactionLikeEvent {stId: id})-[:input]->(ub:PhysicalEntity) "
+                "WHERE ub.stId IN $ub_stids RETURN DISTINCT id AS rxn",
+                ids=unique_rstids,
+                ub_stids=list(_UBIQUITIN_STIDS),
+            ).data()
+            ubiq_rstids = [r["rxn"] for r in ub_rows]
+            # For each ubiquitination reaction, gather input-leaf proteins
+            # (decomposed through hasComponent/hasMember/hasCandidate) and
+            # their referenceEntity genes; do the same for outputs.
+            in_rows = get_graph().run(
+                "UNWIND $ids AS id "
+                "MATCH (rle:ReactionLikeEvent {stId: id})-[:input]->(inp:PhysicalEntity) "
+                "WHERE NOT inp.stId IN $ub_stids "
+                "OPTIONAL MATCH (inp)-[:hasComponent|hasMember|hasCandidate*0..3]->(leaf:PhysicalEntity) "
+                "OPTIONAL MATCH (leaf)-[:referenceEntity]->(re:ReferenceEntity) "
+                "RETURN id AS rxn, leaf.stId AS leaf_stid, re.geneName AS genes",
+                ids=ubiq_rstids,
+                ub_stids=list(_UBIQUITIN_STIDS),
+            ).data() if ubiq_rstids else []
+            out_rows = get_graph().run(
+                "UNWIND $ids AS id "
+                "MATCH (rle:ReactionLikeEvent {stId: id})-[:output]->(o:PhysicalEntity) "
+                "WHERE NOT o.stId IN $ub_stids "
+                "OPTIONAL MATCH (o)-[:hasComponent|hasMember|hasCandidate*0..3]->(leaf:PhysicalEntity) "
+                "OPTIONAL MATCH (leaf)-[:referenceEntity]->(re:ReferenceEntity) "
+                "RETURN id AS rxn, re.geneName AS genes",
+                ids=ubiq_rstids,
+                ub_stids=list(_UBIQUITIN_STIDS),
+            ).data() if ubiq_rstids else []
+            in_by_rxn: Dict[str, List[Tuple[Optional[str], Optional[List[str]]]]] = {}
+            for r in in_rows:
+                in_by_rxn.setdefault(r["rxn"], []).append((r["leaf_stid"], r["genes"]))
+            out_by_rxn: Dict[str, Set[str]] = {}
+            for r in out_rows:
+                g = r["genes"]
+                if g:
+                    for gn in g:
+                        out_by_rxn.setdefault(r["rxn"], set()).add(gn)
+            for rxn in ubiq_rstids:
+                output_genes = out_by_rxn.get(rxn, set())
+                if not output_genes: continue
+                # The substrate: input-leaf proteins whose gene also appears
+                # in the output (modified form). Collect their leaf stids.
+                subst_stids: Set[str] = set()
+                subst_genes: Set[str] = set()
+                for leaf_stid, leaf_genes in in_by_rxn.get(rxn, []):
+                    if not leaf_stid or not leaf_genes: continue
+                    common = output_genes & set(leaf_genes)
+                    if common:
+                        subst_stids.add(leaf_stid)
+                        subst_genes.update(common)
+                if subst_stids:
+                    ubiquitin_subst_by_rstid[rxn] = (subst_genes, subst_stids)
+        except Exception as exc:
+            logger.warning(f"Ubiquitin topology lookup failed: {exc}")
+
+    # Build network stid → list of UUIDs index from pathway_logic_network_data,
+    # so we can target the substrate's NETWORK NODES (not just the leaf
+    # protein stId, which may not be a direct node).
+    stid_to_uuids_in_net: Dict[str, List[str]] = {}
+    seen_uuids: Set[str] = set()
+    for edge in pathway_logic_network_data:
+        for uid in (edge.get("source_id"), edge.get("target_id")):
+            if uid in seen_uuids: continue
+            seen_uuids.add(uid)
+            sid = reactome_id_to_uuid.get(uid, "")
+            if sid:
+                stid_to_uuids_in_net.setdefault(sid, []).append(uid)
+
+    # Emit depletion edges. For phosphatase reactions: catalyst → input
+    # (free substrate IS the input). For ubiquitin reactions: catalyst →
+    # all network UUIDs of the substrate protein stId (free form, not the
+    # complex that's the literal reaction input).
     seen_edges: set = set()
-    n_emitted = 0
+    n_emitted_phos = 0
+    n_emitted_ub = 0
+    # Phosphatase pass — existing behavior.
     for rxn_uuid in phosphatase_rxn_uuids:
         catalyst_uuids = by_target_catalysts.get(rxn_uuid, [])
         inputs = by_target_inputs.get(rxn_uuid, [])
@@ -762,10 +863,45 @@ def _emit_substrate_depletion_edges(
                     "edge_type": "depletion",
                     "stoichiometry": 1.0,
                 })
-                n_emitted += 1
+                n_emitted_phos += 1
+
+    # Ubiquitin pass — emit catalyst → free-substrate-UUIDs depletion edges.
+    # For each VR uuid corresponding to a ubiquitin reaction, get its
+    # catalysts, then for each substrate stid, look up all network UUIDs of
+    # that substrate (free TP53 nodes, not the assembled complex) and emit.
+    for ru, rs in rxn_uuid_to_rstid.items():
+        info = ubiquitin_subst_by_rstid.get(rs)
+        if info is None:
+            continue
+        _, subst_stids = info
+        catalyst_uuids = by_target_catalysts.get(ru, [])
+        if not catalyst_uuids:
+            continue
+        for cat_uuid in catalyst_uuids:
+            cat_stid = reactome_id_to_uuid.get(cat_uuid, "")
+            for subst_stid in subst_stids:
+                if subst_stid == cat_stid: continue
+                if subst_stid in _COFACTOR_STIDS: continue
+                target_uuids = stid_to_uuids_in_net.get(subst_stid, [])
+                for tgt_uuid in target_uuids:
+                    if tgt_uuid == cat_uuid: continue
+                    key = (cat_uuid, tgt_uuid)
+                    if key in seen_edges: continue
+                    seen_edges.add(key)
+                    pathway_logic_network_data.append({
+                        "source_id": cat_uuid,
+                        "target_id": tgt_uuid,
+                        "pos_neg": "neg",
+                        "and_or": "and",
+                        "edge_type": "depletion",
+                        "stoichiometry": 1.0,
+                    })
+                    n_emitted_ub += 1
     logger.info(
-        f"Emitted {n_emitted} substrate-depletion edges "
-        f"({len(phosphatase_rxn_uuids)} phosphatase reactions)"
+        f"Emitted {n_emitted_phos + n_emitted_ub} substrate-depletion edges "
+        f"({len(phosphatase_rxn_uuids)} phosphatase reactions, "
+        f"{len(ubiquitin_subst_by_rstid)} ubiquitin-ligase reactions with "
+        f"identified substrate; topology-based)"
     )
 
 
