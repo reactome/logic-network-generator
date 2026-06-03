@@ -1435,6 +1435,16 @@ def create_pathway_logic_network(
 
     # Create final DataFrame
     pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=list(columns.keys()))
+    # Coerce stoichiometry to nullable Int64 — emission sites use a mix of
+    # int (`1`) and float (`1.0`) literals, which makes pandas infer float64
+    # for the column and serialize as `1.0` in the CSV. Force integer so the
+    # column reads as a clean whole-number count (Reactome's stoichiometries
+    # are all integers for the pathways we care about; if a fractional value
+    # ever appears it will surface as a parse error rather than silent loss).
+    if not pathway_logic_network.empty:
+        pathway_logic_network["stoichiometry"] = (
+            pathway_logic_network["stoichiometry"].astype("Int64")
+        )
     
     # Find root inputs and terminal outputs
     root_inputs = find_root_inputs(pathway_logic_network)
