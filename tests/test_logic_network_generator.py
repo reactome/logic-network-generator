@@ -15,11 +15,13 @@ sys.path.insert(0, str(project_root))
 with patch('py2neo.Graph'):
     from src.logic_network_generator import (
         _assign_uuids,
+        _build_uid_index,
         _build_entity_producer_count,
         _canonicalize_registry,
         _emit_boundary_decomposition_edges,
         _register_entity_uuid,
         _get_or_create_entity_uuid,
+        _resolve_to_terminal_reactome_ids,
         _resolve_vr_entities,
     )
 
@@ -144,6 +146,52 @@ class TestEntityProducerCount:
         count = _build_entity_producer_count(vr_entities)
         assert count["X"] == 1
         assert count["Y"] == 1
+
+
+class TestUidIndex:
+    """Tests for cached decomposition UID resolution."""
+
+    def test_stringified_nulls_are_not_treated_as_entities(self):
+        """Cached CSV reloads can contain literal 'None' strings; skip them."""
+        decomposed = pd.DataFrame(
+            [
+                {
+                    "uid": "hash-1",
+                    "input_or_output_uid": "None",
+                    "input_or_output_reactome_id": "R-HSA-1",
+                    "stoichiometry": 2,
+                },
+                {
+                    "uid": "hash-1",
+                    "input_or_output_uid": "",
+                    "input_or_output_reactome_id": "nan",
+                    "stoichiometry": 1,
+                },
+                {
+                    "uid": "hash-1",
+                    "input_or_output_uid": "hash-2",
+                    "input_or_output_reactome_id": "<NA>",
+                    "stoichiometry": 3,
+                },
+                {
+                    "uid": "hash-2",
+                    "input_or_output_uid": "NaN",
+                    "input_or_output_reactome_id": "R-HSA-2",
+                    "stoichiometry": 4,
+                },
+            ]
+        )
+
+        uid_index = _build_uid_index(decomposed)
+
+        assert uid_index["hash-1"][0] == ["hash-2"]
+        assert uid_index["hash-1"][1] == ["R-HSA-1"]
+        assert "None" not in uid_index["hash-1"][2]
+        assert "nan" not in uid_index["hash-1"][2]
+
+        resolved = _resolve_to_terminal_reactome_ids(uid_index, "hash-1")
+
+        assert resolved == {"R-HSA-1": 2, "R-HSA-2": 12}
 
 
 class TestInterReactionConnectivity:
