@@ -47,3 +47,4 @@ uuid_mapping_*.csv
 reaction_connections_*.csv
 decomposed_uid_mapping_*.csv
 best_matches_*.csv
+graphify-out/
