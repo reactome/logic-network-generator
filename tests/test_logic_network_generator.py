@@ -21,6 +21,7 @@ with patch('py2neo.Graph'):
         _register_entity_uuid,
         _get_or_create_entity_uuid,
         _resolve_vr_entities,
+        export_entity_reaction_proxy_mapping,
     )
 
 
@@ -243,23 +244,35 @@ class TestInterReactionConnectivity:
         assert uuid_from_vr1 == uuid_at_vr2
         assert uuid_from_vr3 == uuid_at_vr2
 
-    def test_no_duplicate_edges(self):
-        """Duplicate terminal IDs from decomposition should not produce duplicate edges.
+    def test_no_duplicate_edges(self, monkeypatch):
+        """_resolve_vr_entities must emit each node once (Set-deduped).
 
-        When multiple decomposition paths converge on the same terminal Reactome ID,
-        _resolve_to_terminal_reactome_ids returns duplicates. _resolve_vr_entities
-        must deduplicate them so Phase 3 doesn't create duplicate edges.
+        Since set-variant emission, node identities come from the reaction's
+        annotated input/output entities (mapped to nodes), and duplicates are
+        collapsed via a set. We mock the two Neo4j calls the resolver makes:
+        the reaction's annotated entities and their labels (simple proteins).
         """
-        # Build a uid_index where hash "vr1-input" resolves to terminal ID "9933417"
-        # via two different nested paths, producing duplicates without dedup.
-        # uid_index maps hash -> (nested_uids, terminal_ids, stoich_map)
+        import src.logic_network_generator as m
+        from src import neo4j_connector
+
+        # Reaction "1" annotates one simple-protein input and one output.
+        monkeypatch.setattr(
+            neo4j_connector, "get_reaction_input_output_ids",
+            lambda rid, io: {"9933417"} if io == "input" else {"12345"},
+        )
+        # Both entities are simple (not complexes/sets) -> mapped to themselves.
+        monkeypatch.setattr(
+            neo4j_connector, "get_labels",
+            lambda e: ["EntityWithAccessionedSequence"],
+        )
+
+        # input_hash resolves to member "9933417" via two convergent paths.
         uid_index = {
-            "vr1-input": (["nested-1", "nested-2"], set(), {}),  # two nested paths, no direct terminals
-            "nested-1": ([], {"9933417"}, {"9933417": 1}),  # both nested paths resolve to same terminal
+            "vr1-input": (["nested-1", "nested-2"], set(), {}),
+            "nested-1": ([], {"9933417"}, {"9933417": 1}),
             "nested-2": ([], {"9933417"}, {"9933417": 1}),
             "vr1-output": ([], {"12345"}, {"12345": 1}),
         }
-
         reaction_id_map = pd.DataFrame({
             "uid": ["vr1"],
             "input_hash": ["vr1-input"],
@@ -268,17 +281,10 @@ class TestInterReactionConnectivity:
         })
 
         vr_entities = _resolve_vr_entities(reaction_id_map, uid_index)
+        input_ids, output_ids, _in_stoich, _out_stoich = vr_entities["vr1"]
 
-        input_ids, output_ids, input_stoich, output_stoich = vr_entities["vr1"]
-
-        # _resolve_to_terminal_reactome_ids now returns dict (deduped by key),
-        # but stoichiometry accumulates: 1 + 1 = 2 from two nested paths
-        assert len(input_ids) == 1, (
-            f"Expected 1 unique input ID, got {len(input_ids)}: {input_ids}"
-        )
-        assert input_ids[0] == "9933417"
-        assert input_stoich["9933417"] == 2  # stoichiometry adds: 1 from nested-1 + 1 from nested-2
-        assert len(output_ids) == 1
+        assert input_ids == ["9933417"], f"expected one deduped input, got {input_ids}"
+        assert output_ids == ["12345"], f"expected one output, got {output_ids}"
 
     def test_root_input_same_entity_gets_one_uuid(self):
         """Root input entity appearing at multiple reactions should share one UUID."""
@@ -346,11 +352,18 @@ class TestBoundaryLeavesReuseExistingUUIDs:
     boundary expansion exists to enable.
     """
 
+    def _root_edge(self, complex_uuid):
+        # Seed an edge that makes complex_uuid a root input: a source that is
+        # never a target (its target is an unmapped reaction node).
+        return [{"source_id": complex_uuid, "target_id": "u-reaction",
+                 "pos_neg": "pos", "and_or": "and",
+                 "edge_type": "input", "stoichiometry": 1}]
+
     def test_leaf_reuses_uuid_when_entity_already_in_registry(self):
         """If MDM2 already has UUID U_existing in reactome_id_to_uuid (e.g.
         because it's a regular VR input or a regulator elsewhere), the
-        boundary expansion of MDM2:TP53 must use U_existing for the MDM2
-        leaf — not a fresh one.
+        boundary expansion of root-input MDM2:TP53 must use U_existing for
+        the MDM2 leaf — not a fresh one.
         """
         existing_mdm2_uuid = "u-existing-mdm2"
         complex_uuid = "u-complex"
@@ -358,7 +371,7 @@ class TestBoundaryLeavesReuseExistingUUIDs:
             existing_mdm2_uuid: "MDM2",  # MDM2 already has a UUID elsewhere
             complex_uuid: "MDM2:TP53",
         }
-        edges: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = self._root_edge(complex_uuid)
 
         with patch('src.neo4j_connector.get_labels',
                    return_value=["Complex"]), \
@@ -366,15 +379,9 @@ class TestBoundaryLeavesReuseExistingUUIDs:
                    return_value={"MDM2", "TP53"}):
             _emit_boundary_decomposition_edges(
                 pathway_logic_network_data=edges,
-                root_input_eids={"MDM2:TP53"},
-                terminal_output_eids=set(),
-                root_input_uuid_cache={"MDM2:TP53": complex_uuid},
-                terminal_output_uuid_cache={},
                 reactome_id_to_uuid=reactome_id_to_uuid,
             )
 
-        # Find the assembly edge whose target is the complex and whose
-        # source maps back to MDM2.
         mdm2_assembly = [
             e for e in edges
             if e["edge_type"] == "assembly"
@@ -393,7 +400,7 @@ class TestBoundaryLeavesReuseExistingUUIDs:
         """
         complex_uuid = "u-complex"
         reactome_id_to_uuid: Dict[str, str] = {complex_uuid: "C"}
-        edges: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = self._root_edge(complex_uuid)
 
         with patch('src.neo4j_connector.get_labels',
                    return_value=["Complex"]), \
@@ -401,16 +408,197 @@ class TestBoundaryLeavesReuseExistingUUIDs:
                    return_value={"L1", "L2"}):
             _emit_boundary_decomposition_edges(
                 pathway_logic_network_data=edges,
-                root_input_eids={"C"},
-                terminal_output_eids=set(),
-                root_input_uuid_cache={"C": complex_uuid},
-                terminal_output_uuid_cache={},
                 reactome_id_to_uuid=reactome_id_to_uuid,
             )
 
-        # Two new leaf UUIDs added to the mapping
         new_uuids = [u for u, sid in reactome_id_to_uuid.items() if sid in {"L1", "L2"}]
         assert len(new_uuids) == 2
-        # Each fresh UUID is also used as a source on an assembly edge
         for u in new_uuids:
             assert any(e["source_id"] == u and e["edge_type"] == "assembly" for e in edges)
+
+    def test_same_complex_at_many_roots_shares_one_member_node(self):
+        """A complex appearing as a root input at N positions yields ONE member
+        node with N assembly edges — members are not duplicated (the user's
+        requirement)."""
+        c1, c2, c3 = "u-c1", "u-c2", "u-c3"   # three root-input occurrences
+        reactome_id_to_uuid: Dict[str, str] = {
+            c1: "MDC1c", c2: "MDC1c", c3: "MDC1c",  # same complex stId, 3 UUIDs
+        }
+        edges: List[Dict[str, Any]] = []
+        for c in (c1, c2, c3):
+            edges += self._root_edge(c)
+
+        with patch('src.neo4j_connector.get_labels', return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"MDC1"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+
+        asm = [e for e in edges if e["edge_type"] == "assembly"]
+        member_uuids = {e["source_id"] for e in asm}
+        complex_targets = {e["target_id"] for e in asm}
+        assert len(member_uuids) == 1, "MDC1 member must be a single shared node"
+        assert complex_targets == {c1, c2, c3}, "one assembly edge to each occurrence"
+
+    def test_intermediate_occurrence_not_decomposed(self):
+        """A complex that is produced and consumed (intermediate) is left intact."""
+        cx = "u-cx"
+        reactome_id_to_uuid: Dict[str, str] = {cx: "INT"}
+        # cx is both a target (produced) and a source (consumed) → intermediate.
+        edges: List[Dict[str, Any]] = [
+            {"source_id": "u-rxn1", "target_id": cx, "pos_neg": "pos",
+             "and_or": "and", "edge_type": "output", "stoichiometry": 1},
+            {"source_id": cx, "target_id": "u-rxn2", "pos_neg": "pos",
+             "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+        ]
+        with patch('src.neo4j_connector.get_labels', return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"M1", "M2"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+        assert not any(e["edge_type"] in ("assembly", "dissociation") for e in edges), \
+            "intermediate complex must not be decomposed"
+
+    def test_dissociation_members_are_separate_readout_sinks(self):
+        """Terminal-output complex members come out as FRESH sink nodes — not the
+        member's functional node — with no outgoing edges, so the complex can't
+        inject its activity into the member's other roles."""
+        functional_mdc1 = "u-functional-mdc1"
+        term_complex = "u-termc"
+        reactome_id_to_uuid: Dict[str, str] = {
+            functional_mdc1: "MDC1",        # MDC1 already a functional node
+            term_complex: "MDC1:partner",   # the terminal-output complex
+        }
+        edges: List[Dict[str, Any]] = [
+            # functional MDC1 is intermediate (produced + consumed) → left intact
+            {"source_id": "u-rxn0", "target_id": functional_mdc1, "pos_neg": "pos",
+             "and_or": "and", "edge_type": "output", "stoichiometry": 1},
+            {"source_id": functional_mdc1, "target_id": "u-rxn2", "pos_neg": "pos",
+             "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+            # term_complex is produced, never consumed → terminal output
+            {"source_id": "u-rxn", "target_id": term_complex, "pos_neg": "pos",
+             "and_or": "and", "edge_type": "output", "stoichiometry": 1},
+        ]
+        with patch('src.neo4j_connector.get_labels', return_value=["Complex"]), \
+             patch('src.logic_network_generator.get_terminal_components',
+                   return_value={"MDC1", "PARTNER"}):
+            _emit_boundary_decomposition_edges(
+                pathway_logic_network_data=edges,
+                reactome_id_to_uuid=reactome_id_to_uuid,
+            )
+        diss = [e for e in edges if e["edge_type"] == "dissociation"]
+        assert len(diss) == 2, "one readout sink per member"
+        sinks = {e["target_id"] for e in diss}
+        assert functional_mdc1 not in sinks, \
+            "dissociation must NOT reuse the member's functional node"
+        all_sources = {e["source_id"] for e in edges}
+        for s in sinks:
+            assert s not in all_sources, "readout sink must have no outgoing edges"
+            assert reactome_id_to_uuid[s] in {"MDC1", "PARTNER"}, \
+                "sink must carry the member's stId for measurement"
+
+
+class TestEntityReactionProxyMapping:
+    """Tests for export_entity_reaction_proxy_mapping.
+
+    A curated species (often a Complex containing an EntitySet) gets expanded
+    into virtual variants during generation, so its own stId never appears in
+    stid_to_uuid_mapping.csv. This export restores addressability by pointing
+    the species at the UUIDs of the reaction that produces it.
+    """
+
+    def _write(self, tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+               participating, entity_reactions):
+        out = tmp_path / "proxy.csv"
+        with patch('src.neo4j_connector.get_pathway_participating_entities',
+                   return_value=participating), \
+             patch('src.neo4j_connector.get_pathway_entity_reactions',
+                   return_value=entity_reactions):
+            export_entity_reaction_proxy_mapping(
+                network, reaction_id_map, reactome_id_to_uuid,
+                "R-HSA-1", str(out),
+            )
+        return pd.read_csv(out)
+
+    # Fake UUIDs must contain a dash: export_*_mapping detects the dict
+    # orientation with the same `'-' in key` heuristic the rest of the module
+    # uses, and real position-aware UUIDs always have dashes.
+    def test_missing_complex_maps_to_producing_reaction(self, tmp_path):
+        # Network: reaction R1 (uuid u-r1) outputs the expanded variant nodes;
+        # the parent complex C is absent from the mapping.
+        network = pd.DataFrame({
+            "source_id": ["u-in", "u-r1"],
+            "target_id": ["u-r1", "u-out"],
+        })
+        reaction_id_map = pd.DataFrame({"uid": ["u-r1"], "reactome_id": ["R-HSA-R1"]})
+        # Mapping has the reaction and some leaves, but NOT complex C.
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-in": "R-HSA-IN", "u-out": "R-HSA-OUT"}
+
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C", "R-HSA-IN", "R-HSA-OUT"},
+            entity_reactions={"R-HSA-C": {"output": ["R-HSA-R1"]}},
+        )
+        rows = df[df["entity_stable_id"] == "R-HSA-C"]
+        assert list(rows["proxy_uuid"]) == ["u-r1"]
+        assert set(rows["proxy_role"]) == {"producing"}
+
+    def test_entity_already_in_mapping_is_skipped(self, tmp_path):
+        network = pd.DataFrame({"source_id": ["u-r1"], "target_id": ["u-out"]})
+        reaction_id_map = pd.DataFrame({"uid": ["u-r1"], "reactome_id": ["R-HSA-R1"]})
+        # R-HSA-OUT is directly present, so it must not be proxied.
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-out": "R-HSA-OUT"}
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-OUT"},
+            entity_reactions={"R-HSA-OUT": {"output": ["R-HSA-R1"]}},
+        )
+        assert df.empty or "R-HSA-OUT" not in set(df["entity_stable_id"])
+
+    def test_consuming_fallback_when_no_producer(self, tmp_path):
+        network = pd.DataFrame({"source_id": ["u-r1"], "target_id": ["u-out"]})
+        reaction_id_map = pd.DataFrame({"uid": ["u-r1"], "reactome_id": ["R-HSA-R1"]})
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-out": "R-HSA-OUT"}
+        # C is only ever consumed (input) — no producing reaction in-pathway.
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C"},
+            entity_reactions={"R-HSA-C": {"input": ["R-HSA-R1"]}},
+        )
+        rows = df[df["entity_stable_id"] == "R-HSA-C"]
+        assert list(rows["proxy_uuid"]) == ["u-r1"]
+        assert set(rows["proxy_role"]) == {"consuming"}
+
+    def test_producing_preferred_over_consuming(self, tmp_path):
+        network = pd.DataFrame({
+            "source_id": ["u-r1", "u-r2"], "target_id": ["u-x", "u-y"],
+        })
+        reaction_id_map = pd.DataFrame(
+            {"uid": ["u-r1", "u-r2"], "reactome_id": ["R-HSA-R1", "R-HSA-R2"]})
+        reactome_id_to_uuid = {"u-r1": "R-HSA-R1", "u-r2": "R-HSA-R2"}
+        # C is produced by R1 and consumed by R2 — only the producer should win.
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C"},
+            entity_reactions={"R-HSA-C": {"output": ["R-HSA-R1"], "input": ["R-HSA-R2"]}},
+        )
+        rows = df[df["entity_stable_id"] == "R-HSA-C"]
+        assert list(rows["proxy_uuid"]) == ["u-r1"]
+        assert set(rows["proxy_role"]) == {"producing"}
+
+    def test_reaction_not_in_network_yields_no_row(self, tmp_path):
+        # The producing reaction exists in Reactome but its UUID never made it
+        # into the network (e.g. dropped for having no I/O) — nothing to proxy.
+        network = pd.DataFrame({"source_id": ["u-a"], "target_id": ["u-b"]})
+        reaction_id_map = pd.DataFrame({"uid": [], "reactome_id": []})
+        reactome_id_to_uuid = {"u-a": "R-HSA-A", "u-b": "R-HSA-B"}
+        df = self._write(
+            tmp_path, network, reaction_id_map, reactome_id_to_uuid,
+            participating={"R-HSA-C"},
+            entity_reactions={"R-HSA-C": {"output": ["R-HSA-MISSING"]}},
+        )
+        assert df.empty or "R-HSA-C" not in set(df["entity_stable_id"])

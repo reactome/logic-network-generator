@@ -27,6 +27,7 @@ ruff = "^0.3.4"
 pre-commit = "^3.7.0"
 pytest = "^9.0.3"
 pytest-cov = "^7.0.0"
+linkml = "^1.11.1"
 
 [build-system]
 requires = ["poetry-core"]
@@ -39,6 +40,12 @@ plugins = ["flake8-mypy"]
 [tool.black]
 line-length = 88  # Adjust line length as needed
 target-version = ['py39']
+
+[tool.ruff.lint]
+# The codebase uses one-line guard/assignment statements pervasively
+# (`if cond: continue`, `a = x; b = y`). Those stylistic rules (E701/E702) are
+# ignored to match existing style; real issues (F, other E) stay enforced.
+ignore = ["E701", "E702"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

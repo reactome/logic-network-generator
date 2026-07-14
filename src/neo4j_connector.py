@@ -331,6 +331,102 @@ def get_top_level_pathways() -> List[Dict[str, Any]]:
         ) from e
 
 
+def get_pathway_participating_entities(pathway_id: str) -> Set[str]:
+    """Return every PhysicalEntity stId that participates in the pathway's reactions.
+
+    Walks all ReactionLikeEvents under the pathway (via hasEvent) and collects
+    the stIds of their inputs, outputs, catalysts, and regulators. This includes
+    the *intact* Complex/EntitySet entities as Reactome curates them — which is
+    exactly the set that may get decomposed into virtual variants in the logic
+    network and therefore lose their original stId from the UUID mapping.
+
+    Args:
+        pathway_id: Reactome pathway stable ID (e.g., "R-HSA-69620")
+
+    Returns:
+        Set of PhysicalEntity stable IDs.
+
+    Raises:
+        ConnectionError: If Neo4j database is not accessible
+    """
+    # Explicit, indexed patterns per role. A blanket variable-length match
+    # (e.g. ``-[*1..3]-``) over these relationship types is orders of magnitude
+    # slower and can time out on large pathways.
+    query: str = """
+        MATCH (pathway:Pathway {stId: $pathway_id})-[:hasEvent*]->(r:ReactionLikeEvent)
+        OPTIONAL MATCH (r)-[:input|output]->(io:PhysicalEntity)
+        OPTIONAL MATCH (r)-[:catalystActivity]->(:CatalystActivity)
+                         -[:physicalEntity]->(cat:PhysicalEntity)
+        OPTIONAL MATCH (r)-[:regulatedBy]->(:Regulation)
+                         -[:regulator]->(reg:PhysicalEntity)
+        RETURN COLLECT(DISTINCT io.stId)
+             + COLLECT(DISTINCT cat.stId)
+             + COLLECT(DISTINCT reg.stId) AS stids
+    """
+    try:
+        result = get_graph().run(query, pathway_id=pathway_id).data()
+        if not result:
+            return set()
+        return {s for s in result[0]["stids"] if s}
+    except Exception as e:
+        logger.error(
+            f"Error in get_pathway_participating_entities for {pathway_id}",
+            exc_info=True,
+        )
+        raise ConnectionError(
+            f"Failed to query participating entities from Neo4j at "
+            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
+            f"Original error: {str(e)}"
+        ) from e
+
+
+def get_pathway_entity_reactions(
+    pathway_id: str, entity_ids: List[str]
+) -> Dict[str, Dict[str, List[str]]]:
+    """For each entity, the pathway reactions that output (produce) or input it.
+
+    Args:
+        pathway_id: Reactome pathway stable ID (e.g., "R-HSA-195721")
+        entity_ids: PhysicalEntity stIds to look up.
+
+    Returns:
+        ``{entity_stId: {"output": [reaction_stId, ...],
+                          "input":  [reaction_stId, ...]}}``
+        Entities with no participating reaction in the pathway are absent.
+
+    Raises:
+        ConnectionError: If Neo4j database is not accessible
+    """
+    if not entity_ids:
+        return {}
+    query: str = """
+        MATCH (pathway:Pathway {stId: $pathway_id})-[:hasEvent*]->(r:ReactionLikeEvent)
+        MATCH (r)-[rel:input|output]->(e:PhysicalEntity)
+        WHERE e.stId IN $entity_ids
+        RETURN e.stId AS entity, type(rel) AS rel,
+               COLLECT(DISTINCT r.stId) AS reactions
+    """
+    try:
+        result = get_graph().run(
+            query, pathway_id=pathway_id, entity_ids=list(entity_ids)
+        ).data()
+        out: Dict[str, Dict[str, List[str]]] = {}
+        for row in result:
+            out.setdefault(row["entity"], {})[row["rel"]] = [
+                rid for rid in row["reactions"] if rid
+            ]
+        return out
+    except Exception as e:
+        logger.error(
+            f"Error in get_pathway_entity_reactions for {pathway_id}", exc_info=True
+        )
+        raise ConnectionError(
+            f"Failed to query entity reactions from Neo4j at "
+            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
+            f"Original error: {str(e)}"
+        ) from e
+
+
 def get_pathway_name(pathway_id: str) -> str:
     """Get the display name for a pathway by its stable ID.
 

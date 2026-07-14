@@ -1,0 +1,238 @@
+id: https://reactome.org/logic-network-generator/schema/logic_network
+name: logic_network
+title: Reactome Logic Network Output Schema
+description: >-
+  Machine-readable contract for the files the logic-network-generator (LNG)
+  emits for a single Reactome pathway. These files are consumed by deltasignal
+  (signal-propagation solver), the benchmark harness (mapping to experimental /
+  curator tests), and the web UI (overlaying results on Reactome pathway
+  diagrams).
+
+  The network is a signed logic graph over UUID-keyed NODES. A node is one
+  biological entity as it appears at a position in the pathway: a simple entity
+  (protein / small molecule), a bundled complex, a set-VARIANT of a complex
+  (the complex with one specific choice per internal EntitySet), or a synthetic
+  boundary node (assembly leaf / dissociation sink) or catalyst/regulator
+  variant. Complexes are NEVER broken into their individual members; they are
+  only split along their internal EntitySets ("break apart by sets"), which is
+  what set_variant nodes record.
+
+  Provenance is normalized by grain: intrinsic 1:1 / fixed-multivalued node
+  attributes live on Node; the independent many-to-many Node<->reaction
+  relationship (with its own `role`) lives in NodeReactionContext.
+license: Apache-2.0
+default_range: string
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  lng: https://reactome.org/logic-network-generator/schema/
+  reactome: https://reactome.org/content/detail/
+default_prefix: lng
+
+imports:
+  - linkml:types
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+enums:
+  NodeKind:
+    description: What a logic-network node represents.
+    permissible_values:
+      simple_entity:
+        description: A single protein, small molecule, or other atomic entity.
+      simple_complex:
+        description: A Complex with no internal EntitySet — one bundled node.
+      set_variant:
+        description: >-
+          A Complex containing one or more EntitySets, resolved to ONE specific
+          choice per set. diagram_entity_id is the parent complex; chosen_members
+          / source_sets record the choice.
+      dissociation_sink:
+        description: >-
+          Synthetic per-occurrence readout node for a member released from a
+          terminal-output complex. Has incoming edges, no outgoing edges.
+      assembly_leaf:
+        description: >-
+          Synthetic shared handle for a member feeding a root-input complex via
+          an assembly edge.
+      regulator_variant:
+        description: A set-variant produced by catalyst / negative-regulator decomposition.
+      reaction:
+        description: A virtual-reaction node (edges route input->reaction->output).
+      other:
+        description: Fallback for anything not otherwise classified.
+
+  EdgeType:
+    description: The biological meaning of an edge.
+    permissible_values:
+      input:      {description: Entity consumed by a reaction.}
+      output:     {description: Entity produced by a reaction.}
+      catalyst:   {description: Catalyst that accelerates a reaction.}
+      regulator:  {description: Positive or negative regulator of a reaction.}
+      depletion:  {description: Catalyst -> substrate; catalyst removes its substrate (divide-form inhibition).}
+      assembly:   {description: Member -> complex; the complex requires the member (root-input boundary).}
+      dissociation: {description: Complex -> released member readout sink (terminal-output boundary).}
+      handoff:    {description: "Producer output -> consumer input across a curated precedingEvent link where they share a component carrier (bundling would otherwise drop the connection). Positive OR activator."}
+
+  Role:
+    description: >-
+      How a node participates in a reaction. Regulator sign (positive vs
+      negative) is carried by the corresponding edge's pos_neg; this location
+      table uses the generic ``regulator`` role.
+    permissible_values:
+      input: {}
+      output: {}
+      catalyst: {}
+      regulator: {}
+      positive_regulator: {}
+      negative_regulator: {}
+
+  PosNeg:
+    permissible_values:
+      pos: {description: Activating / positive influence.}
+      neg: {description: Inhibiting / negative influence.}
+
+  AndOr:
+    permissible_values:
+      and: {description: All inputs required (AND aggregation).}
+      or:  {description: Any input suffices (OR aggregation).}
+
+# ---------------------------------------------------------------------------
+# Slots
+# ---------------------------------------------------------------------------
+slots:
+  uuid:
+    description: Stable UUID identifying a node within this pathway's logic network.
+    identifier: true
+    range: string
+  node_kind:
+    range: NodeKind
+    required: true
+  diagram_entity_id:
+    description: >-
+      The Reactome stable ID a pathway diagram renders for this node — the key
+      for UI overlay and for collapsing per-UUID results to per-Reactome-ID
+      values. For a set_variant this is the PARENT complex stId; for a simple
+      entity/complex it is the entity's own stId; for a reaction it is the
+      reaction stId.
+    range: string
+    required: true
+  compartment:
+    description: Reactome compartment display name, if known.
+    range: string
+    required: false
+  member_leaves:
+    description: >-
+      Terminal leaf entity stIds (genes / proteins / small molecules) contained
+      in this node. Enables gene-knockout -> node mapping for the tests without
+      parsing the node id. Empty for atomic simple entities and reactions.
+    range: string
+    multivalued: true
+    required: false
+  source_sets:
+    description: EntitySet stIds this node was split on (empty unless a set was resolved).
+    range: string
+    multivalued: true
+    required: false
+  chosen_members:
+    description: The specific set-member stId(s) selected in this set_variant.
+    range: string
+    multivalued: true
+    required: false
+
+  # NodeReactionContext slots
+  context_node:
+    description: The node participating in the reaction.
+    range: Node
+    required: true
+  reaction_id:
+    description: Reactome stable ID of the reaction (ReactionLikeEvent).
+    range: string
+    required: true
+  role:
+    range: Role
+    required: true
+
+  # Edge slots
+  source_id:
+    range: Node
+    required: true
+  target_id:
+    range: Node
+    required: true
+  pos_neg:
+    range: PosNeg
+    required: true
+  and_or:
+    range: AndOr
+    required: false
+  edge_type:
+    range: EdgeType
+    required: true
+  stoichiometry:
+    range: integer
+    required: false
+  edge_reaction_id:
+    description: >-
+      Reactome reaction this edge was derived from (null for synthetic boundary
+      edges). Lets the UI colour reactions and identifies where reactions were
+      split by sets.
+    range: string
+    required: false
+
+# ---------------------------------------------------------------------------
+# Classes  (one class per output table + a container)
+# ---------------------------------------------------------------------------
+classes:
+  Node:
+    description: One node of the logic network. Serialized as a row in nodes.csv.
+    slots:
+      - uuid
+      - node_kind
+      - diagram_entity_id
+      - compartment
+      - member_leaves
+      - source_sets
+      - chosen_members
+
+  NodeReactionContext:
+    description: >-
+      A (node, reaction, role) participation. Serialized as a row in
+      node_reaction_context.csv. Many rows per node (a merged UUID appears in
+      several reactions); this is the location layer for diagram placement.
+    slots:
+      - context_node
+      - reaction_id
+      - role
+
+  Edge:
+    description: One signed logic edge. Serialized as a row in edges.csv (logic_network.csv).
+    slots:
+      - source_id
+      - target_id
+      - pos_neg
+      - and_or
+      - edge_type
+      - stoichiometry
+      - edge_reaction_id
+
+  LogicNetwork:
+    description: Container for one pathway's logic network (tree root for validation).
+    tree_root: true
+    attributes:
+      pathway_id:
+        description: Reactome stable ID of the pathway this network was generated for.
+        range: string
+      nodes:
+        range: Node
+        multivalued: true
+        inlined_as_list: true
+      node_reaction_contexts:
+        range: NodeReactionContext
+        multivalued: true
+        inlined_as_list: true
+      edges:
+        range: Edge
+        multivalued: true
+        inlined_as_list: true

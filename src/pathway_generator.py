@@ -8,6 +8,9 @@ from src.argument_parser import logger
 from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.logic_network_generator import (
     create_pathway_logic_network,
+    export_entity_reaction_proxy_mapping,
+    export_node_reaction_context,
+    export_nodes,
     export_uuid_to_reactome_mapping,
 )
 from src.neo4j_connector import get_reaction_connections
@@ -119,10 +122,17 @@ def generate_pathway_file(
                 logger.warning(f"Could not cache decomposition results: {e}")
                 # Continue without caching
 
+        # Augment connectivity with curator-drawn diagram flow (product->substrate
+        # pairs the diagram links but precedingEvent may omit — esp. old pathways).
+        # Only the connectivity/merge step sees this; the matching layer above
+        # stays on pure precedingEvent. See reactome/logic-network-generator#39.
+        from src.diagram_connectivity import augment_reaction_connections
+        connectivity = augment_reaction_connections(pathway_id, reaction_connections)
+
         # Generate logic network
         logger.info("Creating pathway logic network...")
         result = create_pathway_logic_network(
-            decomposed_uid_mapping, reaction_connections, best_matches
+            decomposed_uid_mapping, connectivity, best_matches
         )
 
         # Save logic network (main output file users need)
@@ -149,6 +159,45 @@ def generate_pathway_file(
         except IOError as e:
             logger.error(f"Failed to write stable ID to UUID mapping file {uuid_to_reactome_file}: {e}")
             # Don't raise - this is supplementary
+
+        # Export entity→reaction proxy mapping. Curated species (often Complexes)
+        # that were expanded into virtual variants lose their own stId from the
+        # UUID mapping; this file points each such species at the UUIDs of the
+        # reactions that produce (or, failing that, consume) it, so consumers can
+        # read reaction flux as a proxy for the species' state.
+        proxy_mapping_file = pathway_output_dir / "entity_reaction_proxy_mapping.csv"
+        try:
+            export_entity_reaction_proxy_mapping(
+                result.logic_network,
+                result.reaction_id_map,
+                result.uuid_mapping,
+                pathway_id,
+                str(proxy_mapping_file),
+            )
+            logger.info(f"Successfully exported entity-reaction proxy mapping: {proxy_mapping_file}")
+        except Exception as e:
+            logger.error(f"Failed to write entity-reaction proxy mapping file {proxy_mapping_file}: {e}")
+            # Don't raise - this is supplementary
+
+        # Schema-backed provenance files (schema/logic_network.linkml.yaml):
+        # nodes.csv (node_kind, diagram_entity_id, member_leaves, set provenance)
+        # and node_reaction_context.csv (node<->reaction location layer).
+        try:
+            export_nodes(
+                result.logic_network,
+                result.reaction_id_map,
+                result.uuid_mapping,
+                str(pathway_output_dir / "nodes.csv"),
+            )
+            export_node_reaction_context(
+                result.entity_uuid_registry,
+                result.reaction_id_map,
+                result.catalyst_regulator_map,
+                str(pathway_output_dir / "node_reaction_context.csv"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to write node provenance files: {e}", exc_info=True)
+            # Don't raise - supplementary
 
         logger.info(f"Output directory: {pathway_output_dir}")
 
