@@ -146,7 +146,11 @@ class TestAllPathwaysHaveValidStructure:
 
         assert len(logic_network) > 0, "Logic network is empty"
 
-        valid_edge_types = {"input", "output", "catalyst", "regulator"}
+        # Must match the EdgeType enum in schema/logic_network.linkml.yaml.
+        valid_edge_types = {
+            "input", "output", "catalyst", "regulator",
+            "depletion", "assembly", "dissociation", "handoff",
+        }
         actual_types = set(logic_network["edge_type"].unique())
         invalid = actual_types - valid_edge_types
         assert len(invalid) == 0, f"Invalid edge_type values: {invalid}"

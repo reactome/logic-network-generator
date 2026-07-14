@@ -400,7 +400,8 @@ class TestAutophagyEdgeProperties:
 
     def test_valid_edge_types(self, logic_network_sample):
         """All edge types should be valid."""
-        valid = {'input', 'output', 'catalyst', 'regulator'}
+        valid = {'input', 'output', 'catalyst', 'regulator',
+                 'depletion', 'assembly', 'dissociation', 'handoff'}
         edge_types = set(logic_network_sample['edge_type'].unique())
         invalid = edge_types - valid
         assert len(invalid) == 0, f"Invalid edge types: {invalid}"

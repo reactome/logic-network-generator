@@ -244,23 +244,35 @@ class TestInterReactionConnectivity:
         assert uuid_from_vr1 == uuid_at_vr2
         assert uuid_from_vr3 == uuid_at_vr2
 
-    def test_no_duplicate_edges(self):
-        """Duplicate terminal IDs from decomposition should not produce duplicate edges.
+    def test_no_duplicate_edges(self, monkeypatch):
+        """_resolve_vr_entities must emit each node once (Set-deduped).
 
-        When multiple decomposition paths converge on the same terminal Reactome ID,
-        _resolve_to_terminal_reactome_ids returns duplicates. _resolve_vr_entities
-        must deduplicate them so Phase 3 doesn't create duplicate edges.
+        Since set-variant emission, node identities come from the reaction's
+        annotated input/output entities (mapped to nodes), and duplicates are
+        collapsed via a set. We mock the two Neo4j calls the resolver makes:
+        the reaction's annotated entities and their labels (simple proteins).
         """
-        # Build a uid_index where hash "vr1-input" resolves to terminal ID "9933417"
-        # via two different nested paths, producing duplicates without dedup.
-        # uid_index maps hash -> (nested_uids, terminal_ids, stoich_map)
+        import src.logic_network_generator as m
+        from src import neo4j_connector
+
+        # Reaction "1" annotates one simple-protein input and one output.
+        monkeypatch.setattr(
+            neo4j_connector, "get_reaction_input_output_ids",
+            lambda rid, io: {"9933417"} if io == "input" else {"12345"},
+        )
+        # Both entities are simple (not complexes/sets) -> mapped to themselves.
+        monkeypatch.setattr(
+            neo4j_connector, "get_labels",
+            lambda e: ["EntityWithAccessionedSequence"],
+        )
+
+        # input_hash resolves to member "9933417" via two convergent paths.
         uid_index = {
-            "vr1-input": (["nested-1", "nested-2"], set(), {}),  # two nested paths, no direct terminals
-            "nested-1": ([], {"9933417"}, {"9933417": 1}),  # both nested paths resolve to same terminal
+            "vr1-input": (["nested-1", "nested-2"], set(), {}),
+            "nested-1": ([], {"9933417"}, {"9933417": 1}),
             "nested-2": ([], {"9933417"}, {"9933417": 1}),
             "vr1-output": ([], {"12345"}, {"12345": 1}),
         }
-
         reaction_id_map = pd.DataFrame({
             "uid": ["vr1"],
             "input_hash": ["vr1-input"],
@@ -269,17 +281,10 @@ class TestInterReactionConnectivity:
         })
 
         vr_entities = _resolve_vr_entities(reaction_id_map, uid_index)
+        input_ids, output_ids, _in_stoich, _out_stoich = vr_entities["vr1"]
 
-        input_ids, output_ids, input_stoich, output_stoich = vr_entities["vr1"]
-
-        # _resolve_to_terminal_reactome_ids now returns dict (deduped by key),
-        # but stoichiometry accumulates: 1 + 1 = 2 from two nested paths
-        assert len(input_ids) == 1, (
-            f"Expected 1 unique input ID, got {len(input_ids)}: {input_ids}"
-        )
-        assert input_ids[0] == "9933417"
-        assert input_stoich["9933417"] == 2  # stoichiometry adds: 1 from nested-1 + 1 from nested-2
-        assert len(output_ids) == 1
+        assert input_ids == ["9933417"], f"expected one deduped input, got {input_ids}"
+        assert output_ids == ["12345"], f"expected one output, got {output_ids}"
 
     def test_root_input_same_entity_gets_one_uuid(self):
         """Root input entity appearing at multiple reactions should share one UUID."""

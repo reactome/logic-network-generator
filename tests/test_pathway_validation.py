@@ -146,7 +146,10 @@ class TestPathwayValidation:
         valid_pos_neg = {'pos', 'neg'}
         assert set(logic_network['pos_neg'].dropna().unique()).issubset(valid_pos_neg)
 
-        valid_edge_types = {'input', 'output', 'catalyst', 'regulator'}
+        valid_edge_types = {
+            "input", "output", "catalyst", "regulator",
+            "depletion", "assembly", "dissociation", "handoff",
+        }
         assert set(logic_network['edge_type'].unique()).issubset(valid_edge_types)
 
     def test_regulators_present(self, graph, pathway_files):

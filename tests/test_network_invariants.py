@@ -70,7 +70,10 @@ class TestNetworkInvariants:
 
     def test_valid_edge_types(self, network):
         """All edge_type values must be valid."""
-        valid_edge_types = {'input', 'output', 'catalyst', 'regulator'}
+        valid_edge_types = {
+            "input", "output", "catalyst", "regulator",
+            "depletion", "assembly", "dissociation", "handoff",
+        }
         actual = set(network['edge_type'].unique())
         invalid = actual - valid_edge_types
         assert len(invalid) == 0, f"Invalid edge_type values: {invalid}"
