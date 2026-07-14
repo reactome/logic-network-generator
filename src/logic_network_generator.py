@@ -527,7 +527,7 @@ def _complex_variant_leafsets(complex_id: str) -> List[frozenset]:
         if "Complex" in labels and _complex_contains_entity_set(member_id):
             per_component_choices.append(_complex_variant_leafsets(member_id))
         elif (
-            any(l in labels for l in ("EntitySet", "DefinedSet", "CandidateSet"))
+            any(lbl in labels for lbl in ("EntitySet", "DefinedSet", "CandidateSet"))
             and member_id not in _UBIQUITIN_ENTITY_SET_IDS
         ):
             choices = [frozenset(get_terminal_components(sm)) for sm in get_set_members(member_id)]
@@ -587,7 +587,7 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
                 return {str(entity_id)}  # no fit → fall back to plain complex
         return {f"{entity_id}::variant::{'_'.join(sorted(chosen))}"}
 
-    if any(l in labels for l in ("EntitySet", "DefinedSet", "CandidateSet")):
+    if any(lbl in labels for lbl in ("EntitySet", "DefinedSet", "CandidateSet")):
         if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
             return {str(entity_id)}
         present = get_terminal_components(entity_id) & member_set
@@ -954,7 +954,7 @@ def _emit_substrate_depletion_edges(
     seen_uuids: Set[str] = set()
     for edge in pathway_logic_network_data:
         for uid in (edge.get("source_id"), edge.get("target_id")):
-            if uid in seen_uuids: continue
+            if not uid or uid in seen_uuids: continue
             seen_uuids.add(uid)
             sid = reactome_id_to_uuid.get(uid, "")
             if sid:
@@ -1057,9 +1057,9 @@ def _node_leaves(node_id: str) -> frozenset:
             s = set(get_terminal_components(node_id)) if "Complex" in get_labels(node_id) else {node_id}
         except Exception:
             s = {node_id}
-    s = frozenset(s - _COFACTOR_STIDS - _UBIQUITIN_STIDS)
-    _handoff_leaf_cache[node_id] = s
-    return s
+    leaves = frozenset(s - _COFACTOR_STIDS - _UBIQUITIN_STIDS)
+    _handoff_leaf_cache[node_id] = leaves
+    return leaves
 
 
 def _emit_precedingevent_handoff_edges(
@@ -1245,7 +1245,7 @@ def _emit_boundary_decomposition_edges(
     seen_edges: Set[tuple] = set()
     assembly_count = 0
     for complex_uuid in root_uuids:
-        stid = reactome_id_to_uuid.get(complex_uuid)
+        stid = reactome_id_to_uuid.get(complex_uuid) or ""
         if not stid or not _is_complex(stid):
             continue
         leaves = get_terminal_components(stid)
@@ -1268,7 +1268,7 @@ def _emit_boundary_decomposition_edges(
 
     dissociation_count = 0
     for complex_uuid in terminal_uuids:
-        stid = reactome_id_to_uuid.get(complex_uuid)
+        stid = reactome_id_to_uuid.get(complex_uuid) or ""
         if not stid or not _is_complex(stid):
             continue
         leaves = get_terminal_components(stid)
@@ -1976,8 +1976,8 @@ def _derive_sets_and_chosen(parent_complex: str, member_leaves: Set[str]) -> tup
         sets, chooser = _sets_chosen_cache[parent_complex]
     else:
         from src.neo4j_connector import get_labels, get_complex_components, get_set_members
-        sets: List[str] = []
-        chooser: Dict[str, List[tuple]] = {}
+        sets = []
+        chooser = {}
         try:
             comps = get_complex_components(parent_complex)
         except Exception:
@@ -1987,7 +1987,7 @@ def _derive_sets_and_chosen(parent_complex: str, member_leaves: Set[str]) -> tup
                 labels = get_labels(m)
             except Exception:
                 continue
-            if any(l in labels for l in ("EntitySet", "DefinedSet", "CandidateSet")):
+            if any(lbl in labels for lbl in ("EntitySet", "DefinedSet", "CandidateSet")):
                 sets.append(str(m))
                 for sm in get_set_members(m):
                     chooser.setdefault(str(m), []).append(
@@ -2087,27 +2087,27 @@ def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
     seen: Set[tuple] = set()
     rows: List[Dict[str, Any]] = []
 
-    for (eid, vr_uid, role), uuid in (entity_uuid_registry or {}).items():
+    for (eid, vr_uid, role), node_uuid in (entity_uuid_registry or {}).items():
         rid = vr_to_reaction.get(str(vr_uid))
         if rid is None or role not in ("input", "output"):
             continue
-        key = (str(uuid), rid, role)
+        key = (str(node_uuid), rid, role)
         if key in seen:
             continue
         seen.add(key)
-        rows.append({"context_node": str(uuid), "reaction_id": rid, "role": role})
+        rows.append({"context_node": str(node_uuid), "reaction_id": rid, "role": role})
 
     if catalyst_regulator_map is not None and not catalyst_regulator_map.empty:
         for _, r in catalyst_regulator_map.iterrows():
-            uuid = r.get("uuid"); rid = r.get("reaction_id"); et = str(r.get("edge_type"))
-            if pd.isna(uuid) or pd.isna(rid):
+            cr_uuid = r.get("uuid"); rid = r.get("reaction_id"); et = str(r.get("edge_type"))
+            if pd.isna(cr_uuid) or pd.isna(rid):
                 continue
             role = "catalyst" if et == "catalyst" else "regulator"
-            key = (str(uuid), str(rid), role)
+            key = (str(cr_uuid), str(rid), role)
             if key in seen:
                 continue
             seen.add(key)
-            rows.append({"context_node": str(uuid), "reaction_id": str(rid), "role": role})
+            rows.append({"context_node": str(cr_uuid), "reaction_id": str(rid), "role": role})
 
     cols = ["context_node", "reaction_id", "role"]
     pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
