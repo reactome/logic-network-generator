@@ -1,3 +1,4 @@
+import os
 import uuid
 from typing import Dict, List, Any, NamedTuple, Optional, Set, Tuple
 
@@ -26,6 +27,7 @@ class PathwayResult(NamedTuple):
     uuid_mapping: Dict[str, str]
     catalyst_regulator_map: pd.DataFrame
     reaction_id_map: pd.DataFrame
+    entity_uuid_registry: Dict[tuple, str] = {}
 
 
 def _get_reactome_id_from_hash(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> str:
@@ -487,31 +489,161 @@ def _build_reactome_to_vr_map(reaction_id_map: pd.DataFrame) -> Dict[str, List[s
     return reactome_to_vr
 
 
+def _parse_variant_members(variant_id: str) -> Set[str]:
+    """Terminal member stIds encoded in a ``{parent}::variant::{m1_m2}`` id."""
+    if "::variant::" not in variant_id:
+        return set()
+    tail = variant_id.split("::variant::", 1)[1]
+    return {m for m in tail.split("_") if m}
+
+
+_variant_leafsets_cache: Dict[str, List[frozenset]] = {}
+
+
+def _complex_variant_leafsets(complex_id: str) -> List[frozenset]:
+    """Enumerate a complex's set-variants as FULL terminal-leaf sets.
+
+    One frozenset per variant, each the complete terminal membership of that
+    variant (fixed components + one choice per internal EntitySet + recursively
+    for nested complexes). Unlike :func:`_expand_complex_variants` this returns
+    flat leaf sets (no nested ``::variant::`` ids), which is what the emission
+    node id and the member-set matching need.
+    """
+    import itertools
+    from src.neo4j_connector import get_labels, get_complex_components, get_set_members
+
+    if complex_id in _variant_leafsets_cache:
+        return _variant_leafsets_cache[complex_id]
+
+    components = get_complex_components(complex_id)
+    if not components:
+        result = [frozenset(get_terminal_components(complex_id))]
+        _variant_leafsets_cache[complex_id] = result
+        return result
+
+    per_component_choices: List[List[frozenset]] = []
+    for member_id in components:
+        labels = get_labels(member_id)
+        if "Complex" in labels and _complex_contains_entity_set(member_id):
+            per_component_choices.append(_complex_variant_leafsets(member_id))
+        elif (
+            any(l in labels for l in ("EntitySet", "DefinedSet", "CandidateSet"))
+            and member_id not in _UBIQUITIN_ENTITY_SET_IDS
+        ):
+            choices = [frozenset(get_terminal_components(sm)) for sm in get_set_members(member_id)]
+            per_component_choices.append(choices or [frozenset(get_terminal_components(member_id))])
+        else:
+            per_component_choices.append([frozenset(get_terminal_components(member_id))])
+
+    variants: List[frozenset] = []
+    seen: Set[frozenset] = set()
+    for combo in itertools.product(*per_component_choices):
+        leaves = frozenset().union(*combo) if combo else frozenset()
+        if leaves and leaves not in seen:
+            seen.add(leaves)
+            variants.append(leaves)
+    result = variants or [frozenset(get_terminal_components(complex_id))]
+    _variant_leafsets_cache[complex_id] = result
+    return result
+
+
+def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[str]:
+    """Map one reaction-annotated input/output entity to its emission node(s).
+
+    This is where "a complex is a single node, split only by its internal sets"
+    is enforced — at *emission* time, using the reaction's real annotated
+    entities (unambiguous), not the content-addressed matching hashes.
+
+    * simple entity / simple complex → the entity's own stId (one bundled node)
+    * complex-that-contains-a-set → the specific set-VARIANT node selected by
+      this virtual reaction, named ``{complex}::variant::{sorted members}``.
+      The variant is chosen by matching its members against ``member_set`` (the
+      terminal members this VR actually resolved to), so we pick the right
+      alternative rather than emitting all of them.
+    * bare EntitySet → the terminal member(s) present in this VR (sets expand)
+    """
+    from src.neo4j_connector import get_labels
+    labels = get_labels(entity_id)
+
+    if "Complex" in labels:
+        if not _complex_contains_entity_set(entity_id):
+            return {str(entity_id)}  # simple complex → single bundled node
+        # Set-variant node: OUTERMOST complex stId + a FLAT sorted list of the
+        # variant's FULL terminal membership. We enumerate the complex's true
+        # variants (each with complete membership) and pick the one this VR
+        # selected — the variant whose leaves are all present in member_set
+        # (largest such, to prefer the fullest match). Enumerating true variants
+        # (rather than intersecting all-possible-leaves with member_set) avoids
+        # emitting spurious partial variants missing a subunit. Id is kept flat
+        # so the parent is always ``id.split("::variant::")[0]``.
+        variant_leafsets = _complex_variant_leafsets(entity_id)
+        subset = [ls for ls in variant_leafsets if ls <= member_set]
+        if subset:
+            chosen = max(subset, key=len)
+        else:
+            chosen = max(variant_leafsets, key=lambda ls: len(ls & member_set),
+                         default=frozenset())
+            if not (chosen & member_set):
+                return {str(entity_id)}  # no fit → fall back to plain complex
+        return {f"{entity_id}::variant::{'_'.join(sorted(chosen))}"}
+
+    if any(l in labels for l in ("EntitySet", "DefinedSet", "CandidateSet")):
+        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+            return {str(entity_id)}
+        present = get_terminal_components(entity_id) & member_set
+        return present if present else {str(entity_id)}
+
+    return {str(entity_id)}  # simple entity (protein / small molecule / …)
+
+
 def _resolve_vr_entities(
     reaction_id_map: pd.DataFrame,
     uid_index: Dict[str, tuple]
 ) -> Dict[str, tuple]:
-    """Resolve each virtual reaction's input/output hashes to terminal Reactome IDs.
+    """Resolve each virtual reaction's inputs/outputs to emission NODES.
+
+    A node is a bundled complex (or set-variant of one), a bare-set member, or a
+    free simple entity — NOT the complex's individual member proteins. The
+    matching layer (content hashes) is used only to learn which terminal members
+    this VR selected; the node *identities* come from the reaction's real
+    annotated entities via :func:`_map_annotated_entity_to_nodes`, which keeps
+    parent-complex provenance unambiguous (content hashes collide across
+    complexes with identical member content).
 
     Caches the resolution so Phase 2 and Phase 3 don't re-resolve.
 
-    Args:
-        reaction_id_map: DataFrame with 'uid', 'input_hash', 'output_hash' columns
-        uid_index: Pre-built lookup index from _build_uid_index
-
     Returns:
-        Dict mapping vr_uid -> (input_reactome_ids, output_reactome_ids,
+        Dict mapping vr_uid -> (input_node_ids, output_node_ids,
                                 input_stoich_map, output_stoich_map)
-        where stoich maps are Dict[str, int] mapping entity_id → stoichiometry
     """
+    from src.neo4j_connector import get_reaction_input_output_ids
+
+    annotated_cache: Dict[tuple, Set[str]] = {}
+
+    def _annotated(reaction_id: str, io: str) -> Set[str]:
+        key = (reaction_id, io)
+        if key not in annotated_cache:
+            annotated_cache[key] = set(get_reaction_input_output_ids(reaction_id, io))
+        return annotated_cache[key]
+
     vr_entities: Dict[str, tuple] = {}
     for _, row in reaction_id_map.iterrows():
         vr_uid = row["uid"]
-        input_stoich = _resolve_to_terminal_reactome_ids(uid_index, row["input_hash"])
-        output_stoich = _resolve_to_terminal_reactome_ids(uid_index, row["output_hash"])
-        input_ids = list(input_stoich.keys())
-        output_ids = list(output_stoich.keys())
-        vr_entities[vr_uid] = (input_ids, output_ids, input_stoich, output_stoich)
+        reaction_id = str(row["reactome_id"])
+        input_members = set(_resolve_to_terminal_reactome_ids(uid_index, row["input_hash"]))
+        output_members = set(_resolve_to_terminal_reactome_ids(uid_index, row["output_hash"]))
+
+        input_ids: Set[str] = set()
+        for e in _annotated(reaction_id, "input"):
+            input_ids |= _map_annotated_entity_to_nodes(str(e), input_members)
+        output_ids: Set[str] = set()
+        for e in _annotated(reaction_id, "output"):
+            output_ids |= _map_annotated_entity_to_nodes(str(e), output_members)
+
+        vr_entities[vr_uid] = (
+            list(input_ids), list(output_ids),
+            {n: 1 for n in input_ids}, {n: 1 for n in output_ids},
+        )
     return vr_entities
 
 
@@ -905,6 +1037,128 @@ def _emit_substrate_depletion_edges(
     )
 
 
+_handoff_leaf_cache: Dict[str, frozenset] = {}
+
+
+def _node_leaves(node_id: str) -> frozenset:
+    """Non-cofactor terminal leaf stIds contained in a node id.
+
+    variant node → the leaves encoded after ``::variant::``; simple complex →
+    its terminal components; anything else → itself. Cofactors and ubiquitin are
+    excluded so they can't act as spurious connectivity carriers.
+    """
+    if node_id in _handoff_leaf_cache:
+        return _handoff_leaf_cache[node_id]
+    if "::variant::" in node_id:
+        s = {m for m in node_id.split("::variant::")[-1].split("_") if m.startswith("R-")}
+    else:
+        try:
+            from src.neo4j_connector import get_labels
+            s = set(get_terminal_components(node_id)) if "Complex" in get_labels(node_id) else {node_id}
+        except Exception:
+            s = {node_id}
+    s = frozenset(s - _COFACTOR_STIDS - _UBIQUITIN_STIDS)
+    _handoff_leaf_cache[node_id] = s
+    return s
+
+
+def _emit_precedingevent_handoff_edges(
+    pathway_logic_network_data: List[Dict[str, Any]],
+    reaction_connections: pd.DataFrame,
+    reactome_to_vr: Dict[str, List[str]],
+    vr_entities: Dict[str, tuple],
+    entity_uuid_registry: Dict[tuple, str],
+) -> None:
+    """Restore curator-intended connectivity dropped by complex bundling.
+
+    A ``precedingEvent`` is the curator asserting that at least one entity flows
+    from the preceding reaction to the following one. The generator realizes that
+    only when the two reactions share a *whole* entity. But a molecule is often
+    handed off as a *component* — bound in a complex on one side, free/other-
+    complex on the other — so bundling makes them different nodes and the link is
+    lost. This is NOT a heuristic: the ``precedingEvent`` edge is in Neo4j.
+
+    Rule (per Adam): for each precedingEvent pair, do nothing if the reactions are
+    ALREADY connected by a shared whole entity (the curator's asserted entity is
+    represented). Only when they share no whole entity — yet the curator says
+    they're connected — add ONE bridge, between the output/input nodes that share
+    the most non-cofactor components (the most likely real carrier). "Skip already-
+    connected pairs" + "one bridge per gap" keeps this bounded by the number of
+    precedingEvent gaps (hundreds), not the variant×variant blow-up.
+    """
+    # Carrier specificity: a leaf that appears in many nodes is a promiscuous
+    # subunit (e.g. RBL2, a pocket protein in many complexes). Bridging on such a
+    # hub spreads a perturbation to readouts it doesn't affect (false positives).
+    # Count how many distinct nodes each leaf appears in; only leaves appearing
+    # in <= HUB_MAX nodes are allowed to act as the transferred carrier.
+    HUB_MAX = int(os.environ.get("LNG_HANDOFF_HUB_MAX", "3"))
+    leaf_nodes: Dict[str, set] = {}
+    all_node_ids: Set[str] = set()
+    for (ins_, outs_, _si, _so) in vr_entities.values():
+        all_node_ids.update(ins_); all_node_ids.update(outs_)
+    for nid in all_node_ids:
+        for lf in _node_leaves(nid):
+            leaf_nodes.setdefault(lf, set()).add(nid)
+    specific = {lf for lf, ns in leaf_nodes.items() if len(ns) <= HUB_MAX}
+
+    existing = {(e["source_id"], e["target_id"]) for e in pathway_logic_network_data}
+    seen: Set[tuple] = set()
+    n = 0
+    for _, conn in reaction_connections.iterrows():
+        pre = conn.get("preceding_reaction_id"); fol = conn.get("following_reaction_id")
+        if pd.isna(pre) or pd.isna(fol):
+            continue
+        # Gather (node_id, uuid) for the preceding reaction's outputs and the
+        # following reaction's inputs, across all their virtual reactions.
+        outs = []
+        for p_vr in reactome_to_vr.get(pre, []):
+            for on in vr_entities.get(p_vr, ([], [], {}, {}))[1]:
+                u = entity_uuid_registry.get((on, p_vr, "output"))
+                if u:
+                    outs.append((on, u))
+        ins = []
+        for f_vr in reactome_to_vr.get(fol, []):
+            for inn in vr_entities.get(f_vr, ([], [], {}, {}))[0]:
+                u = entity_uuid_registry.get((inn, f_vr, "input"))
+                if u:
+                    ins.append((inn, u))
+        if not outs or not ins:
+            continue
+        # Already connected? (whole-entity match -> Phase 2 gave a shared UUID)
+        if {u for _, u in outs} & {u for _, u in ins}:
+            continue
+        # Otherwise bridge the single best output/input node pair, scored by the
+        # number of shared SPECIFIC (non-hub) carrier components. A pair sharing
+        # only hub subunits scores 0 and is not bridged.
+        best = None; best_n = 0
+        for on, ou in outs:
+            lon = _node_leaves(on) & specific
+            if not lon:
+                continue
+            for inn, iu in ins:
+                if ou == iu:
+                    continue
+                sh = len(lon & _node_leaves(inn))
+                if sh > best_n:
+                    best_n = sh; best = (ou, iu)
+        if best and best_n > 0 and best[0] != best[1] and best not in existing and best not in seen:
+            seen.add(best)
+            pathway_logic_network_data.append({
+                "source_id": best[0],
+                "target_id": best[1],
+                "pos_neg": "pos",
+                "and_or": "or",
+                "edge_type": "handoff",
+                "stoichiometry": 1,
+                "edge_reaction_id": None,
+            })
+            n += 1
+    logger.info(
+        f"Emitted {n} precedingEvent hand-off edges "
+        f"(one bridge per otherwise-disconnected precedingEvent gap)"
+    )
+
+
 def _emit_boundary_decomposition_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -1246,6 +1500,7 @@ def create_pathway_logic_network(
         "and_or": pd.Series(dtype="str"),
         "edge_type": pd.Series(dtype="str"),
         "stoichiometry": pd.Series(dtype="Int64"),
+        "edge_reaction_id": pd.Series(dtype="str"),
     }
     pathway_logic_network_data: List[Dict[str, Any]] = []
     
@@ -1344,9 +1599,15 @@ def create_pathway_logic_network(
     # Output edges get "or" when the entity is produced by multiple VRs.
     entity_producer_count = _build_entity_producer_count(vr_entities)
 
+    # vr_uid -> Reactome reaction stId, for edge provenance (edge_reaction_id).
+    vr_to_reaction: Dict[str, str] = dict(
+        zip(reaction_id_map["uid"].astype(str), reaction_id_map["reactome_id"].astype(str))
+    )
+
     for vr_uid, (input_ids, output_ids, input_stoich, output_stoich) in vr_entities.items():
         if not input_ids or not output_ids:
             continue
+        reaction_stid = vr_to_reaction.get(str(vr_uid))
 
         for eid in input_ids:
             input_uuid = entity_uuid_registry[(eid, vr_uid, "input")]
@@ -1357,6 +1618,7 @@ def create_pathway_logic_network(
                 "and_or": "and",
                 "edge_type": "input",
                 "stoichiometry": input_stoich.get(eid, 1),
+                "edge_reaction_id": reaction_stid,
             })
 
         for eid in output_ids:
@@ -1374,6 +1636,7 @@ def create_pathway_logic_network(
                 "and_or": and_or,
                 "edge_type": "output",
                 "stoichiometry": output_stoich.get(eid, 1),
+                "edge_reaction_id": reaction_stid,
             })
 
     # Log UUID registry statistics
@@ -1433,6 +1696,24 @@ def create_pathway_logic_network(
         reactome_id_to_uuid=reactome_id_to_uuid,
     )
 
+    # Restore curator-intended connectivity that complex-bundling drops: two
+    # precedingEvent-linked reactions that hand off a shared COMPONENT (bound in
+    # a complex on one side, free/other-complex on the other) share no whole
+    # entity, so they were left disconnected. Honoring the curated precedingEvent
+    # by bridging on the shared component was tried three ways (naive / max-shared
+    # / hub-guarded) and was net-NEGATIVE on the benchmark every time: the bridge
+    # injects roughly as much spurious coupling as real signal it recovers (same
+    # reason the member-exploded network tied set-variant at ~69%). Kept for
+    # future work but OFF by default. See memory project_complex_as_node_result.
+    if os.environ.get("LNG_HANDOFF_EDGES", "0") != "0":
+        _emit_precedingevent_handoff_edges(
+            pathway_logic_network_data=pathway_logic_network_data,
+            reaction_connections=reaction_connections,
+            reactome_to_vr=reactome_to_vr,
+            vr_entities=vr_entities,
+            entity_uuid_registry=entity_uuid_registry,
+        )
+
     # Create final DataFrame
     pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=list(columns.keys()))
     # Coerce stoichiometry to nullable Int64 — emission sites use a mix of
@@ -1466,7 +1747,8 @@ def create_pathway_logic_network(
         logic_network=pathway_logic_network,
         uuid_mapping=reactome_id_to_uuid,
         catalyst_regulator_map=catalyst_regulator_uuid_map,
-        reaction_id_map=reaction_id_map
+        reaction_id_map=reaction_id_map,
+        entity_uuid_registry=entity_uuid_registry,
     )
 
 def find_root_inputs(pathway_logic_network: pd.DataFrame) -> List[Any]:
@@ -1655,3 +1937,178 @@ def export_entity_reaction_proxy_mapping(
         f"Exported entity-reaction proxy mapping: {len(out_df)} rows "
         f"covering {n_entities} of {len(missing)} missing species"
     )
+
+
+# ---------------------------------------------------------------------------
+# Schema-backed provenance exports (see schema/logic_network.linkml.yaml)
+# ---------------------------------------------------------------------------
+def _uuid_to_stable_id_map(pathway_logic_network: pd.DataFrame,
+                           uuid_mapping: Dict[str, str]) -> Dict[str, str]:
+    """uuid -> node string id (stId or ``{parent}::variant::{members}``).
+
+    ``uuid_mapping`` (reactome_id_to_uuid) can be stored either direction; detect
+    it the same way :func:`export_uuid_to_reactome_mapping` does.
+    """
+    all_uuids: Set[str] = set()
+    all_uuids.update(pathway_logic_network["source_id"].dropna().astype(str).unique())
+    all_uuids.update(pathway_logic_network["target_id"].dropna().astype(str).unique())
+    out: Dict[str, str] = {}
+    if uuid_mapping:
+        sample = next(iter(uuid_mapping.keys()))
+        uuid_keyed = isinstance(sample, str) and sample.count("-") >= 4 and "::" not in sample
+        if uuid_keyed:
+            for u, s in uuid_mapping.items():
+                if str(u) in all_uuids:
+                    out[str(u)] = str(s)
+        else:
+            for s, u in uuid_mapping.items():
+                if str(u) in all_uuids:
+                    out[str(u)] = str(s)
+    return out
+
+
+_sets_chosen_cache: Dict[str, tuple] = {}
+
+
+def _derive_sets_and_chosen(parent_complex: str, member_leaves: Set[str]) -> tuple:
+    """(source_set_ids, chosen_member_ids) for a set_variant, from Neo4j."""
+    if parent_complex in _sets_chosen_cache:
+        sets, chooser = _sets_chosen_cache[parent_complex]
+    else:
+        from src.neo4j_connector import get_labels, get_complex_components, get_set_members
+        sets: List[str] = []
+        chooser: Dict[str, List[tuple]] = {}
+        try:
+            comps = get_complex_components(parent_complex)
+        except Exception:
+            comps = {}
+        for m in comps:
+            try:
+                labels = get_labels(m)
+            except Exception:
+                continue
+            if any(l in labels for l in ("EntitySet", "DefinedSet", "CandidateSet")):
+                sets.append(str(m))
+                for sm in get_set_members(m):
+                    chooser.setdefault(str(m), []).append(
+                        (str(sm), frozenset(get_terminal_components(sm)))
+                    )
+        _sets_chosen_cache[parent_complex] = (sets, chooser)
+    chosen: List[str] = []
+    for _set_id, options in chooser.items():
+        for sm_id, sm_leaves in options:
+            if sm_leaves & member_leaves:
+                chosen.append(sm_id)
+    return sets, chosen
+
+
+def export_nodes(pathway_logic_network: pd.DataFrame,
+                 reaction_id_map: pd.DataFrame,
+                 uuid_mapping: Dict[str, str],
+                 output_file: str) -> None:
+    """Write nodes.csv — one row per node (see schema class ``Node``).
+
+    Provenance is derived post-hoc from the node id string, the edge topology,
+    and Neo4j: node_kind, diagram_entity_id (the stId a diagram renders — parent
+    complex for a variant), member_leaves, and the set decomposition.
+    """
+    from src.neo4j_connector import get_labels
+    uuid_to_str = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
+    vr_uids = set(reaction_id_map["uid"].astype(str))
+    vr_to_reaction = dict(zip(reaction_id_map["uid"].astype(str),
+                              reaction_id_map["reactome_id"].astype(str)))
+
+    incoming_types: Dict[str, Set[str]] = {}
+    has_outgoing: Set[str] = set()
+    for _, e in pathway_logic_network.iterrows():
+        s, t = e.get("source_id"), e.get("target_id")
+        if pd.notna(s):
+            has_outgoing.add(str(s))
+        if pd.notna(t):
+            incoming_types.setdefault(str(t), set()).add(str(e.get("edge_type")))
+
+    all_uuids = set(uuid_to_str) | (vr_uids & (has_outgoing | set(incoming_types)))
+    rows: List[Dict[str, Any]] = []
+    for u in sorted(all_uuids):
+        kind = "other"; diagram = None
+        members: List[str] = []; sets: List[str] = []; chosen: List[str] = []
+        if u in vr_uids and u not in uuid_to_str:
+            kind, diagram = "reaction", vr_to_reaction.get(u)
+        else:
+            s = uuid_to_str.get(u)
+            if s is None:
+                pass
+            elif "::variant::" in s:
+                kind = "set_variant"
+                diagram = s.split("::variant::")[0]
+                members = [m for m in s.split("::variant::")[-1].split("_")
+                           if m.startswith("R-")]
+                sets, chosen = _derive_sets_and_chosen(diagram, set(members))
+            else:
+                diagram = s
+                inc = incoming_types.get(u, set())
+                if "dissociation" in inc and u not in has_outgoing:
+                    kind, members = "dissociation_sink", [s]
+                else:
+                    try:
+                        labels = get_labels(s)
+                    except Exception:
+                        labels = []
+                    if "Complex" in labels:
+                        kind = "simple_complex"
+                        try:
+                            members = sorted(get_terminal_components(s))
+                        except Exception:
+                            members = [s]
+                    else:
+                        kind, members = "simple_entity", [s]
+        rows.append({
+            "uuid": u,
+            "node_kind": kind,
+            "diagram_entity_id": diagram,
+            "compartment": None,
+            "member_leaves": "|".join(members),
+            "source_sets": "|".join(sets),
+            "chosen_members": "|".join(chosen),
+        })
+    cols = ["uuid", "node_kind", "diagram_entity_id", "compartment",
+            "member_leaves", "source_sets", "chosen_members"]
+    pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
+    logger.info(f"Exported {len(rows)} nodes with provenance: {output_file}")
+
+
+def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
+                                 reaction_id_map: pd.DataFrame,
+                                 catalyst_regulator_map: pd.DataFrame,
+                                 output_file: str) -> None:
+    """Write node_reaction_context.csv — (node, reaction, role) location rows."""
+    vr_to_reaction = dict(zip(reaction_id_map["uid"].astype(str),
+                              reaction_id_map["reactome_id"].astype(str)))
+    seen: Set[tuple] = set()
+    rows: List[Dict[str, Any]] = []
+
+    for (eid, vr_uid, role), uuid in (entity_uuid_registry or {}).items():
+        rid = vr_to_reaction.get(str(vr_uid))
+        if rid is None or role not in ("input", "output"):
+            continue
+        key = (str(uuid), rid, role)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({"context_node": str(uuid), "reaction_id": rid, "role": role})
+
+    if catalyst_regulator_map is not None and not catalyst_regulator_map.empty:
+        for _, r in catalyst_regulator_map.iterrows():
+            uuid = r.get("uuid"); rid = r.get("reaction_id"); et = str(r.get("edge_type"))
+            if pd.isna(uuid) or pd.isna(rid):
+                continue
+            role = "catalyst" if et == "catalyst" else "regulator"
+            key = (str(uuid), str(rid), role)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({"context_node": str(uuid), "reaction_id": str(rid), "role": role})
+
+    cols = ["context_node", "reaction_id", "role"]
+    pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
+    logger.info(f"Exported {len(rows)} node-reaction-context rows: {output_file}")
