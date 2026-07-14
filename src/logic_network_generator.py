@@ -238,7 +238,23 @@ def get_negative_regulators_for_reaction(
 
 def _get_non_null_values(df: pd.DataFrame, column: str) -> List[Any]:
     """Extract non-null values from a DataFrame column."""
-    return [value for value in df[column].tolist() if pd.notna(value)]
+    return [value for value in df[column].tolist() if not _is_missing_value(value)]
+
+
+def _is_missing_value(value: Any) -> bool:
+    """Return True for real nulls and stringified nulls from cached CSV reloads."""
+    if pd.isna(value):
+        return True
+    if isinstance(value, str) and value.strip() in {"None", "nan", "NaN", "<NA>"}:
+        return True
+    return False
+
+
+def _is_missing_reference_value(value: Any) -> bool:
+    """Return True when a UID/reference field should not become a graph ID."""
+    if _is_missing_value(value):
+        return True
+    return isinstance(value, str) and value.strip() == ""
 
 
 def _get_hash_for_reaction(reaction_id_map: pd.DataFrame, uid: str, hash_type: str) -> str:
@@ -256,15 +272,21 @@ def _build_uid_index(decomposed_uid_mapping: pd.DataFrame) -> Dict[str, tuple]:
     """
     index: Dict[str, tuple] = {}
     for uid_val, group in decomposed_uid_mapping.groupby("uid"):
-        nested_uids = _get_non_null_values(group, "input_or_output_uid")
-        terminal_ids = _get_non_null_values(group, "input_or_output_reactome_id")
+        nested_uids = [
+            value for value in group["input_or_output_uid"].tolist()
+            if not _is_missing_reference_value(value)
+        ]
+        terminal_ids = [
+            value for value in group["input_or_output_reactome_id"].tolist()
+            if not _is_missing_reference_value(value)
+        ]
         stoich_map: Dict[str, int] = {}
         for _, row in group.iterrows():
             stoich_raw = row.get("stoichiometry")
             stoich = 1 if stoich_raw is None or pd.isna(stoich_raw) else int(stoich_raw)
-            if pd.notna(row.get("input_or_output_uid")):
+            if not _is_missing_reference_value(row.get("input_or_output_uid")):
                 stoich_map[row["input_or_output_uid"]] = stoich
-            if pd.notna(row.get("input_or_output_reactome_id")):
+            if not _is_missing_reference_value(row.get("input_or_output_reactome_id")):
                 stoich_map[row["input_or_output_reactome_id"]] = stoich
         index[str(uid_val)] = (nested_uids, terminal_ids, stoich_map)
     return index
