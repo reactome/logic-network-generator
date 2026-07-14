@@ -3,6 +3,17 @@
 
 import os
 import sys
+
+# Determinism: the generator's output depends on set/dict iteration order, which
+# Python randomizes per-process via hash seeding — so regenerating a pathway
+# yields structurally different networks run-to-run (~5.8% of edges for TP53).
+# Pin the hash seed so generation is reproducible. PYTHONHASHSEED must be set
+# before the interpreter starts, so re-exec once if it isn't already fixed.
+# Override with LNG_ALLOW_NONDETERMINISM=1. See reactome/logic-network-generator#42.
+if os.environ.get("PYTHONHASHSEED") != "0" and os.environ.get("LNG_ALLOW_NONDETERMINISM") != "1":
+    os.environ["PYTHONHASHSEED"] = "0"
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 from typing import List, Tuple
 
 import pandas as pd
