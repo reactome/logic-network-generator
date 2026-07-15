@@ -11,6 +11,7 @@ from src.reaction_generator import (
     _complex_contains_entity_set,
     _UBIQUITIN_ENTITY_SET_IDS,
     get_terminal_components,
+    MAX_VARIANTS,
 )
 
 
@@ -520,6 +521,10 @@ def _parse_variant_members(variant_id: str) -> Set[str]:
 
 
 _variant_leafsets_cache: Dict[str, List[frozenset]] = {}
+# Complexes whose set-variant expansion exceeded MAX_VARIANTS (issue #40) and were
+# therefore bundled into one opaque node. Emission uses this to name them by their
+# plain stId rather than a giant ``::variant::<all-leaves>`` id.
+_variant_capped: Set[str] = set()
 
 
 def _complex_variant_leafsets(complex_id: str) -> List[frozenset]:
@@ -556,6 +561,23 @@ def _complex_variant_leafsets(complex_id: str) -> List[frozenset]:
             per_component_choices.append(choices or [frozenset(get_terminal_components(member_id))])
         else:
             per_component_choices.append([frozenset(get_terminal_components(member_id))])
+
+    cartesian_size = 1
+    for choices in per_component_choices:
+        cartesian_size *= max(1, len(choices))
+    if MAX_VARIANTS > 0 and cartesian_size > MAX_VARIANTS:
+        # Too many variants (issue #40): bundle the whole complex into one
+        # opaque leaf-set rather than enumerating the product. Mirrors the
+        # matching-layer cap in reaction_generator.get_broken_apart_ids so both
+        # layers agree this complex is a single node.
+        logger.warning(
+            f"variant cap hit for complex {complex_id}: {cartesian_size} "
+            f"variants > {MAX_VARIANTS}; bundling into one node"
+        )
+        _variant_capped.add(complex_id)
+        result = [frozenset(get_terminal_components(complex_id))]
+        _variant_leafsets_cache[complex_id] = result
+        return result
 
     variants: List[frozenset] = []
     seen: Set[frozenset] = set()
@@ -599,6 +621,9 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
         # emitting spurious partial variants missing a subunit. Id is kept flat
         # so the parent is always ``id.split("::variant::")[0]``.
         variant_leafsets = _complex_variant_leafsets(entity_id)
+        if entity_id in _variant_capped:
+            # Over the variant cap (issue #40): opaque bundle, named by stId.
+            return {str(entity_id)}
         subset = [ls for ls in variant_leafsets if ls <= member_set]
         if subset:
             chosen = max(subset, key=len)
