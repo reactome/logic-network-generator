@@ -1833,6 +1833,31 @@ def create_pathway_logic_network(
             entity_uuid_registry=entity_uuid_registry,
         )
 
+    # Drop fully-identical duplicate edges. Distinct virtual reactions of one
+    # curated reaction can canonicalize (union-find) to the same target node, and
+    # a catalyst/regulator attached to each then yields exact-duplicate rows
+    # (same source, target, sign, type, reaction). These are redundant — a
+    # catalyst does not catalyze the same reaction twice — and the solver would
+    # double-weight the duplicated parent in its activator aggregation. Collapse
+    # to one row each. (Observed: Pre-NOTCH 40,548 -> 27,552 edges; 39 pathways
+    # affected across the catalog.)
+    _pre_dedup = len(pathway_logic_network_data)
+    _seen_edges: Set[tuple] = set()
+    _deduped: List[Dict[str, Any]] = []
+    for _e in pathway_logic_network_data:
+        _k = (_e["source_id"], _e["target_id"], _e["pos_neg"],
+              _e["and_or"], _e["edge_type"], _e.get("edge_reaction_id", ""))
+        if _k in _seen_edges:
+            continue
+        _seen_edges.add(_k)
+        _deduped.append(_e)
+    if len(_deduped) < _pre_dedup:
+        logger.info(
+            f"Dropped {_pre_dedup - len(_deduped)} duplicate edges "
+            f"({_pre_dedup} -> {len(_deduped)})"
+        )
+    pathway_logic_network_data = _deduped
+
     # Create final DataFrame
     pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=list(columns.keys()))
     # Coerce stoichiometry to nullable Int64 — emission sites use a mix of
