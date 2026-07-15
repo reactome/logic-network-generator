@@ -690,3 +690,56 @@ class TestRegulatorVariantCap:
             f"3x3 cartesian under cap should yield 9 variants, got {len(result)}"
         )
         assert all(vid.startswith("C::variant::") for vid, _ in result)
+
+
+class TestMatchingLeavesGranularity:
+    """_matching_leaves mirrors the MATCHING layer's decomposition depth so a
+    set participant lines up with the terminal reactome-ids a VR resolved to.
+
+    The bug it fixes: get_terminal_components collapses modified species down to
+    their base reference protein (p-ERK -> ERK), while the matching layer keeps
+    the modified form. Intersecting the two came up empty, so EntitySets fell
+    back to bare, producer-less nodes. _matching_leaves keeps Complexes atomic
+    (unless they contain a set) — the same rule break_apart_entity uses.
+    """
+
+    def _clear(self):
+        import src.logic_network_generator as m
+        m._matching_leaves_cache.clear()
+
+    def test_set_of_atomic_complexes_stops_at_the_complexes(self, monkeypatch):
+        import src.logic_network_generator as m
+        from src import neo4j_connector as nc
+        self._clear()
+        # Set S -> {C1, C2}; C1,C2 are Complexes WITHOUT internal sets (atomic).
+        monkeypatch.setattr(nc, "get_labels", lambda e: {
+            "S": ["EntitySet", "DefinedSet"], "C1": ["Complex"], "C2": ["Complex"],
+        }.get(e, ["EntityWithAccessionedSequence"]))
+        monkeypatch.setattr(nc, "get_set_members",
+                            lambda e: {"C1", "C2"} if e == "S" else set())
+        monkeypatch.setattr(nc, "get_complex_components",
+                            lambda e: {"P1": 1, "P2": 1} if e in ("C1", "C2") else {})
+        monkeypatch.setattr(m, "_complex_contains_entity_set", lambda e: False)
+        result = m._matching_leaves("S")
+        assert result == frozenset({"C1", "C2"}), (
+            "a set of atomic complexes must resolve to the complexes (matching "
+            f"granularity), not their proteins; got {set(result)}"
+        )
+
+    def test_complex_with_internal_set_decomposes(self, monkeypatch):
+        import src.logic_network_generator as m
+        from src import neo4j_connector as nc
+        self._clear()
+        # Complex C contains set S={A,B} plus protein P -> decompose to {A,B,P}.
+        monkeypatch.setattr(nc, "get_labels", lambda e: {
+            "C": ["Complex"], "S": ["EntitySet"],
+        }.get(e, ["EntityWithAccessionedSequence"]))
+        monkeypatch.setattr(nc, "get_complex_components",
+                            lambda e: {"S": 1, "P": 1} if e == "C" else {})
+        monkeypatch.setattr(nc, "get_set_members",
+                            lambda e: {"A", "B"} if e == "S" else set())
+        monkeypatch.setattr(m, "_complex_contains_entity_set", lambda e: e == "C")
+        result = m._matching_leaves("C")
+        assert result == frozenset({"A", "B", "P"}), (
+            f"complex-with-set must decompose to members, got {set(result)}"
+        )
