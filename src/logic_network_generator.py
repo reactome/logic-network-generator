@@ -1466,20 +1466,23 @@ def append_regulators(
         # decomposition: a complex is kept as a single node (split only into one
         # node per internal-EntitySet variant), NEVER broken into its individual
         # subunit proteins. This matches the complex-as-node treatment of
-        # reaction inputs. Subunit decomposition was previously used for
-        # catalysts/positive regulators, but it made each subunit protein a
-        # SHARED node wired directly to every reaction its complexes catalyse —
-        # a super-hub that let signal flood unrelated reactions (e.g. DAXX
-        # reaching ~2,100 nodes in TP53). A holoenzyme is one biological unit;
-        # a subunit knockout still propagates via the boundary assembly edges
-        # (subunit → complex), without the subunit being a direct catalytic hub.
-        # Env toggle LNG_CATALYST_SUBUNITS=1 restores the old subunit-shatter for
-        # A/B. Default: catalysts + positive regulators are BUNDLED (complex =
-        # one node); negative regulators keep VARIANT decomposition (one node per
-        # set-variant, complex still whole) as before.
-        old_subunits = os.environ.get("LNG_CATALYST_SUBUNITS", "0") == "1"
+        # reaction inputs and is the biologically faithful representation.
+        #
+        # HOWEVER it is OFF BY DEFAULT (opt-in via LNG_CATALYST_BUNDLE=1). Bundling
+        # is more faithful, but it EXPOSES a pre-existing UUID-silo defect: a
+        # complex that is produced by one reaction and catalyses/regulates another
+        # is stored as separate, un-unified nodes (compounded by set-variant
+        # mismatches and non-deterministic set-member selection), so the curated
+        # "produce → catalyse" chain doesn't carry signal (e.g. ATM→p-p53:FAS-gene
+        # →FAS expression breaks). Subunit decomposition accidentally MASKS this
+        # via spurious shared-protein hub paths, so it scores ~1.2pp higher on the
+        # experimental set — not because it's more correct, but because the hubs
+        # happen to reconnect what the silo severs. Until the silo × set-variant
+        # entity-identity problem is redesigned, subunit decomposition stays the
+        # default. See memory project_uuid_silo_bug / the catalyst-handling notes.
+        bundle_on = os.environ.get("LNG_CATALYST_BUNDLE", "0") == "1"
         variant_decomposition = (pos_neg == "neg")
-        bundle_complex = (pos_neg == "pos") and not old_subunits
+        bundle_complex = (pos_neg == "pos") and bundle_on
 
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])
