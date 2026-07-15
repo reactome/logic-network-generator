@@ -753,6 +753,7 @@ def _resolve_vr_entities(
 def _decompose_regulator_entity(
     entity_id: str,
     variant_decomposition: bool = False,
+    bundle_complex: bool = False,
 ) -> List[tuple]:
     """Decompose a catalyst/regulator entity to (terminal_id, stoichiometry) pairs.
 
@@ -785,7 +786,12 @@ def _decompose_regulator_entity(
     labels = get_labels(entity_id)
 
     if "Complex" in labels:
-        if not _complex_contains_entity_set(entity_id):
+        # bundle_complex: a catalyst/regulator complex is ONE node regardless of
+        # internal sets — no subunit shatter (shared-protein hubs) and no
+        # cartesian set-variant expansion (edge blow-up). This is the strict
+        # complex-as-node treatment; only genuine top-level "one-of" sets below
+        # still expand into OR alternatives.
+        if bundle_complex or not _complex_contains_entity_set(entity_id):
             return [(entity_id, 1)]
         if variant_decomposition:
             return _expand_complex_variants(entity_id)
@@ -793,7 +799,8 @@ def _decompose_regulator_entity(
         result = []
         for member_id, stoich in components.items():
             for mid, sub_stoich in _decompose_regulator_entity(
-                member_id, variant_decomposition=variant_decomposition
+                member_id, variant_decomposition=variant_decomposition,
+                bundle_complex=bundle_complex,
             ):
                 result.append((mid, stoich * sub_stoich))
         return result if result else [(entity_id, 1)]
@@ -806,7 +813,8 @@ def _decompose_regulator_entity(
         for member_id in members:
             result.extend(
                 _decompose_regulator_entity(
-                    member_id, variant_decomposition=variant_decomposition
+                    member_id, variant_decomposition=variant_decomposition,
+                    bundle_complex=bundle_complex,
                 )
             )
         return result if result else [(entity_id, 1)]
@@ -1454,25 +1462,34 @@ def append_regulators(
     ]
 
     for map_df, pos_neg, edge_type in regulator_configs:
-        # Negative regulators use VARIANT decomposition: an inhibitor complex
-        # with an internal EntitySet expands into one entity per cartesian
-        # variant of that EntitySet, but each variant is kept as a single
-        # complex — NOT broken down into individual subunits. Without this,
-        # HSP90 / CDC37 / ERBIN of an ERBB2 inhibitor complex would each
-        # become standalone inhibitor edges, and any unrelated reaction
-        # producing those bystander proteins would spuriously crush
-        # downstream signal.
+        # ALL regulators (catalysts, positive and negative) use VARIANT
+        # decomposition: a complex is kept as a single node (split only into one
+        # node per internal-EntitySet variant), NEVER broken into its individual
+        # subunit proteins. This matches the complex-as-node treatment of
+        # reaction inputs and is the biologically faithful representation.
         #
-        # Catalysts and positive regulators keep SUBUNIT decomposition: each
-        # holoenzyme subunit is biologically AND-required for catalysis, so
-        # decomposing to terminal proteins is correct there.
+        # HOWEVER it is OFF BY DEFAULT (opt-in via LNG_CATALYST_BUNDLE=1). Bundling
+        # is more faithful, but it EXPOSES a pre-existing UUID-silo defect: a
+        # complex that is produced by one reaction and catalyses/regulates another
+        # is stored as separate, un-unified nodes (compounded by set-variant
+        # mismatches and non-deterministic set-member selection), so the curated
+        # "produce → catalyse" chain doesn't carry signal (e.g. ATM→p-p53:FAS-gene
+        # →FAS expression breaks). Subunit decomposition accidentally MASKS this
+        # via spurious shared-protein hub paths, so it scores ~1.2pp higher on the
+        # experimental set — not because it's more correct, but because the hubs
+        # happen to reconnect what the silo severs. Until the silo × set-variant
+        # entity-identity problem is redesigned, subunit decomposition stays the
+        # default. See memory project_uuid_silo_bug / the catalyst-handling notes.
+        bundle_on = os.environ.get("LNG_CATALYST_BUNDLE", "0") == "1"
         variant_decomposition = (pos_neg == "neg")
+        bundle_complex = (pos_neg == "pos") and bundle_on
 
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])
 
             terminal_members = _decompose_regulator_entity(
-                entity_id, variant_decomposition=variant_decomposition
+                entity_id, variant_decomposition=variant_decomposition,
+                bundle_complex=bundle_complex,
             )
 
             # and_or expresses reaction-level requirement, not within-entity
@@ -1832,6 +1849,31 @@ def create_pathway_logic_network(
             vr_entities=vr_entities,
             entity_uuid_registry=entity_uuid_registry,
         )
+
+    # Drop fully-identical duplicate edges. Distinct virtual reactions of one
+    # curated reaction can canonicalize (union-find) to the same target node, and
+    # a catalyst/regulator attached to each then yields exact-duplicate rows
+    # (same source, target, sign, type, reaction). These are redundant — a
+    # catalyst does not catalyze the same reaction twice — and the solver would
+    # double-weight the duplicated parent in its activator aggregation. Collapse
+    # to one row each. (Observed: Pre-NOTCH 40,548 -> 27,552 edges; 39 pathways
+    # affected across the catalog.)
+    _pre_dedup = len(pathway_logic_network_data)
+    _seen_edges: Set[tuple] = set()
+    _deduped: List[Dict[str, Any]] = []
+    for _e in pathway_logic_network_data:
+        _k = (_e["source_id"], _e["target_id"], _e["pos_neg"],
+              _e["and_or"], _e["edge_type"], _e.get("edge_reaction_id", ""))
+        if _k in _seen_edges:
+            continue
+        _seen_edges.add(_k)
+        _deduped.append(_e)
+    if len(_deduped) < _pre_dedup:
+        logger.info(
+            f"Dropped {_pre_dedup - len(_deduped)} duplicate edges "
+            f"({_pre_dedup} -> {len(_deduped)})"
+        )
+    pathway_logic_network_data = _deduped
 
     # Create final DataFrame
     pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=list(columns.keys()))
