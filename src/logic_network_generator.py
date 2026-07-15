@@ -811,6 +811,22 @@ def _expand_complex_variants(complex_id: str) -> List[tuple]:
         else:
             per_component_choices.append([member_id])
 
+    cartesian_size = 1
+    for choices in per_component_choices:
+        cartesian_size *= max(1, len(choices))
+    if MAX_VARIANTS > 0 and cartesian_size > MAX_VARIANTS:
+        # Too many inhibitor-complex variants (issue #40): bundle into one
+        # opaque node rather than materializing the product. Without this a
+        # negative-regulator complex with large internal EntitySets fans out
+        # into hundreds of thousands of variant nodes, each wired to every
+        # reaction it inhibits (RAF/MAP kinase: 4.76M regulator edges from
+        # ~144k variant nodes). Mirrors the input/output caps.
+        logger.warning(
+            f"variant cap hit for regulator complex {complex_id}: "
+            f"{cartesian_size} variants > {MAX_VARIANTS}; bundling into one node"
+        )
+        return [(complex_id, 1)]
+
     variants: List[tuple] = []
     seen_variant_ids: set = set()
     for combo in itertools.product(*per_component_choices):
