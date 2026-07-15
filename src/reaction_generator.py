@@ -28,6 +28,7 @@ create false links between unrelated species.
 
 import hashlib
 import itertools
+import os
 import uuid
 import warnings
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
@@ -59,6 +60,15 @@ ComponentID = str
 InputOutputID = str
 ReactomeID = str
 DataFrameRow = Dict[str, Any]
+
+# Cap on set-variant cartesian expansion (issue #40). When a complex's internal
+# EntitySet combinations — or a reaction's input/output combinations — would
+# exceed this, we bundle all alternatives into ONE opaque node instead of
+# materializing the full product. This prevents catalog-scale explosions
+# (Class_I_MHC = 3.3M edges, Chromatin_modifying_enzymes = 1.4M) and the hangs
+# they cause, at the cost of not set-splitting a handful of pathologically large
+# assemblies. Env-tunable via LNG_MAX_VARIANTS; <= 0 disables the cap.
+MAX_VARIANTS = int(os.environ.get("LNG_MAX_VARIANTS", "512"))
 
 class _DecompositionStore:
     """Append-mostly buffer for decomposition rows with O(1) lookups.
@@ -216,13 +226,31 @@ def get_broken_apart_ids(
             else:
                 new_broken_apart_members.append({member})
 
-        iterproduct_components = list(itertools.product(*new_broken_apart_members))
-        iterproduct_components_as_sets = [
-            set(map(str, item)) for item in iterproduct_components
-        ]
-        uids = get_uids_for_iterproduct_components(
-            iterproduct_components_as_sets, reactome_id, source_entity_id
-        )
+        cartesian_size = 1
+        for member in new_broken_apart_members:
+            cartesian_size *= max(1, len(member))
+        if MAX_VARIANTS > 0 and cartesian_size > MAX_VARIANTS:
+            # Too many set-variant combinations (issue #40): bundle every
+            # alternative into a single opaque node rather than exploding.
+            merged: Set[str] = set()
+            for member in new_broken_apart_members:
+                merged |= member
+            logger.warning(
+                f"variant cap hit for {reactome_id}: {cartesian_size} "
+                f"combinations > {MAX_VARIANTS}; bundling "
+                f"{len(new_broken_apart_members)} components into one node"
+            )
+            uids = get_uids_for_iterproduct_components(
+                [merged], reactome_id, source_entity_id
+            )
+        else:
+            iterproduct_components = list(itertools.product(*new_broken_apart_members))
+            iterproduct_components_as_sets = [
+                set(map(str, item)) for item in iterproduct_components
+            ]
+            uids = get_uids_for_iterproduct_components(
+                iterproduct_components_as_sets, reactome_id, source_entity_id
+            )
     else:
         uid = str(uuid.uuid4())
         rows: List[DataFrameRow] = []

@@ -650,3 +650,43 @@ class TestEntityReactionProxyMapping:
             entity_reactions={"R-HSA-C": {"output": ["R-HSA-MISSING"]}},
         )
         assert df.empty or "R-HSA-C" not in set(df["entity_stable_id"])
+
+
+class TestRegulatorVariantCap:
+    """_expand_complex_variants (the negative-regulator decomposition path)
+    must bundle a complex into ONE opaque node when its set-variant cartesian
+    exceeds MAX_VARIANTS (issue #40). Without this a single inhibitor complex
+    with large internal EntitySets fans out into ~144k variant nodes, each
+    wired to every reaction it inhibits — RAF/MAP kinase hit 4.76M edges.
+    """
+
+    def _wire_mocks(self, monkeypatch):
+        import src.logic_network_generator as m
+        from src import neo4j_connector as nc
+        # Complex C = two EntitySets of 3 members each -> 3x3 = 9 variants.
+        monkeypatch.setattr(nc, "get_labels", lambda e: {
+            "C": ["Complex"], "S1": ["EntitySet"], "S2": ["EntitySet"],
+        }.get(e, ["EntityWithAccessionedSequence"]))
+        monkeypatch.setattr(nc, "get_complex_components",
+                            lambda e: {"S1": 1, "S2": 1} if e == "C" else {})
+        monkeypatch.setattr(nc, "get_set_members", lambda e: {
+            "S1": ["A", "B", "D"], "S2": ["E", "F", "G"]}.get(e, []))
+        monkeypatch.setattr(m, "_complex_contains_entity_set", lambda e: e == "C")
+        return m
+
+    def test_over_cap_bundles_to_single_node(self, monkeypatch):
+        m = self._wire_mocks(monkeypatch)
+        monkeypatch.setattr(m, "MAX_VARIANTS", 4)
+        result = m._expand_complex_variants("C")
+        assert result == [("C", 1)], (
+            f"9 variants > cap 4 must bundle to one node, got {result}"
+        )
+
+    def test_under_cap_still_expands(self, monkeypatch):
+        m = self._wire_mocks(monkeypatch)
+        monkeypatch.setattr(m, "MAX_VARIANTS", 100)
+        result = m._expand_complex_variants("C")
+        assert len(result) == 9, (
+            f"3x3 cartesian under cap should yield 9 variants, got {len(result)}"
+        )
+        assert all(vid.startswith("C::variant::") for vid, _ in result)

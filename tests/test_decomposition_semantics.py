@@ -189,6 +189,59 @@ class TestComplexWithEntitySetIsCartesian:
         assert set(rows_for_c["component_id"]) == {"A", "B", "P"}
 
 
+class TestVariantCap:
+    """A complex whose set-variant cartesian exceeds MAX_VARIANTS is bundled
+    into ONE opaque node instead of exploding (issue #40)."""
+
+    def test_over_cap_complex_bundles_to_single_node(self):
+        # Complex with two EntitySets of 3 members each → 3×3 = 9 combinations.
+        # With the cap set to 4, that exceeds it and must collapse to one node.
+        labels = _label_map({
+            "C": ["Complex"],
+            "S1": ["EntitySet"], "S2": ["EntitySet"],
+            "A": ["GenomeEncodedEntity"], "B": ["GenomeEncodedEntity"],
+            "D": ["GenomeEncodedEntity"], "E": ["GenomeEncodedEntity"],
+            "F": ["GenomeEncodedEntity"], "G": ["GenomeEncodedEntity"],
+        })
+        components = _components_map({"C": {"S1": 1, "S2": 1}})
+        members = _members_map({"S1": ["A", "B", "D"], "S2": ["E", "F", "G"]})
+        with patch.object(rg, "MAX_VARIANTS", 4), \
+             patch.object(rg, "get_labels", labels), \
+             patch.object(rg, "get_complex_components", components), \
+             patch.object(rg, "get_set_members", members), \
+             patch.object(rg, "get_reference_entity_id", _ref_entity_map({})):
+            result = rg.break_apart_entity("C")
+
+        assert len(result) == 1, (
+            f"9 combinations > cap 4 must bundle to ONE node, got {len(result)}"
+        )
+        # The one bundled node still carries every alternative's components.
+        df = _store_df()
+        rows_for_c = df[df["reactome_id"] == "C"]
+        assert set(rows_for_c["component_id"]) == {"A", "B", "D", "E", "F", "G"}
+
+    def test_under_cap_complex_still_expands(self):
+        # Same shape but cap high enough (9) → full cartesian preserved.
+        labels = _label_map({
+            "C": ["Complex"],
+            "S1": ["EntitySet"], "S2": ["EntitySet"],
+            "A": ["GenomeEncodedEntity"], "B": ["GenomeEncodedEntity"],
+            "D": ["GenomeEncodedEntity"], "E": ["GenomeEncodedEntity"],
+            "F": ["GenomeEncodedEntity"], "G": ["GenomeEncodedEntity"],
+        })
+        components = _components_map({"C": {"S1": 1, "S2": 1}})
+        members = _members_map({"S1": ["A", "B", "D"], "S2": ["E", "F", "G"]})
+        with patch.object(rg, "MAX_VARIANTS", 100), \
+             patch.object(rg, "get_labels", labels), \
+             patch.object(rg, "get_complex_components", components), \
+             patch.object(rg, "get_set_members", members), \
+             patch.object(rg, "get_reference_entity_id", _ref_entity_map({})):
+            result = rg.break_apart_entity("C")
+        assert len(result) == 9, (
+            f"3×3 cartesian under cap should yield 9 combinations, got {len(result)}"
+        )
+
+
 class TestUbiquitinIsAtomic:
     """Ubiquitin EntitySets are skipped to avoid combinatorial explosion."""
 
