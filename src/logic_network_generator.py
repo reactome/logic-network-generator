@@ -753,6 +753,7 @@ def _resolve_vr_entities(
 def _decompose_regulator_entity(
     entity_id: str,
     variant_decomposition: bool = False,
+    bundle_complex: bool = False,
 ) -> List[tuple]:
     """Decompose a catalyst/regulator entity to (terminal_id, stoichiometry) pairs.
 
@@ -785,7 +786,12 @@ def _decompose_regulator_entity(
     labels = get_labels(entity_id)
 
     if "Complex" in labels:
-        if not _complex_contains_entity_set(entity_id):
+        # bundle_complex: a catalyst/regulator complex is ONE node regardless of
+        # internal sets — no subunit shatter (shared-protein hubs) and no
+        # cartesian set-variant expansion (edge blow-up). This is the strict
+        # complex-as-node treatment; only genuine top-level "one-of" sets below
+        # still expand into OR alternatives.
+        if bundle_complex or not _complex_contains_entity_set(entity_id):
             return [(entity_id, 1)]
         if variant_decomposition:
             return _expand_complex_variants(entity_id)
@@ -793,7 +799,8 @@ def _decompose_regulator_entity(
         result = []
         for member_id, stoich in components.items():
             for mid, sub_stoich in _decompose_regulator_entity(
-                member_id, variant_decomposition=variant_decomposition
+                member_id, variant_decomposition=variant_decomposition,
+                bundle_complex=bundle_complex,
             ):
                 result.append((mid, stoich * sub_stoich))
         return result if result else [(entity_id, 1)]
@@ -806,7 +813,8 @@ def _decompose_regulator_entity(
         for member_id in members:
             result.extend(
                 _decompose_regulator_entity(
-                    member_id, variant_decomposition=variant_decomposition
+                    member_id, variant_decomposition=variant_decomposition,
+                    bundle_complex=bundle_complex,
                 )
             )
         return result if result else [(entity_id, 1)]
@@ -1454,25 +1462,31 @@ def append_regulators(
     ]
 
     for map_df, pos_neg, edge_type in regulator_configs:
-        # Negative regulators use VARIANT decomposition: an inhibitor complex
-        # with an internal EntitySet expands into one entity per cartesian
-        # variant of that EntitySet, but each variant is kept as a single
-        # complex — NOT broken down into individual subunits. Without this,
-        # HSP90 / CDC37 / ERBIN of an ERBB2 inhibitor complex would each
-        # become standalone inhibitor edges, and any unrelated reaction
-        # producing those bystander proteins would spuriously crush
-        # downstream signal.
-        #
-        # Catalysts and positive regulators keep SUBUNIT decomposition: each
-        # holoenzyme subunit is biologically AND-required for catalysis, so
-        # decomposing to terminal proteins is correct there.
+        # ALL regulators (catalysts, positive and negative) use VARIANT
+        # decomposition: a complex is kept as a single node (split only into one
+        # node per internal-EntitySet variant), NEVER broken into its individual
+        # subunit proteins. This matches the complex-as-node treatment of
+        # reaction inputs. Subunit decomposition was previously used for
+        # catalysts/positive regulators, but it made each subunit protein a
+        # SHARED node wired directly to every reaction its complexes catalyse —
+        # a super-hub that let signal flood unrelated reactions (e.g. DAXX
+        # reaching ~2,100 nodes in TP53). A holoenzyme is one biological unit;
+        # a subunit knockout still propagates via the boundary assembly edges
+        # (subunit → complex), without the subunit being a direct catalytic hub.
+        # Env toggle LNG_CATALYST_SUBUNITS=1 restores the old subunit-shatter for
+        # A/B. Default: catalysts + positive regulators are BUNDLED (complex =
+        # one node); negative regulators keep VARIANT decomposition (one node per
+        # set-variant, complex still whole) as before.
+        old_subunits = os.environ.get("LNG_CATALYST_SUBUNITS", "0") == "1"
         variant_decomposition = (pos_neg == "neg")
+        bundle_complex = (pos_neg == "pos") and not old_subunits
 
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])
 
             terminal_members = _decompose_regulator_entity(
-                entity_id, variant_decomposition=variant_decomposition
+                entity_id, variant_decomposition=variant_decomposition,
+                bundle_complex=bundle_complex,
             )
 
             # and_or expresses reaction-level requirement, not within-entity
