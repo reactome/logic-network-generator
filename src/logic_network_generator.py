@@ -591,6 +591,50 @@ def _complex_variant_leafsets(complex_id: str) -> List[frozenset]:
     return result
 
 
+_matching_leaves_cache: Dict[str, frozenset] = {}
+
+
+def _matching_leaves(entity_id: str) -> frozenset:
+    """The member species of `entity_id` at the MATCHING layer's granularity.
+
+    Mirrors :func:`reaction_generator.break_apart_entity` as a pure read (no
+    store writes): EntitySets expand to their members; a Complex is kept atomic
+    UNLESS it contains an EntitySet (then it decomposes); leaves return
+    themselves. Crucially this preserves modified species (e.g. p-ERK), unlike
+    :func:`get_terminal_components`, which collapses to the base reference
+    protein. Used so emission can line a set participant up with the terminal
+    reactome-ids the VR actually resolved to.
+    """
+    from src.neo4j_connector import get_labels, get_complex_components, get_set_members
+
+    if entity_id in _matching_leaves_cache:
+        return _matching_leaves_cache[entity_id]
+    try:
+        labels = get_labels(entity_id)
+    except IndexError:
+        labels = []
+
+    out: Set[str] = set()
+    if "Complex" in labels:
+        if not _complex_contains_entity_set(entity_id):
+            out = {str(entity_id)}
+        else:
+            for m in get_complex_components(entity_id):
+                out |= _matching_leaves(m)
+    elif any(s in labels for s in ("EntitySet", "DefinedSet", "CandidateSet")):
+        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+            out = {str(entity_id)}
+        else:
+            for m in get_set_members(entity_id):
+                out |= _matching_leaves(m)
+    else:
+        out = {str(entity_id)}
+
+    result = frozenset(out or {str(entity_id)})
+    _matching_leaves_cache[entity_id] = result
+    return result
+
+
 def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[str]:
     """Map one reaction-annotated input/output entity to its emission node(s).
 
@@ -637,7 +681,19 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
     if any(lbl in labels for lbl in ("EntitySet", "DefinedSet", "CandidateSet")):
         if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
             return {str(entity_id)}
-        present = get_terminal_components(entity_id) & member_set
+        # Expand the set to the member SPECIES this VR resolved to. Intersect
+        # against the set's members at *matching* granularity (_matching_leaves),
+        # NOT get_terminal_components: the latter collapses modified species down
+        # to their base reference protein (e.g. p-ERK R-HSA-109844 -> ERK
+        # R-HSA-109842), while the matching layer keeps the modified form, so the
+        # intersection came up empty and the set fell back to a bare, producer-less
+        # node. Aligning the two granularities lets the set expand to its members
+        # (sets should never survive as nodes — see docs/DESIGN_DECISIONS.md).
+        if os.environ.get("LNG_SET_EXPAND", "1") == "0":
+            # Old behavior (leaf-granularity intersection) for A/B comparison.
+            present = member_set & get_terminal_components(entity_id)
+        else:
+            present = member_set & _matching_leaves(entity_id)
         return present if present else {str(entity_id)}
 
     return {str(entity_id)}  # simple entity (protein / small molecule / …)
