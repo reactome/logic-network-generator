@@ -656,6 +656,14 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
     if "Complex" in labels:
         if not _complex_contains_entity_set(entity_id):
             return {str(entity_id)}  # simple complex → single bundled node
+        # Strict complex-as-node (LNG_COMPLEX_AS_NODE): a Complex is ONE node =
+        # its plain stId even when it contains an internal EntitySet. This makes
+        # the produced-occurrence node id match the catalyst/regulator node id
+        # (all plain stId), so a complex produced by one reaction and
+        # catalysing/regulating another unifies instead of siloing into
+        # disconnected ::variant:: nodes. See plan luminous-percolating-llama.
+        if os.environ.get("LNG_COMPLEX_AS_NODE", "1") != "0":
+            return {str(entity_id)}
         # Set-variant node: OUTERMOST complex stId + a FLAT sorted list of the
         # variant's FULL terminal membership. We enumerate the complex's true
         # variants (each with complete membership) and pick the one this VR
@@ -1480,9 +1488,14 @@ def append_regulators(
         # happen to reconnect what the silo severs. Until the silo × set-variant
         # entity-identity problem is redesigned, subunit decomposition stays the
         # default. See memory project_uuid_silo_bug / the catalyst-handling notes.
+        # Strict complex-as-node: bundle EVERY regulator complex (catalyst, pos,
+        # neg) to its plain stId so it matches the produced/consumed occurrence's
+        # node id and unifies instead of siloing. Subsumes the older opt-in
+        # LNG_CATALYST_BUNDLE (pos-only).
+        complex_as_node = os.environ.get("LNG_COMPLEX_AS_NODE", "1") != "0"
         bundle_on = os.environ.get("LNG_CATALYST_BUNDLE", "0") == "1"
-        variant_decomposition = (pos_neg == "neg")
-        bundle_complex = (pos_neg == "pos") and bundle_on
+        variant_decomposition = (pos_neg == "neg") and not complex_as_node
+        bundle_complex = complex_as_node or ((pos_neg == "pos") and bundle_on)
 
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])

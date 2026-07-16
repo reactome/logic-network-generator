@@ -743,3 +743,30 @@ class TestMatchingLeavesGranularity:
         assert result == frozenset({"A", "B", "P"}), (
             f"complex-with-set must decompose to members, got {set(result)}"
         )
+
+
+class TestComplexAsNode:
+    """LNG_COMPLEX_AS_NODE (default on): a Complex is ONE node = its plain stId
+    even when it contains an internal EntitySet, so the produced-complex node id
+    matches the catalyst/regulator node id and they unify (fixes the UUID silo
+    that severed produce->catalyze chains, e.g. ATM->p53:FAS-gene complex->FAS)."""
+
+    def test_complex_with_set_emits_plain_stid(self, monkeypatch):
+        import src.logic_network_generator as m
+        from src import neo4j_connector as nc
+        monkeypatch.setattr(nc, "get_labels", lambda e: ["Complex"] if e == "C" else ["EntitySet"])
+        monkeypatch.setattr(m, "_complex_contains_entity_set", lambda e: True)
+        # default-on: complex-with-set -> plain stId, never a ::variant:: node
+        result = m._map_annotated_entity_to_nodes("C", {"C", "A", "B"})
+        assert result == {"C"}, f"complex-as-node must emit plain stId, got {result}"
+
+    def test_flag_off_restores_variant_behavior(self, monkeypatch):
+        import src.logic_network_generator as m
+        from src import neo4j_connector as nc
+        monkeypatch.setenv("LNG_COMPLEX_AS_NODE", "0")
+        monkeypatch.setattr(nc, "get_labels", lambda e: ["Complex"])
+        monkeypatch.setattr(m, "_complex_contains_entity_set", lambda e: True)
+        monkeypatch.setattr(m, "_complex_variant_leafsets", lambda e: [frozenset({"A", "B"})])
+        m._variant_capped.discard("C")
+        result = m._map_annotated_entity_to_nodes("C", {"A", "B"})
+        assert any("::variant::" in r for r in result), f"flag off must variant-split, got {result}"
