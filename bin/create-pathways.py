@@ -17,7 +17,7 @@ if os.environ.get("PYTHONHASHSEED") != "0" and os.environ.get("LNG_ALLOW_NONDETE
 from typing import List, Tuple
 
 import pandas as pd
-from dotenv import dotenv_values
+from dotenv import dotenv_values, load_dotenv
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -28,6 +28,11 @@ from src.neo4j_connector import get_top_level_pathways, get_pathway_name
 
 def main() -> None:
     dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    # load_dotenv populates os.environ (without clobbering already-set vars) so
+    # NEO4J_URL/USER/PASSWORD in .env actually reach neo4j_connector.get_graph(),
+    # which reads them via os.getenv. dotenv_values alone only builds a local
+    # dict and would leave the connector on its hardcoded defaults.
+    load_dotenv(dotenv_path)
     env_vars = dotenv_values(dotenv_path)
     args = parse_args()
     configure_logging(args.debug, args.verbose)

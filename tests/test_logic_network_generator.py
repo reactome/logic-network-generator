@@ -297,8 +297,9 @@ class TestInterReactionConnectivity:
 
         Since set-variant emission, node identities come from the reaction's
         annotated input/output entities (mapped to nodes), and duplicates are
-        collapsed via a set. We mock the two Neo4j calls the resolver makes:
-        the reaction's annotated entities and their labels (simple proteins).
+        collapsed via a set. We mock the Neo4j calls the resolver makes: the
+        reaction's annotated entities, their curated I/O stoichiometry, and
+        their labels (simple proteins).
         """
         import src.logic_network_generator as m
         from src import neo4j_connector
@@ -307,6 +308,11 @@ class TestInterReactionConnectivity:
         monkeypatch.setattr(
             neo4j_connector, "get_reaction_input_output_ids",
             lambda rid, io: {"9933417"} if io == "input" else {"12345"},
+        )
+        # Curated stoichiometry: 2x the input, 1x the output.
+        monkeypatch.setattr(
+            neo4j_connector, "get_reaction_io_stoichiometry",
+            lambda rid, io: {"9933417": 2} if io == "input" else {"12345": 1},
         )
         # Both entities are simple (not complexes/sets) -> mapped to themselves.
         monkeypatch.setattr(
@@ -329,10 +335,13 @@ class TestInterReactionConnectivity:
         })
 
         vr_entities = _resolve_vr_entities(reaction_id_map, uid_index)
-        input_ids, output_ids, _in_stoich, _out_stoich = vr_entities["vr1"]
+        input_ids, output_ids, in_stoich, out_stoich = vr_entities["vr1"]
 
         assert input_ids == ["9933417"], f"expected one deduped input, got {input_ids}"
         assert output_ids == ["12345"], f"expected one output, got {output_ids}"
+        # Curated stoichiometry is carried onto the nodes (not hardcoded to 1).
+        assert in_stoich == {"9933417": 2}, f"expected curated input stoich, got {in_stoich}"
+        assert out_stoich == {"12345": 1}, f"expected curated output stoich, got {out_stoich}"
 
     def test_root_input_same_entity_gets_one_uuid(self):
         """Root input entity appearing at multiple reactions should share one UUID."""

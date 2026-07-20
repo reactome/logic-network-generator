@@ -727,15 +727,41 @@ def _resolve_vr_entities(
         Dict mapping vr_uid -> (input_node_ids, output_node_ids,
                                 input_stoich_map, output_stoich_map)
     """
-    from src.neo4j_connector import get_reaction_input_output_ids
+    from src.neo4j_connector import (
+        get_reaction_input_output_ids,
+        get_reaction_io_stoichiometry,
+    )
 
     annotated_cache: Dict[tuple, Set[str]] = {}
+    stoich_cache: Dict[tuple, Dict[str, int]] = {}
 
     def _annotated(reaction_id: str, io: str) -> Set[str]:
         key = (reaction_id, io)
         if key not in annotated_cache:
             annotated_cache[key] = set(get_reaction_input_output_ids(reaction_id, io))
         return annotated_cache[key]
+
+    def _annotated_stoich(reaction_id: str, io: str) -> Dict[str, int]:
+        key = (reaction_id, io)
+        if key not in stoich_cache:
+            stoich_cache[key] = get_reaction_io_stoichiometry(reaction_id, io)
+        return stoich_cache[key]
+
+    def _resolve_io(reaction_id: str, io: str, members: Set[str]) -> tuple:
+        # Node identity comes from the reaction's annotated entities; the
+        # curated stoichiometry is carried per annotated entity and attached to
+        # every node that entity maps to (e.g. each expanded set member inherits
+        # the set's coefficient). If two annotated entities map to the same node
+        # their coefficients sum. Absent curation, the coefficient defaults to 1.
+        by_entity = _annotated_stoich(reaction_id, io)
+        node_ids: Set[str] = set()
+        node_stoich: Dict[str, int] = {}
+        for e in _annotated(reaction_id, io):
+            s = by_entity.get(str(e), 1)
+            for n in _map_annotated_entity_to_nodes(str(e), members):
+                node_ids.add(n)
+                node_stoich[n] = node_stoich.get(n, 0) + s
+        return list(node_ids), node_stoich
 
     vr_entities: Dict[str, tuple] = {}
     for _, row in reaction_id_map.iterrows():
@@ -744,16 +770,12 @@ def _resolve_vr_entities(
         input_members = set(_resolve_to_terminal_reactome_ids(uid_index, row["input_hash"]))
         output_members = set(_resolve_to_terminal_reactome_ids(uid_index, row["output_hash"]))
 
-        input_ids: Set[str] = set()
-        for e in _annotated(reaction_id, "input"):
-            input_ids |= _map_annotated_entity_to_nodes(str(e), input_members)
-        output_ids: Set[str] = set()
-        for e in _annotated(reaction_id, "output"):
-            output_ids |= _map_annotated_entity_to_nodes(str(e), output_members)
+        input_ids, input_stoich = _resolve_io(reaction_id, "input", input_members)
+        output_ids, output_stoich = _resolve_io(reaction_id, "output", output_members)
 
         vr_entities[vr_uid] = (
-            list(input_ids), list(output_ids),
-            {n: 1 for n in input_ids}, {n: 1 for n in output_ids},
+            input_ids, output_ids,
+            input_stoich, output_stoich,
         )
     return vr_entities
 
