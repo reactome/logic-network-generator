@@ -168,6 +168,34 @@ _UBIQUITIN_ENTITY_SET_IDS = {
     "R-HSA-9834963",  # Ub [mitochondrial outer membrane]
 }
 
+_modifier_set_cache: Optional[Set[str]] = None
+
+
+def modifier_isoform_set_ids() -> Set[str]:
+    """EntitySet stIds to treat atomically (never decompose into members).
+
+    Superset of _UBIQUITIN_ENTITY_SET_IDS: the full set of modifier-isoform sets
+    (all ubiquitin forms incl. linkage-specific chains, plus SUMO/NEDD8/ATG8/…),
+    discovered from Neo4j by member-gene identity. Falls back to the hardcoded
+    ubiquitin seed when Neo4j is unavailable (offline / tests). Cached; safe to
+    call in hot loops.
+    """
+    global _modifier_set_cache
+    if _modifier_set_cache is not None:
+        return _modifier_set_cache
+    try:
+        from src.neo4j_connector import get_modifier_isoform_entity_set_ids
+        _modifier_set_cache = (
+            get_modifier_isoform_entity_set_ids() | _UBIQUITIN_ENTITY_SET_IDS
+        )
+    except Exception:
+        logger.warning(
+            "Modifier-isoform set discovery failed; falling back to ubiquitin seed",
+            exc_info=True,
+        )
+        _modifier_set_cache = set(_UBIQUITIN_ENTITY_SET_IDS)
+    return _modifier_set_cache
+
 
 def get_component_id_or_reference_entity_id(reactome_id: str) -> str:
     """Get the reference entity ID for a Reactome stable ID, with caching.
@@ -466,7 +494,7 @@ def get_terminal_components(entity_id: str) -> Set[str]:
     if any(s in labels for s in ("EntitySet", "DefinedSet", "CandidateSet")):
         # Ubiquitin sets are atomic at the boundary too: decomposing them
         # would explode every boundary into ~14 indistinguishable copies.
-        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+        if entity_id in modifier_isoform_set_ids():
             return {str(entity_id)}
         members = get_set_members(entity_id)
         leaves = set()
@@ -510,7 +538,7 @@ def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -
             return leaves
 
     if "EntitySet" in labels:
-        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+        if entity_id in modifier_isoform_set_ids():
             return {str(entity_id)}
 
         member_ids = get_set_members(entity_id)
