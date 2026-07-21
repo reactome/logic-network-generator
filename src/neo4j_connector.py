@@ -270,7 +270,7 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
         WHERE pathway.stId = $pathway_id
         OPTIONAL MATCH (r1)<-[:precedingEvent]-(r2:ReactionLikeEvent)<-[:hasEvent*]-(pathway)
         WHERE pathway.stId = $pathway_id
-        RETURN r1.stId AS preceding_reaction_id,
+        RETURN DISTINCT r1.stId AS preceding_reaction_id,
                r2.stId AS following_reaction_id,
                CASE WHEN r2 IS NULL THEN 'No Preceding Event' ELSE 'Has Preceding Event' END AS event_status
         """
@@ -546,6 +546,44 @@ def get_reaction_input_output_ids(reaction_id: str, input_or_output: str) -> Set
     except Exception:
         logger.error("Error in get_reaction_input_output_ids", exc_info=True)
         raise
+
+
+def get_reaction_io_stoichiometry(reaction_id: str, input_or_output: str) -> Dict[str, int]:
+    """Curated input/output stoichiometry for a reaction, keyed by entity stId.
+
+    Reactome stores the coefficient on the input/output relationship (the same
+    ``stoichiometry`` property that hasComponent uses). An entity linked with no
+    explicit coefficient defaults to 1; where the same entity is linked by more
+    than one relationship the coefficients are summed. Companion to
+    :func:`get_reaction_input_output_ids`, which returns only the entity ids.
+    """
+    # Same relationship-type allowlist as get_reaction_input_output_ids: the
+    # type can't be parameterized in Cypher, so restrict it before embedding.
+    if input_or_output not in {"input", "output"}:
+        raise ValueError(f"input_or_output must be 'input' or 'output', got {input_or_output!r}")
+
+    query: str = (
+        f"MATCH (reaction)-[rel:{input_or_output}]-(io) "
+        f"WHERE (reaction:Reaction OR reaction:ReactionLikeEvent) "
+        f"AND reaction.stId = $reaction_id "
+        f"RETURN io.stId AS io_id, rel.stoichiometry AS stoichiometry"
+    )
+
+    try:
+        data = get_graph().run(query, reaction_id=reaction_id).data()
+    except Exception:
+        logger.error("Error in get_reaction_io_stoichiometry", exc_info=True)
+        raise
+
+    result: Dict[str, int] = {}
+    for row in data:
+        io_id = row["io_id"]
+        if io_id is None:
+            continue
+        stoich_raw = row.get("stoichiometry")
+        stoich = 1 if stoich_raw is None else int(stoich_raw)
+        result[io_id] = result.get(io_id, 0) + stoich
+    return result
 
 
 def get_reference_entity_id(entity_id: str) -> Union[str, None]:
