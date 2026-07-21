@@ -586,6 +586,53 @@ def get_reaction_io_stoichiometry(reaction_id: str, input_or_output: str) -> Dic
     return result
 
 
+# Ubiquitin-like modifier protein gene families (+ RPS27A/UBA52 aliases). An
+# EntitySet whose members are ALL products of these genes is a modifier-isoform
+# set — functionally interchangeable copies of one modifier (ubiquitin's
+# UBB/UBC/RPS27A/UBA52, SUMO1/2/3, ATG8 homologues, …). E3 ligase / enzyme sets
+# are excluded because their members are not these genes.
+_MODIFIER_GENE_NAMES = frozenset({
+    "UBB", "UBC", "RPS27A", "UBA52", "UBA80", "UBCEP1", "UBCEP2",  # ubiquitin
+    "SUMO1", "SUMO2", "SUMO3", "SUMO4",                            # SUMO
+    "NEDD8", "ISG15", "UFM1", "UBD",                               # NEDD8/ISG15/UFM1/FAT10
+    "MAP1LC3A", "MAP1LC3B", "MAP1LC3B2", "MAP1LC3C",
+    "GABARAP", "GABARAPL1", "GABARAPL2",                           # ATG8/LC3 family
+})
+
+_modifier_isoform_set_cache: Optional[Set[str]] = None
+
+
+def get_modifier_isoform_entity_set_ids() -> Set[str]:
+    """stIds of human EntitySets whose members are ALL modifier proteins.
+
+    A modifier-isoform set (ubiquitin's UBB/UBC/RPS27A/UBA52, SUMO1/2/3, ATG8
+    homologues, …) holds functionally-identical copies of one modifier, so
+    decomposing it adds no biology and explodes the variant count. Enzyme sets
+    (e.g. E3 ligases) are excluded — their members aren't modifier genes.
+    Cached for the process. Raises if Neo4j is unreachable; callers wanting an
+    offline fallback should catch and use a hardcoded seed.
+    """
+    global _modifier_isoform_set_cache
+    if _modifier_isoform_set_cache is not None:
+        return _modifier_isoform_set_cache
+    query = """
+        MATCH (s)-[:hasMember|hasCandidate]->(m)
+        WHERE (s:DefinedSet OR s:CandidateSet) AND s.speciesName = 'Homo sapiens'
+        OPTIONAL MATCH (m)-[:referenceEntity]->(re)
+        WITH s, m, size([x IN coalesce(re.geneName, []) WHERE x IN $genes]) AS hit
+        WITH s, count(m) AS total, sum(CASE WHEN hit > 0 THEN 1 ELSE 0 END) AS mods
+        WHERE total >= 2 AND total = mods
+        RETURN collect(s.stId) AS stids
+    """
+    try:
+        data = get_graph().run(query, genes=list(_MODIFIER_GENE_NAMES)).data()
+    except Exception:
+        logger.error("Error in get_modifier_isoform_entity_set_ids", exc_info=True)
+        raise
+    _modifier_isoform_set_cache = set(data[0]["stids"]) if data else set()
+    return _modifier_isoform_set_cache
+
+
 def get_reference_entity_id(entity_id: str) -> Union[str, None]:
     if entity_id in _reference_entity_cache:
         return _reference_entity_cache[entity_id]

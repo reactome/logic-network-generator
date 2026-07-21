@@ -9,7 +9,7 @@ from src.argument_parser import logger
 from src.neo4j_connector import get_graph
 from src.reaction_generator import (
     _complex_contains_entity_set,
-    _UBIQUITIN_ENTITY_SET_IDS,
+    modifier_isoform_set_ids,
     get_terminal_components,
     MAX_VARIANTS,
 )
@@ -555,7 +555,7 @@ def _complex_variant_leafsets(complex_id: str) -> List[frozenset]:
             per_component_choices.append(_complex_variant_leafsets(member_id))
         elif (
             any(lbl in labels for lbl in ("EntitySet", "DefinedSet", "CandidateSet"))
-            and member_id not in _UBIQUITIN_ENTITY_SET_IDS
+            and member_id not in modifier_isoform_set_ids()
         ):
             choices = [frozenset(get_terminal_components(sm)) for sm in get_set_members(member_id)]
             per_component_choices.append(choices or [frozenset(get_terminal_components(member_id))])
@@ -622,7 +622,7 @@ def _matching_leaves(entity_id: str) -> frozenset:
             for m in get_complex_components(entity_id):
                 out |= _matching_leaves(m)
     elif any(s in labels for s in ("EntitySet", "DefinedSet", "CandidateSet")):
-        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+        if entity_id in modifier_isoform_set_ids():
             out = {str(entity_id)}
         else:
             for m in get_set_members(entity_id):
@@ -687,7 +687,7 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
         return {f"{entity_id}::variant::{'_'.join(sorted(chosen))}"}
 
     if any(lbl in labels for lbl in ("EntitySet", "DefinedSet", "CandidateSet")):
-        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+        if entity_id in modifier_isoform_set_ids():
             return {str(entity_id)}
         # Expand the set to the member SPECIES this VR resolved to. Intersect
         # against the set's members at *matching* granularity (_matching_leaves),
@@ -836,7 +836,7 @@ def _decompose_regulator_entity(
         return result if result else [(entity_id, 1)]
 
     if "EntitySet" in labels or "DefinedSet" in labels or "CandidateSet" in labels:
-        if entity_id in _UBIQUITIN_ENTITY_SET_IDS:
+        if entity_id in modifier_isoform_set_ids():
             return [(entity_id, 1)]
         members = get_set_members(entity_id)
         result = []
@@ -889,7 +889,7 @@ def _expand_complex_variants(complex_id: str) -> List[tuple]:
             per_component_choices.append([vid for vid, _ in sub_variants])
         elif (
             ("EntitySet" in labels or "DefinedSet" in labels or "CandidateSet" in labels)
-            and member_id not in _UBIQUITIN_ENTITY_SET_IDS
+            and member_id not in modifier_isoform_set_ids()
         ):
             alts: List[str] = []
             for set_member in get_set_members(member_id):
