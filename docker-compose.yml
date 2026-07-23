@@ -4,7 +4,7 @@ services:
   neo4j:
     # Bump this tag when a new Reactome release lands; the version sentinel
     # test in tests/test_reactome_version.py records what we ran against.
-    image: public.ecr.aws/reactome/graphdb:Release96
+    image: public.ecr.aws/reactome/graphdb:Release97
     container_name: reactome-neo4j
     ports:
       - "7474:7474"  # HTTP
