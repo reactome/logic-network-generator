@@ -29,7 +29,8 @@ def test_reactome_version_loaded(capsys):
     rows = graph.run(
         """
         MATCH (info:DBInfo)
-        RETURN info.name AS name, info.version AS version
+        RETURN info.name AS name,
+               toInteger(coalesce(info.releaseNumber, info.version)) AS version
         LIMIT 1
         """
     ).data()
