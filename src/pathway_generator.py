@@ -122,17 +122,34 @@ def generate_pathway_file(
                 logger.warning(f"Could not cache decomposition results: {e}")
                 # Continue without caching
 
-        # Augment connectivity with curator-drawn diagram flow (product->substrate
-        # pairs the diagram links but precedingEvent may omit — esp. old pathways).
-        # Only the connectivity/merge step sees this; the matching layer above
-        # stays on pure precedingEvent. See reactome/logic-network-generator#39.
-        from src.diagram_connectivity import augment_reaction_connections
-        connectivity = augment_reaction_connections(pathway_id, reaction_connections)
+        # Add curator-drawn diagram connectivity (product->substrate pairs the
+        # diagram links but precedingEvent may omit). See reactome/logic-network-generator#39.
+        #
+        # DEFAULT = additive-bridge mode (LNG_DIAGRAM_BRIDGE=1): the diagram-drawn
+        # shared-entity connections are added as NEW bridge edges (producer's
+        # output-copy -> consumer's input-copy) — nothing is merged or lost. Raw
+        # precedingEvent connectivity still merges its shared entities (the core
+        # mechanism), but the diagram json NEVER drives a merge. Benchmark-neutral
+        # vs the legacy merge (curator 83.2%, experimental 73.6%; TP53 +2) while
+        # preserving every node and edge. Set LNG_DIAGRAM_BRIDGE=0 to fall back to
+        # the legacy merge-based augmentation; set both LNG_DIAGRAM_BRIDGE=0 and
+        # LNG_DIAGRAM_CONNECTIVITY=0 to disable diagram connectivity entirely.
+        from src.diagram_connectivity import (
+            augment_reaction_connections,
+            diagram_shared_product_pairs,
+        )
+        diagram_bridge_pairs = None
+        if os.environ.get("LNG_DIAGRAM_BRIDGE", "1") == "1":
+            connectivity = reaction_connections
+            diagram_bridge_pairs = diagram_shared_product_pairs(pathway_id)
+        else:
+            connectivity = augment_reaction_connections(pathway_id, reaction_connections)
 
         # Generate logic network
         logger.info("Creating pathway logic network...")
         result = create_pathway_logic_network(
-            decomposed_uid_mapping, connectivity, best_matches
+            decomposed_uid_mapping, connectivity, best_matches,
+            diagram_bridge_pairs=diagram_bridge_pairs,
         )
 
         # Save logic network (main output file users need)

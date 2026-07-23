@@ -1588,6 +1588,7 @@ def create_pathway_logic_network(
     decomposed_uid_mapping: pd.DataFrame,
     reaction_connections: pd.DataFrame,
     best_matches: Any,
+    diagram_bridge_pairs: Optional[Set[Tuple[str, str]]] = None,
 ) -> PathwayResult:
     """Create a pathway logic network from decomposed UID mappings and reaction connections.
 
@@ -1809,6 +1810,40 @@ def create_pathway_logic_network(
                 "stoichiometry": output_stoich.get(eid, 1),
                 "edge_reaction_id": reaction_stid,
             })
+
+    # Phase 3b (optional): additive diagram bridges. For each diagram-drawn
+    # (producer, consumer) reaction pair, connect their shared entity by ADDING
+    # an edge from the producer's output-copy to the consumer's input-copy
+    # instead of MERGING the two copies (Phase 2). This preserves every node and
+    # edge — nothing is unified or dropped — while still giving the
+    # producer -> entity_out -> entity_in -> consumer path. Pairs already merged
+    # via precedingEvent (same canonical uuid) are skipped. Layout-filtered pairs
+    # only (cofactor hubs already excluded by the caller). See #39.
+    if diagram_bridge_pairs:
+        n_bridges = 0
+        for a_rid, b_rid in diagram_bridge_pairs:
+            for p_vr in reactome_to_vr.get(a_rid, []):
+                p_outputs = set(vr_entities.get(p_vr, ([], [], {}, {}))[1])
+                for f_vr in reactome_to_vr.get(b_rid, []):
+                    f_inputs = set(vr_entities.get(f_vr, ([], [], {}, {}))[0])
+                    for eid in p_outputs & f_inputs:
+                        src = entity_uuid_registry.get((eid, p_vr, "output"))
+                        tgt = entity_uuid_registry.get((eid, f_vr, "input"))
+                        # Skip if missing or already the same node (already
+                        # connected via a precedingEvent merge).
+                        if not src or not tgt or src == tgt:
+                            continue
+                        pathway_logic_network_data.append({
+                            "source_id": src,
+                            "target_id": tgt,
+                            "pos_neg": "pos",
+                            "and_or": None,
+                            "edge_type": "diagram_bridge",
+                            "stoichiometry": 1,
+                            "edge_reaction_id": None,
+                        })
+                        n_bridges += 1
+        logger.info(f"Diagram bridges: +{n_bridges} additive edges (no merge)")
 
     # Log UUID registry statistics
     unique_uuids = set(entity_uuid_registry.values())
