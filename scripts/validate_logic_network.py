@@ -204,9 +204,14 @@ class LogicNetworkValidator:
         # run before reaching it. Counts across all 92 catalog pathways:
         # input 181835, output 121669, dissociation 83058, assembly 61660,
         # catalyst 33531, regulator 6258, depletion 3548.
+        # Every edge_type the generator can emit. Keep in sync with the
+        # "edge_type" literals in src/logic_network_generator.py — a stale
+        # allowlist here fails healthy networks, which is how `diagram_bridge`
+        # (added with the additive diagram-connectivity work) first showed up.
         valid_edge_types = {
             'input', 'output', 'catalyst', 'regulator',
             'assembly', 'dissociation', 'depletion',
+            'diagram_bridge', 'handoff',
         }
         invalid_types = set(edge_types) - valid_edge_types
 

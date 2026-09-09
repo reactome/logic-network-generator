@@ -87,33 +87,56 @@ rather than assumed:
 - **PI5P (R-ALL-1806240) polarity: artifact.** Genuinely both a
   `PositiveRegulation` regulator (1 reaction) and a `NegativeRegulation`
   regulator (1 reaction) in R-HSA-1257604. Confirms FR5.
-- **mTORC2 (R-HSA-198626): REAL.** See below.
+- **mTORC2 (R-HSA-198626): RETRACTED — stale output, not a defect.** See below.
 
 Non-vacuity evidence (FR7): the polarity check compares 271 of 271 regulator
 edges on R-HSA-1257604 with 0 unattested; injecting 5 flipped `pos_neg` values
 into a copy of the network produces exactly 5 failures with correct
 attribution.
 
-## Open finding
+## F1 — RETRACTED: version skew in the checked-in output, not a generator defect
 
-**F1 — one reaction is silently dropped from R-HSA-1257604.**
-`R-HSA-9980233` ("PIP3 activates mTORC2") appears in **no** generated artifact:
-88 of the pathway's 89 reactions are represented, this one is not. It is an
-ordinary non-disease *Homo sapiens* `Reaction`; it is not a self-loop
-(inputs PIP3 `R-ALL-179838` + mTORC2 `R-HSA-198626`, output
-mTORC2:PIP3 `R-HSA-9980228`); its output complex decomposes normally; and it
-carries `precedingEvent` links in both directions. mTORC2's five components
-are all present in the network via other reactions, so only this reaction and
-the mTORC2 complex node itself are lost.
+Originally reported as real: `R-HSA-9980233` ("PIP3 activates mTORC2") appears
+in **no** artifact under `output/` for R-HSA-1257604 — 88 of the pathway's 89
+reactions represented. Every structural explanation was ruled out (ordinary
+non-disease human `Reaction`, not a self-loop, output complex decomposes,
+`precedingEvent` both ways), so it was reported as a genuine gap.
 
-Cause not yet established. The pathway has no diagram of its own
-(`representedPathway` returns nothing), so diagram-driven filtering is a
-candidate but unconfirmed. Deliberately **not** chased inside the validator
-port — it is a generator question, tracked as T007.
+That was wrong, and the mistake was not checking the *provenance of the
+artifact being validated*. Tracing the generator stage by stage shows it
+handles the reaction correctly: `get_reaction_connections` returns all 89
+reactions including this one, decomposition yields 1 input and 1 output
+combination, and `find_best_reaction_match` emits a virtual reaction for it.
+Nothing drops it.
+
+The checked-in output is dated **2026-07-16** and has no `cache/fingerprint.json`
+— it predates both the fingerprinting added in this same PR and the **Reactome
+v97 bump of 2026-07-23**. Its cached `reaction_connections.csv` holds 128 rows
+and does not mention `R-HSA-9980233`; the live v97 query returns 122 rows / 89
+reactions and does. The reaction is a **v97 addition**, and the artifact was
+built against v96.
+
+Regenerating the pathway against Release97 puts `R-HSA-9980233` and
+`R-HSA-198626` in every artifact, and Entity Coverage passes.
+
+This is precisely the failure mode cache fingerprinting exists to prevent, and
+the absence of a fingerprint in that directory is the evidence it predates the
+fix. It also confirms the constitution's "Reactome release is part of the
+input": a network is only comparable to the database at the release it was
+built from.
+
+**Final result, all three pathways regenerated against Release97: 11/11.**
+
+The regeneration surfaced one further stale-allowlist bug of the same family:
+`diagram_bridge` (from the additive diagram-connectivity work) and `handoff`
+are emitted by the generator but were absent from the validator's edge-type
+allowlist, so a healthy fresh network failed Logic Network Structure. Both
+added, with the allowlist derived from the `edge_type` literals in the source.
 
 ## Out of scope
 
-- Fixing F1 (tracked separately; needs its own before/after DeltaSignal
-  measurement per the architecture principle).
-- The reconstruction gap below 90% (88.2%): 16 Neo4j edges absent, 53 extra.
-  Warned, not failed, pending its own triage.
+- The reconstruction gap below 90%: 88.2% on the stale R-HSA-69620 artifact,
+  77.3% on the freshly generated R-HSA-1257604 (50 Neo4j edges absent, 284
+  extra). The extra edges are dominated by the 401 additive `diagram_bridge`
+  edges, which are synthetic by design and arguably should be excluded from a
+  Neo4j-reconstruction comparison. Warned, not failed, pending T018.

@@ -97,6 +97,13 @@ def _cache_is_reusable(cache_dir: Path, current: Dict[str, Any]) -> bool:
     """
     path = cache_dir / _FINGERPRINT_FILE
     if not path.exists():
+        if not any(cache_dir.glob("*.csv")):
+            # Nothing cached yet — this is a fresh generation, not an adoption.
+            # Warning here would report "reusing" an empty directory, and
+            # stamping "adopted" would certify the cache this run is about to
+            # produce as being of unverified provenance.
+            return False
+
         # Adopt rather than force a full regeneration of existing output trees,
         # but do NOT stamp the current source hash onto a cache of unknown
         # provenance — that would certify it as "built by this code" when we

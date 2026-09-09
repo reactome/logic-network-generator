@@ -15,9 +15,8 @@
 - [x] **T004** `_mapping_uses_stid()` / `_parse_entity_ids()`; select `stId` vs
       `dbId` per check. This alone moved reconstruction from a spurious 0.0% to
       a real 88.2% on R-HSA-69620.
-- [x] **T005** Widen `valid_edge_types` to `{input, output, catalyst,
-      regulator, assembly, dissociation, depletion}` — the original four failed
-      on healthy networks.
+- [x] **T005** Widen `valid_edge_types` to every type the generator emits —
+      the original four failed on healthy networks. See also T021.
 - [x] **T006** Parameterise all Cypher on `$pathway_id` (FR6). Previously
       interpolated, safe only because `argparse type=int` coerced it.
 
@@ -51,27 +50,44 @@
 
 ## Phase 4 — Open
 
-- [ ] **T017** Investigate finding **F1**: `R-HSA-9980233` ("PIP3 activates
-      mTORC2") is absent from every generated artifact for R-HSA-1257604
-      (88/89 reactions represented). Not a self-loop, not disease, not
-      inferred, output complex decomposes, `precedingEvent` present both ways.
-      Determine the drop point in the generator. The pathway has no diagram of
-      its own, so diagram-driven filtering is a candidate — unconfirmed.
-      Per the architecture principle, any fix needs a DeltaSignal before/after,
-      not just an edge-count delta.
+- [x] **T017** ~~Investigate finding F1~~ **RETRACTED — not a defect.**
+      `R-HSA-9980233` is a Reactome **v97** addition; the checked-in output was
+      generated 2026-07-16 against v96, before the v97 bump, and carries no
+      cache fingerprint. Traced the generator stage by stage: connections
+      (89/89), decomposition (1 input + 1 output combination) and
+      `find_best_reaction_match` (emits a VR) all handle it correctly.
+      Regenerated against Release97 -> present in every artifact, coverage
+      passes. Validating a stale artifact against a live database is version
+      skew, not a generator gap.
+- [x] **T021** Add `diagram_bridge` and `handoff` to the edge-type allowlist —
+      surfaced by the fresh regeneration; the stale July artifact predates the
+      additive diagram-connectivity work so it never exercised them.
+- [x] **T022** `_cache_is_reusable`: return False for a cache directory with no
+      CSVs. It was warning "reusing it, provenance UNVERIFIED" about an empty
+      directory and stamping `provenance="adopted"` onto the cache the run was
+      about to *generate*, mislabelling fresh output as unverified.
 - [ ] **T018** Triage the reconstruction gap on R-HSA-69620: 16 Neo4j
       input→output pairs absent, 53 extra pairs emitted. Currently warned at
       88.2%; decide whether the floor should rise once explained.
 - [ ] **T019** Run the validator across the wider curator pathway set, not just
-      the 3 benchmark-eligible ones, and record the F1-class rate.
-- [ ] **T020** Wire the validator into CI once T017/T018 are resolved and the
-      three pathways are green.
+      the 3 benchmark-eligible ones.
+- [ ] **T023** Regenerate the checked-in `output/` tree against Release97. It
+      is v96-era and unfingerprinted; anything validated or benchmarked against
+      it inherits the skew that produced the retracted F1.
+- [ ] **T020** Wire the validator into CI once T018 is resolved. All three
+      pathways are green (11/11) on Release97-fresh output; CI must regenerate
+      rather than validate checked-in artifacts, or it will re-run T017.
 
 ## Notes
 
-The pattern across this whole review — retracted "122 non-converged", the
-dead-code cache fingerprint, and now three classes of validator false
-failure — is that a check or a claim must be verified against ground truth
-before it is reported. Every relaxation in Phase 2 was confirmed with a Neo4j
-query first; F1 is reported as real only because the same queries ruled out
-every structural explanation tried.
+The pattern across this whole review — the retracted "122 non-converged"
+figure, the dead-code cache fingerprint, three classes of validator false
+failure, and now the retracted F1 — is that a claim must be verified against
+ground truth before it is reported.
+
+F1 is the sharpest version: every *structural* explanation was correctly ruled
+out with Neo4j queries, and it was still wrong, because the thing never
+questioned was the **provenance of the artifact being validated**. Ruling out
+explanations is not the same as establishing a cause. When a check disagrees
+with an artifact, the artifact's origin — release, code version, cache
+fingerprint — is part of the evidence, not background.
