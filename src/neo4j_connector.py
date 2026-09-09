@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Any, Dict, List, Optional, Set, Union
 
 import pandas as pd
@@ -20,6 +21,23 @@ def get_graph() -> Graph:
         password = os.getenv("NEO4J_PASSWORD", "test")
         _graph = Graph(url, auth=(user, password))
     return _graph
+
+
+def _safe_neo4j_url() -> str:
+    """NEO4J_URL with any embedded credentials stripped, for logs and errors.
+
+    py2neo accepts (and parses) `bolt://user:password@host:7687`, so echoing
+    the raw env var into an exception message — which callers log to
+    debug_log.txt and stdout — would disclose the password. ConnectionProfile
+    normalises the URL without the auth part; fall back to a manual strip.
+    """
+    raw = os.getenv("NEO4J_URL", "bolt://localhost:7687")
+    try:
+        from py2neo import ConnectionProfile  # type: ignore
+
+        return str(ConnectionProfile(raw).uri)
+    except Exception:
+        return re.sub(r"://[^/@]*@", "://", raw)
 
 # Module-level caches for bulk pre-fetched data
 _labels_cache: Dict[str, List[str]] = {}
@@ -294,7 +312,7 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
         logger.error(f"Error querying Neo4j for pathway {pathway_id}", exc_info=True)
         raise ConnectionError(
             f"Failed to connect to Neo4j database at "
-            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
+            f"{_safe_neo4j_url()}. "
             f"Ensure Neo4j is running and accessible. Original error: {str(e)}"
         ) from e
 
@@ -326,7 +344,7 @@ def get_top_level_pathways() -> List[Dict[str, Any]]:
         logger.error("Error in get_top_level_pathways", exc_info=True)
         raise ConnectionError(
             f"Failed to query top-level pathways from Neo4j at "
-            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
+            f"{_safe_neo4j_url()}. "
             f"Ensure Neo4j is running and accessible. Original error: {str(e)}"
         ) from e
 
@@ -375,7 +393,7 @@ def get_pathway_participating_entities(pathway_id: str) -> Set[str]:
         )
         raise ConnectionError(
             f"Failed to query participating entities from Neo4j at "
-            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
+            f"{_safe_neo4j_url()}. "
             f"Original error: {str(e)}"
         ) from e
 
@@ -422,7 +440,7 @@ def get_pathway_entity_reactions(
         )
         raise ConnectionError(
             f"Failed to query entity reactions from Neo4j at "
-            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
+            f"{_safe_neo4j_url()}. "
             f"Original error: {str(e)}"
         ) from e
 
@@ -457,7 +475,7 @@ def get_pathway_name(pathway_id: str) -> str:
         logger.error(f"Error in get_pathway_name for {pathway_id}", exc_info=True)
         raise ConnectionError(
             f"Failed to query pathway name from Neo4j at "
-            f"{os.getenv('NEO4J_URL', 'bolt://localhost:7687')}. "
+            f"{_safe_neo4j_url()}. "
             f"Original error: {str(e)}"
         ) from e
 
@@ -661,3 +679,31 @@ def get_reference_entity_id(entity_id: str) -> Union[str, None]:
         raise
 
 
+
+
+def get_reactome_release() -> Optional[int]:
+    """The Reactome release number of the connected graph, or None.
+
+    Used to fingerprint per-pathway caches so a cache built against one release
+    is not silently reused against another (the version-skew failure mode where
+    recurated stIds make results unscoreable). Returns None rather than raising
+    when the graph is unreachable or carries no DBInfo node, so fingerprinting
+    degrades to code+env identity instead of breaking generation.
+    """
+    try:
+        rows = get_graph().run(
+            """
+            MATCH (info:DBInfo)
+            RETURN toInteger(coalesce(info.releaseNumber, info.version)) AS version
+            LIMIT 1
+            """
+        ).data()
+        if rows and rows[0].get("version") is not None:
+            return int(rows[0]["version"])
+    except Exception:
+        logger.warning(
+            "Could not read the Reactome release from DBInfo; cache fingerprints "
+            "will not include it.",
+            exc_info=True,
+        )
+    return None

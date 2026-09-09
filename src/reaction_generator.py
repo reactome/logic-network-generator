@@ -68,7 +68,26 @@ DataFrameRow = Dict[str, Any]
 # (Class_I_MHC = 3.3M edges, Chromatin_modifying_enzymes = 1.4M) and the hangs
 # they cause, at the cost of not set-splitting a handful of pathologically large
 # assemblies. Env-tunable via LNG_MAX_VARIANTS; <= 0 disables the cap.
-MAX_VARIANTS = int(os.environ.get("LNG_MAX_VARIANTS", "512"))
+
+
+def _int_env(name: str, default: str) -> int:
+    """Parse an integer env var with an actionable message on bad input.
+
+    These are read at import time (before logging is configured), so a bare
+    ValueError traceback would be the operator's only clue and nothing would
+    reach debug_log.txt. Raise SystemExit with the fix instead.
+    """
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise SystemExit(
+            f"{name} must be an integer (got {raw!r}). "
+            f"Unset it to use the default of {default}."
+        ) from None
+
+
+MAX_VARIANTS = _int_env("LNG_MAX_VARIANTS", "512")
 
 class _DecompositionStore:
     """Append-mostly buffer for decomposition rows with O(1) lookups.
@@ -660,10 +679,33 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
     return all_best_matches
 
 
-def get_decomposed_uid_mapping(
-    pathway_id: str, reaction_connections: pd.DataFrame
-) -> Tuple[pd.DataFrame, List[Any]]:
-    """Get decomposed UID mapping."""
+def reaction_ids_from_connections(reaction_connections: pd.DataFrame) -> List[str]:
+    """The distinct reaction stIds referenced by a reaction_connections table."""
+    reaction_ids_arr = pd.unique(
+        reaction_connections[
+            ["preceding_reaction_id", "following_reaction_id"]
+        ].values.ravel("K")
+    )
+    reaction_ids_arr = reaction_ids_arr[~pd.isna(reaction_ids_arr)]
+    return [str(r) for r in reaction_ids_arr]
+
+
+def prime_entity_caches(reaction_connections: pd.DataFrame) -> None:
+    """Clear and re-prime the per-pathway entity caches for this pathway.
+
+    Must run before any get_complex_components/get_set_members/
+    get_reference_entity_id call for a new pathway. `prefetch_entity_data` sets
+    the `_prefetch_done` sentinel, after which those getters return
+    empty/None — "not in the bulk results means no components" — for anything
+    absent from the cache.
+
+    That is correct only while the cache holds THIS pathway's entities. The
+    cached-CSV path in pathway_generator skips `get_decomposed_uid_mapping`
+    entirely, so without calling this a later pathway in a multi-pathway run
+    inherits the previous pathway's `_prefetch_done=True` and its entity cache;
+    every complex in the new pathway then resolves as atomic, silently, and the
+    emitted network loses all of its assembly/decomposition structure.
+    """
     global reference_entity_dict, _complex_contains_set_cache
     global _direct_component_stoichiometry
 
@@ -672,17 +714,16 @@ def get_decomposed_uid_mapping(
     _complex_contains_set_cache.clear()
     _direct_component_stoichiometry.clear()
     clear_prefetch_cache()
-
-    reaction_ids_arr = pd.unique(
-        reaction_connections[
-            ["preceding_reaction_id", "following_reaction_id"]
-        ].values.ravel("K")
-    )
-    reaction_ids_arr = reaction_ids_arr[~pd.isna(reaction_ids_arr)]
-    reaction_ids: List[str] = [str(r) for r in reaction_ids_arr]
-
     # Bulk pre-fetch all entity data from Neo4j (replaces thousands of individual queries)
-    prefetch_entity_data(reaction_ids)
+    prefetch_entity_data(reaction_ids_from_connections(reaction_connections))
+
+
+def get_decomposed_uid_mapping(
+    pathway_id: str, reaction_connections: pd.DataFrame
+) -> Tuple[pd.DataFrame, List[Any]]:
+    """Get decomposed UID mapping."""
+    prime_entity_caches(reaction_connections)
+    reaction_ids: List[str] = reaction_ids_from_connections(reaction_connections)
 
     best_matches = decompose_by_reactions(reaction_ids)
 

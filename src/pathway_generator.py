@@ -1,6 +1,9 @@
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
+from typing import Any, Dict
 
 import pandas as pd
 
@@ -13,8 +16,104 @@ from src.logic_network_generator import (
     export_nodes,
     export_uuid_to_reactome_mapping,
 )
-from src.neo4j_connector import get_reaction_connections
-from src.reaction_generator import get_decomposed_uid_mapping
+from src.neo4j_connector import get_reaction_connections, get_reactome_release
+from src.reaction_generator import get_decomposed_uid_mapping, prime_entity_caches
+
+# Env vars that change what a generated network contains. Anything listed here
+# is part of the cache fingerprint, so flipping one invalidates stale caches
+# instead of silently reusing a network built under the old setting.
+_FINGERPRINTED_ENV = (
+    "LNG_MAX_VARIANTS",
+    "LNG_COMPLEX_AS_NODE",
+    "LNG_SET_EXPAND",
+    "LNG_CATALYST_BUNDLE",
+    "LNG_DIAGRAM_CONNECTIVITY",
+    "LNG_DIAGRAM_BRIDGE",
+    "LNG_DIAGRAM_DIR",
+    "LNG_HANDOFF_EDGES",
+    "LNG_HANDOFF_HUB_MAX",
+)
+
+_FINGERPRINT_FILE = "fingerprint.json"
+
+
+def _cache_fingerprint() -> Dict[str, Any]:
+    """Identity of everything that determines a cached network's contents.
+
+    The per-pathway `cache/` dir is reused on mere file existence, with no
+    record of what produced it. That makes a benchmark delta unattributable: a
+    rerun with changed code or a changed LNG_* setting silently replays the old
+    network (verified: the same env produced 139 edges from cache vs 58 fresh).
+    Hashing the source tree catches uncommitted edits, which a git rev would
+    not.
+    """
+    src_dir = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(src_dir.glob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return {
+        "src_sha256": digest.hexdigest(),
+        "env": {key: os.environ.get(key, "") for key in _FINGERPRINTED_ENV},
+        "reactome_release": get_reactome_release(),
+    }
+
+
+def _cache_is_reusable(cache_dir: Path, current: Dict[str, Any]) -> bool:
+    """True when `cache_dir` was produced by the current code/env/release.
+
+    A cache with no fingerprint is *adopted* (stamped and reused) so existing
+    output trees keep working without a forced full regeneration; protection
+    starts from the next run. A cache whose fingerprint differs is rejected and
+    regenerated, naming what changed.
+    """
+    path = cache_dir / _FINGERPRINT_FILE
+    if not path.exists():
+        logger.info(
+            "Cache has no fingerprint; adopting it and stamping %s. Changes to "
+            "code, LNG_* settings, or the Reactome release will invalidate it "
+            "from now on.",
+            path,
+        )
+        _write_cache_fingerprint(cache_dir, current)
+        return True
+
+    try:
+        stored = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.warning("Unreadable cache fingerprint %s (%s); regenerating.", path, exc)
+        return False
+
+    if stored == current:
+        return True
+
+    changed = []
+    if stored.get("src_sha256") != current["src_sha256"]:
+        changed.append("generator source")
+    if stored.get("reactome_release") != current["reactome_release"]:
+        changed.append(
+            f"Reactome release ({stored.get('reactome_release')} -> "
+            f"{current['reactome_release']})"
+        )
+    for key in _FINGERPRINTED_ENV:
+        old = (stored.get("env") or {}).get(key, "")
+        new = current["env"][key]
+        if old != new:
+            changed.append(f"{key} ({old!r} -> {new!r})")
+    logger.warning(
+        "Cache in %s was built under different inputs (%s); regenerating so the "
+        "result reflects the current configuration.",
+        cache_dir,
+        "; ".join(changed) or "unknown difference",
+    )
+    return False
+
+
+def _write_cache_fingerprint(cache_dir: Path, fingerprint: Dict[str, Any]) -> None:
+    try:
+        (cache_dir / _FINGERPRINT_FILE).write_text(json.dumps(fingerprint, indent=2, sort_keys=True))
+    except OSError as exc:
+        logger.warning("Could not write cache fingerprint: %s", exc)
 
 
 def sanitize_filename(name: str) -> str:
@@ -104,6 +203,11 @@ def generate_pathway_file(
                 dtype=decomposed_uid_mapping_column_types,  # type: ignore[arg-type]
             )
             best_matches = pd.read_csv(best_matches_file)
+            # Reusing the cached decomposition skips get_decomposed_uid_mapping,
+            # which is the only place the entity caches are cleared and primed.
+            # Prime them here or this pathway inherits the previous pathway's
+            # prefetch state and every one of its complexes resolves as atomic.
+            prime_entity_caches(reaction_connections)
         else:
             logger.info("Decomposing complexes and entity sets...")
             [decomposed_uid_mapping, best_matches_list] = get_decomposed_uid_mapping(

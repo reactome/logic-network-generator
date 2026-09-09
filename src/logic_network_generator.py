@@ -12,6 +12,7 @@ from src.reaction_generator import (
     modifier_isoform_set_ids,
     get_terminal_components,
     MAX_VARIANTS,
+    _int_env,
 )
 
 
@@ -1248,7 +1249,7 @@ def _emit_precedingevent_handoff_edges(
     # hub spreads a perturbation to readouts it doesn't affect (false positives).
     # Count how many distinct nodes each leaf appears in; only leaves appearing
     # in <= HUB_MAX nodes are allowed to act as the transferred carrier.
-    HUB_MAX = int(os.environ.get("LNG_HANDOFF_HUB_MAX", "3"))
+    HUB_MAX = _int_env("LNG_HANDOFF_HUB_MAX", "3")
     leaf_nodes: Dict[str, set] = {}
     all_node_ids: Set[str] = set()
     for (ins_, outs_, _si, _so) in vr_entities.values():

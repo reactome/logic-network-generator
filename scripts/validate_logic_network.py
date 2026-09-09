@@ -365,12 +365,22 @@ class LogicNetworkValidator:
 
         result.add_info(f"Matching: {matches}/{len(neo4j_reaction_pairs)} ({accuracy:.1f}%)")
 
+        # A reconstruction accuracy of 0% used to report PASS, because this
+        # branch only warned. Fail below a floor so catastrophic breakage is
+        # caught, and keep warning in the band between the floor and 90% where a
+        # shortfall may be a known structural gap rather than a defect.
+        min_accuracy = float(os.environ.get("LNG_VALIDATE_MIN_RECONSTRUCTION", "50"))
         if accuracy == 100.0:
             result.add_info("🎉 Perfect reconstruction!")
         elif accuracy >= 90:
             result.add_info("Good reconstruction (>90%)")
-        else:
+        elif accuracy >= min_accuracy:
             result.warn(f"Reconstruction accuracy below 90%: {accuracy:.1f}%")
+        else:
+            result.fail(
+                f"Reconstruction accuracy {accuracy:.1f}% is below the "
+                f"{min_accuracy:.0f}% floor (LNG_VALIDATE_MIN_RECONSTRUCTION)"
+            )
 
         if missing:
             result.warn(f"{len(missing)} edges in Neo4j but not in logic network")
@@ -390,7 +400,11 @@ class LogicNetworkValidator:
             self_loops = edges[edges['source_id'] == edges['target_id']]
 
             if len(self_loops) > 0:
-                result.warn(f"{edge_type} has {len(self_loops)} self-loops at UUID level")
+                # This check exists to reject self-loops, so finding them must
+                # FAIL. Reporting them as a warning left `passed = True`, i.e.
+                # "ALL VALIDATIONS PASSED" on a network full of the exact defect
+                # the check is named after.
+                result.fail(f"{edge_type} has {len(self_loops)} self-loops at UUID level")
                 # Show examples
                 for _, edge in self_loops.head(3).iterrows():
                     result.warn(f"  Example: {edge['source_id']} → {edge['target_id']}")
