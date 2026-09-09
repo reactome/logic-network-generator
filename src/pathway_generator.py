@@ -91,16 +91,33 @@ def _cache_is_reusable(cache_dir: Path, current: Dict[str, Any]) -> bool:
     changed = []
     if stored.get("src_sha256") != current["src_sha256"]:
         changed.append("generator source")
-    if stored.get("reactome_release") != current["reactome_release"]:
-        changed.append(
-            f"Reactome release ({stored.get('reactome_release')} -> "
-            f"{current['reactome_release']})"
-        )
+    # An UNKNOWN release is not evidence of a change. get_reactome_release()
+    # returns None when the DBInfo lookup fails, so comparing None against a
+    # stored 97 would force a spurious full regeneration on a transient blip.
+    # Only treat the release as differing when both sides actually know it.
+    stored_release = stored.get("reactome_release")
+    current_release = current["reactome_release"]
+    if (
+        stored_release is not None
+        and current_release is not None
+        and stored_release != current_release
+    ):
+        changed.append(f"Reactome release ({stored_release} -> {current_release})")
     for key in _FINGERPRINTED_ENV:
         old = (stored.get("env") or {}).get(key, "")
         new = current["env"][key]
         if old != new:
             changed.append(f"{key} ({old!r} -> {new!r})")
+
+    if not changed:
+        # The only difference was an unknown release; keep the cache and leave
+        # the existing stamp in place rather than discarding work.
+        logger.info(
+            "Cache fingerprint in %s differs only in an unknown Reactome release; "
+            "reusing the cache.",
+            cache_dir,
+        )
+        return True
     logger.warning(
         "Cache in %s was built under different inputs (%s); regenerating so the "
         "result reflects the current configuration.",
