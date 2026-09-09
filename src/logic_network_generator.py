@@ -12,6 +12,7 @@ from src.reaction_generator import (
     modifier_isoform_set_ids,
     get_terminal_components,
     MAX_VARIANTS,
+    _int_env,
 )
 
 
@@ -1248,7 +1249,7 @@ def _emit_precedingevent_handoff_edges(
     # hub spreads a perturbation to readouts it doesn't affect (false positives).
     # Count how many distinct nodes each leaf appears in; only leaves appearing
     # in <= HUB_MAX nodes are allowed to act as the transferred carrier.
-    HUB_MAX = int(os.environ.get("LNG_HANDOFF_HUB_MAX", "3"))
+    HUB_MAX = _int_env("LNG_HANDOFF_HUB_MAX", "3")
     leaf_nodes: Dict[str, set] = {}
     all_node_ids: Set[str] = set()
     for (ins_, outs_, _si, _so) in vr_entities.values():
@@ -1518,6 +1519,10 @@ def append_regulators(
         bundle_on = os.environ.get("LNG_CATALYST_BUNDLE", "0") == "1"
         variant_decomposition = (pos_neg == "neg") and not complex_as_node
         bundle_complex = complex_as_node or ((pos_neg == "pos") and bundle_on)
+        # Emit set-derived positive regulator members as OR alternatives
+        # (see the and_or comment below). Opt-in while it is being A/B'd.
+        set_members_or = os.environ.get("LNG_SET_MEMBERS_OR", "0") == "1"
+        from src.neo4j_connector import get_labels, get_set_members
 
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])
@@ -1534,6 +1539,38 @@ def append_regulators(
             # blocker suffices. The Complex/EntitySet decomposition tree
             # is preserved in decomposed_uid_mapping.csv.
             and_or = "and" if pos_neg == "pos" else "or"
+
+            # LNG_SET_MEMBERS_OR: the reasoning above holds ACROSS distinct
+            # regulators but inverts the curation WITHIN a single set-valued one.
+            # An EntitySet regulator means "any one of these plays this role", so
+            # flattening it to N members all marked "and" asserts that every
+            # isoform is simultaneously required. Concretely, catalyst
+            # R-HSA-5622009 "ITPR tetramers" (a DefinedSet of the ITPR1/2/3
+            # tetramers) on reaction R-HSA-169680 emits three pos/and edges —
+            # "all three isoforms required" — where the curator said any one
+            # catalyses it. Downstream that is systematic signal dilution: a
+            # perturbation of one isoform is gated by its unperturbed paralogs.
+            # Members of a Complex stay "and": those genuinely are co-required.
+            #
+            # Only positive edges need this; negative regulators are already
+            # "or". Sets treated atomically (modifier isoforms) decompose to a
+            # single member and are unaffected by the length guard.
+            if set_members_or and pos_neg == "pos" and len(terminal_members) > 1:
+                labels = get_labels(entity_id) or []
+                if (
+                    "EntitySet" in labels
+                    or "DefinedSet" in labels
+                    or "CandidateSet" in labels
+                ):
+                    # Only mark "or" when the decomposition produced exactly one
+                    # entry per set MEMBER. `terminal_members` is a flattened
+                    # leaf list: under LNG_COMPLEX_AS_NODE=0 a member that is
+                    # itself a Complex is shattered into its co-required
+                    # subunits, and marking those "or" would assert the opposite
+                    # of the curation (727 sets / 977 reactions have that shape).
+                    members = get_set_members(entity_id)
+                    if len(members) > 1 and len(terminal_members) == len(members):
+                        and_or = "or"
 
             for member_id, member_stoich in terminal_members:
                 if member_id in stid_to_existing_uuid:

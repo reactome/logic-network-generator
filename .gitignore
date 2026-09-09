@@ -1,3 +1,11 @@
+# Local agent / editor settings.
+# Personal machine state (settings.local.json holds per-developer permission
+# rules, sometimes with credentials in command strings) stays local. The
+# spec-kit agent commands under .claude/skills/ ARE tracked so the
+# /speckit-* workflow works on a fresh clone without re-running `specify init`.
+.claude/*
+!.claude/skills/
+
 # Log files
 *.log
 debug_log.txt
@@ -37,8 +45,11 @@ Thumbs.db
 .env.*
 !.env.example
 
-# Output folder of results
+# Output folders of results. Generation runs use --output-dir with sibling
+# names (output_tlp, output_r97, output_diag_on, ...), so ignore the whole
+# family — otherwise a `git add -A` commits hundreds of generated networks.
 output
+output_*/
 
 # Generated data files
 db_id_to_name_mapping.tsv
