@@ -1519,6 +1519,10 @@ def append_regulators(
         bundle_on = os.environ.get("LNG_CATALYST_BUNDLE", "0") == "1"
         variant_decomposition = (pos_neg == "neg") and not complex_as_node
         bundle_complex = complex_as_node or ((pos_neg == "pos") and bundle_on)
+        # Emit set-derived positive regulator members as OR alternatives
+        # (see the and_or comment below). Opt-in while it is being A/B'd.
+        set_members_or = os.environ.get("LNG_SET_MEMBERS_OR", "0") == "1"
+        from src.neo4j_connector import get_labels
 
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])
@@ -1535,6 +1539,30 @@ def append_regulators(
             # blocker suffices. The Complex/EntitySet decomposition tree
             # is preserved in decomposed_uid_mapping.csv.
             and_or = "and" if pos_neg == "pos" else "or"
+
+            # LNG_SET_MEMBERS_OR: the reasoning above holds ACROSS distinct
+            # regulators but inverts the curation WITHIN a single set-valued one.
+            # An EntitySet regulator means "any one of these plays this role", so
+            # flattening it to N members all marked "and" asserts that every
+            # isoform is simultaneously required. Concretely, catalyst
+            # R-HSA-5622009 "ITPR tetramers" (a DefinedSet of the ITPR1/2/3
+            # tetramers) on reaction R-HSA-169680 emits three pos/and edges —
+            # "all three isoforms required" — where the curator said any one
+            # catalyses it. Downstream that is systematic signal dilution: a
+            # perturbation of one isoform is gated by its unperturbed paralogs.
+            # Members of a Complex stay "and": those genuinely are co-required.
+            #
+            # Only positive edges need this; negative regulators are already
+            # "or". Sets treated atomically (modifier isoforms) decompose to a
+            # single member and are unaffected by the length guard.
+            if set_members_or and pos_neg == "pos" and len(terminal_members) > 1:
+                labels = get_labels(entity_id) or []
+                if (
+                    "EntitySet" in labels
+                    or "DefinedSet" in labels
+                    or "CandidateSet" in labels
+                ):
+                    and_or = "or"
 
             for member_id, member_stoich in terminal_members:
                 if member_id in stid_to_existing_uuid:
