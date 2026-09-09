@@ -33,6 +33,12 @@ _FINGERPRINTED_ENV = (
     "LNG_HANDOFF_EDGES",
     "LNG_HANDOFF_HUB_MAX",
     "LNG_SET_MEMBERS_OR",
+    # Determinism controls: node ids are uuid4 and several selections iterate
+    # sets, so hash seeding changes emitted content (~5.8% of TP53 edges per
+    # bin/create-pathways.py). A cache built unseeded is not comparable to a
+    # seeded one.
+    "PYTHONHASHSEED",
+    "LNG_ALLOW_NONDETERMINISM",
 )
 
 _FINGERPRINT_FILE = "fingerprint.json"
@@ -41,23 +47,44 @@ _FINGERPRINT_FILE = "fingerprint.json"
 def _cache_fingerprint() -> Dict[str, Any]:
     """Identity of everything that determines a cached network's contents.
 
-    The per-pathway `cache/` dir is reused on mere file existence, with no
+    The per-pathway `cache/` dir is reused on file existence alone, with no
     record of what produced it. That makes a benchmark delta unattributable: a
     rerun with changed code or a changed LNG_* setting silently replays the old
     network (verified: the same env produced 139 edges from cache vs 58 fresh).
-    Hashing the source tree catches uncommitted edits, which a git rev would
-    not.
+    Hashing the source tree catches uncommitted edits, which a git rev would not.
     """
-    src_dir = Path(__file__).resolve().parent
     digest = hashlib.sha256()
-    for path in sorted(src_dir.glob("*.py")):
+    sources = sorted((Path(__file__).resolve().parent).glob("*.py"))
+    # The CLI entrypoint also shapes output (it sets PYTHONHASHSEED and parses
+    # the pathway list), so include it when present.
+    entrypoint = Path(__file__).resolve().parents[1] / "bin" / "create-pathways.py"
+    if entrypoint.exists():
+        sources.append(entrypoint)
+    for path in sources:
         digest.update(path.name.encode())
         digest.update(path.read_bytes())
     return {
         "src_sha256": digest.hexdigest(),
         "env": {key: os.environ.get(key, "") for key in _FINGERPRINTED_ENV},
-        "reactome_release": get_reactome_release(),
+        # Two different databases can both report release 97, so the release
+        # number alone does not identify the source graph. Store a HASH of the
+        # connection URL, never the URL itself — it may embed credentials, and
+        # this file is written into the output tree.
+        "db_identity": hashlib.sha256(
+            os.environ.get("NEO4J_URL", "bolt://localhost:7687").encode()
+        ).hexdigest()[:16],
+        "reactome_release": _reactome_release_cached(),
     }
+
+
+_RELEASE_CACHE: Dict[str, Any] = {}
+
+
+def _reactome_release_cached() -> Any:
+    """`get_reactome_release()` memoized for the process (a ~33 ms DB query)."""
+    if "value" not in _RELEASE_CACHE:
+        _RELEASE_CACHE["value"] = get_reactome_release()
+    return _RELEASE_CACHE["value"]
 
 
 def _cache_is_reusable(cache_dir: Path, current: Dict[str, Any]) -> bool:
@@ -70,13 +97,18 @@ def _cache_is_reusable(cache_dir: Path, current: Dict[str, Any]) -> bool:
     """
     path = cache_dir / _FINGERPRINT_FILE
     if not path.exists():
-        logger.info(
-            "Cache has no fingerprint; adopting it and stamping %s. Changes to "
-            "code, LNG_* settings, or the Reactome release will invalidate it "
-            "from now on.",
-            path,
+        # Adopt rather than force a full regeneration of existing output trees,
+        # but do NOT stamp the current source hash onto a cache of unknown
+        # provenance — that would certify it as "built by this code" when we
+        # have no idea what built it. Record the adoption instead, so a later
+        # run can still tell the provenance was never verified.
+        logger.warning(
+            "Cache %s has no fingerprint: reusing it, but its provenance is "
+            "UNVERIFIED (it may have been built by different code). Delete the "
+            "cache dir to force a clean, attributable regeneration.",
+            cache_dir,
         )
-        _write_cache_fingerprint(cache_dir, current)
+        _write_cache_fingerprint(cache_dir, current, provenance="adopted")
         return True
 
     try:
@@ -89,8 +121,17 @@ def _cache_is_reusable(cache_dir: Path, current: Dict[str, Any]) -> bool:
         return True
 
     changed = []
-    if stored.get("src_sha256") != current["src_sha256"]:
+    adopted = stored.get("provenance") == "adopted"
+    if adopted:
+        logger.warning(
+            "Cache %s was adopted without provenance; source changes since then "
+            "cannot be detected.",
+            cache_dir,
+        )
+    elif stored.get("src_sha256") != current["src_sha256"]:
         changed.append("generator source")
+    if stored.get("db_identity") != current["db_identity"]:
+        changed.append("Neo4j connection target")
     # An UNKNOWN release is not evidence of a change. get_reactome_release()
     # returns None when the DBInfo lookup fails, so comparing None against a
     # stored 97 would force a spurious full regeneration on a transient blip.
@@ -127,9 +168,16 @@ def _cache_is_reusable(cache_dir: Path, current: Dict[str, Any]) -> bool:
     return False
 
 
-def _write_cache_fingerprint(cache_dir: Path, fingerprint: Dict[str, Any]) -> None:
+def _write_cache_fingerprint(
+    cache_dir: Path, fingerprint: Dict[str, Any], provenance: str = "generated"
+) -> None:
+    record = dict(fingerprint)
+    record["provenance"] = provenance
+    if provenance == "adopted":
+        # We did not build these files; claiming a source hash would be a lie.
+        record["src_sha256"] = None
     try:
-        (cache_dir / _FINGERPRINT_FILE).write_text(json.dumps(fingerprint, indent=2, sort_keys=True))
+        (cache_dir / _FINGERPRINT_FILE).write_text(json.dumps(record, indent=2, sort_keys=True))
     except OSError as exc:
         logger.warning("Could not write cache fingerprint: %s", exc)
 
@@ -199,8 +247,15 @@ def generate_pathway_file(
     best_matches_file = cache_dir / "best_matches.csv"
 
     try:
+        # Decide ONCE per pathway whether this cache dir may be reused. Without
+        # this the reuse decision is a bare exists() check with no record of what
+        # produced the files, so a rerun after a code or LNG_* change silently
+        # replays the old network and a benchmark delta cannot be attributed.
+        fingerprint = _cache_fingerprint()
+        cache_usable = _cache_is_reusable(cache_dir, fingerprint)
+
         # Load or fetch reaction connections
-        if os.path.exists(reaction_connections_file):
+        if cache_usable and os.path.exists(reaction_connections_file):
             logger.info(f"Loading cached reaction connections from {reaction_connections_file}")
             reaction_connections = pd.read_csv(reaction_connections_file, dtype=str)
         else:
@@ -214,7 +269,7 @@ def generate_pathway_file(
                 # Continue without caching
 
         # Load or generate decomposition and best matches
-        if os.path.exists(decomposed_uid_mapping_file) and os.path.exists(best_matches_file):
+        if cache_usable and os.path.exists(decomposed_uid_mapping_file) and os.path.exists(best_matches_file):
             logger.info(f"Loading cached decomposition from {decomposed_uid_mapping_file}")
             decomposed_uid_mapping = pd.read_csv(
                 decomposed_uid_mapping_file,
@@ -240,6 +295,11 @@ def generate_pathway_file(
                 decomposed_uid_mapping.to_csv(decomposed_uid_mapping_file, index=False)
                 best_matches.to_csv(best_matches_file, index=False)
                 logger.info(f"Cached decomposition to {decomposed_uid_mapping_file}")
+                # Stamp the cache we just PRODUCED with real provenance. Without
+                # a write here the mechanism only ever adopts: generate, change
+                # the code, rerun, and the next run would adopt the stale cache
+                # and stamp the NEW hash onto it.
+                _write_cache_fingerprint(cache_dir, fingerprint, provenance="generated")
             except IOError as e:
                 logger.warning(f"Could not cache decomposition results: {e}")
                 # Continue without caching

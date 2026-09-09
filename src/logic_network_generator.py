@@ -1522,7 +1522,7 @@ def append_regulators(
         # Emit set-derived positive regulator members as OR alternatives
         # (see the and_or comment below). Opt-in while it is being A/B'd.
         set_members_or = os.environ.get("LNG_SET_MEMBERS_OR", "0") == "1"
-        from src.neo4j_connector import get_labels
+        from src.neo4j_connector import get_labels, get_set_members
 
         for _, row in map_df.iterrows():
             entity_id = str(row["entity_id"])
@@ -1562,7 +1562,15 @@ def append_regulators(
                     or "DefinedSet" in labels
                     or "CandidateSet" in labels
                 ):
-                    and_or = "or"
+                    # Only mark "or" when the decomposition produced exactly one
+                    # entry per set MEMBER. `terminal_members` is a flattened
+                    # leaf list: under LNG_COMPLEX_AS_NODE=0 a member that is
+                    # itself a Complex is shattered into its co-required
+                    # subunits, and marking those "or" would assert the opposite
+                    # of the curation (727 sets / 977 reactions have that shape).
+                    members = get_set_members(entity_id)
+                    if len(members) > 1 and len(terminal_members) == len(members):
+                        and_or = "or"
 
             for member_id, member_stoich in terminal_members:
                 if member_id in stid_to_existing_uuid:

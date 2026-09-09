@@ -369,7 +369,15 @@ class LogicNetworkValidator:
         # branch only warned. Fail below a floor so catastrophic breakage is
         # caught, and keep warning in the band between the floor and 90% where a
         # shortfall may be a known structural gap rather than a defect.
-        min_accuracy = float(os.environ.get("LNG_VALIDATE_MIN_RECONSTRUCTION", "50"))
+        raw_min = os.environ.get("LNG_VALIDATE_MIN_RECONSTRUCTION", "50")
+        try:
+            min_accuracy = float(raw_min)
+        except (TypeError, ValueError):
+            result.warn(
+                f"LNG_VALIDATE_MIN_RECONSTRUCTION={raw_min!r} is not a number; "
+                f"using the default of 50."
+            )
+            min_accuracy = 50.0
         if accuracy == 100.0:
             result.add_info("🎉 Perfect reconstruction!")
         elif accuracy >= 90:

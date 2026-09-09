@@ -73,15 +73,21 @@ DataFrameRow = Dict[str, Any]
 def _int_env(name: str, default: str) -> int:
     """Parse an integer env var with an actionable message on bad input.
 
-    These are read at import time (before logging is configured), so a bare
-    ValueError traceback would be the operator's only clue and nothing would
-    reach debug_log.txt. Raise SystemExit with the fix instead.
+    Raises ValueError, deliberately NOT SystemExit: these are read at import
+    time, and a SystemExit during import aborts the whole pytest session with
+    an INTERNALERROR and zero tests run, which is a worse signal than a normal
+    collection error for the one importing module.
+
+    An empty value is treated as unset — that is the classic Docker
+    `--env VAR` passthrough of an unset host variable.
     """
     raw = os.environ.get(name, default)
+    if raw is None or raw.strip() == "":
+        raw = default
     try:
         return int(raw)
     except (TypeError, ValueError):
-        raise SystemExit(
+        raise ValueError(
             f"{name} must be an integer (got {raw!r}). "
             f"Unset it to use the default of {default}."
         ) from None
@@ -714,8 +720,20 @@ def prime_entity_caches(reaction_connections: pd.DataFrame) -> None:
     _complex_contains_set_cache.clear()
     _direct_component_stoichiometry.clear()
     clear_prefetch_cache()
+    reaction_ids = reaction_ids_from_connections(reaction_connections)
+    if not reaction_ids:
+        # prefetch_entity_data([]) returns early with _prefetch_done=True and
+        # every cache empty, after which the getters report "no components" for
+        # everything and the pathway silently emits an all-atomic network. A
+        # truncated or header-only cached reaction_connections.csv is the way in.
+        raise ValueError(
+            "No reaction ids for this pathway; refusing to prime the entity "
+            "caches with an empty prefetch (a truncated cached "
+            "reaction_connections.csv would otherwise yield an all-atomic "
+            "network). Delete the pathway's cache/ dir and regenerate."
+        )
     # Bulk pre-fetch all entity data from Neo4j (replaces thousands of individual queries)
-    prefetch_entity_data(reaction_ids_from_connections(reaction_connections))
+    prefetch_entity_data(reaction_ids)
 
 
 def get_decomposed_uid_mapping(

@@ -1,5 +1,4 @@
 import os
-import re
 from typing import Any, Dict, List, Optional, Set, Union
 
 import pandas as pd
@@ -24,20 +23,38 @@ def get_graph() -> Graph:
 
 
 def _safe_neo4j_url() -> str:
-    """NEO4J_URL with any embedded credentials stripped, for logs and errors.
+    """NEO4J_URL reduced to scheme://host[:port], for logs and error messages.
 
-    py2neo accepts (and parses) `bolt://user:password@host:7687`, so echoing
-    the raw env var into an exception message — which callers log to
-    debug_log.txt and stdout — would disclose the password. ConnectionProfile
-    normalises the URL without the auth part; fall back to a manual strip.
+    py2neo accepts credentials embedded in the URL, so echoing the raw env var
+    into an exception message — which callers log to debug_log.txt and stdout —
+    would disclose the password.
+
+    Neither ConnectionProfile.uri nor a regex is safe: an unencoded "@" or "/"
+    in a password makes both emit password FRAGMENTS (bolt://neo4j:p@ss@host
+    became "bolt://ss@host"; with a "/" in the password even urlsplit
+    mis-splits the authority WITHOUT raising, yielding "bolt://ss"). So parse
+    conservatively by hand and, whenever the credential portion is ambiguous,
+    disclose nothing rather than risk a fragment.
     """
     raw = os.getenv("NEO4J_URL", "bolt://localhost:7687")
-    try:
-        from py2neo import ConnectionProfile  # type: ignore
+    scheme, sep, rest = raw.partition("://")
+    if not sep or not rest or not scheme:
+        return "<neo4j-url>"
+    if "@" in rest:
+        # Split at the LAST "@" so extra "@" inside a password cannot leak.
+        userinfo, _, hostpart = rest.rpartition("@")
+        if "/" in userinfo:
+            # An unencoded "/" in the credentials makes the authority
+            # boundary undecidable; any reconstruction risks emitting part of
+            # the password.
+            return f"{scheme}://<redacted>"
+        authority = hostpart
+    else:
+        authority = rest
+    # Drop any path/query, leaving host[:port].
+    authority = authority.split("/", 1)[0].split("?", 1)[0]
+    return f"{scheme}://{authority}" if authority else "<neo4j-url>"
 
-        return str(ConnectionProfile(raw).uri)
-    except Exception:
-        return re.sub(r"://[^/@]*@", "://", raw)
 
 # Module-level caches for bulk pre-fetched data
 _labels_cache: Dict[str, List[str]] = {}
