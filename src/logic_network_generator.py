@@ -962,6 +962,17 @@ _UBIQUITIN_STIDS: frozenset = frozenset({
 })
 
 
+# Species that must never carry a diagram bridge. A bridge says "this
+# producer feeds that consumer", which is meaningless for a shared cofactor or
+# free ubiquitin: every reaction in a pathway touches ATP, so bridging on it
+# couples reactions that have no causal relationship. `_node_leaves` already
+# subtracts these on the handoff path; the bridge path's comment claimed the
+# caller excluded cofactor hubs, but nothing did. Curators sometimes draw a
+# single shared Ub glyph, which is how two glyphs became 134 of S Phase's 158
+# bridges. See issue #61.
+_BRIDGE_EXCLUDED_STIDS: frozenset = _COFACTOR_STIDS | _UBIQUITIN_STIDS
+
+
 def _emit_substrate_depletion_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -1863,7 +1874,7 @@ def create_pathway_logic_network(
                 p_outputs = set(vr_entities.get(p_vr, ([], [], {}, {}))[1])
                 for f_vr in reactome_to_vr.get(b_rid, []):
                     f_inputs = set(vr_entities.get(f_vr, ([], [], {}, {}))[0])
-                    for eid in p_outputs & f_inputs:
+                    for eid in (p_outputs & f_inputs) - _BRIDGE_EXCLUDED_STIDS:
                         src = entity_uuid_registry.get((eid, p_vr, "output"))
                         tgt = entity_uuid_registry.get((eid, f_vr, "input"))
                         # Skip if missing or already the same node (already
