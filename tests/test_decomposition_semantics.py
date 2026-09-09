@@ -295,3 +295,43 @@ class TestCrossCallStability:
         assert len(prov) == 2, (
             "Cache short-circuit must prevent duplicate provenance rows on re-entry."
         )
+
+    def test_repeated_complex_decomposition_returns_combinations_not_components(self):
+        """The memo must return what the uncached branch returns.
+
+        A Complex-containing-EntitySet returns COMBINATION uids (one per
+        set-variant, each standing for the whole complex). The memo used to
+        re-read the stored rows' `input_or_output_*` columns, which hold the
+        individual COMPONENTS — so the second decomposition handed the caller
+        the complex's subunits instead. The caller feeds that into a
+        per-reaction itertools.product as alternatives, so every later
+        appearance of the complex was modelled as "any one of my subunits":
+        CCNA + CDK2 -> CCNA:CDK2 was emitted with "CDK2 alone" as a complete
+        output. See issue #58 and specs/002-break-apart-memo.
+        """
+        labels = _label_map({
+            "C": ["Complex"], "S": ["EntitySet"],
+            "A": ["EntityWithAccessionedSequence"],
+            "B": ["EntityWithAccessionedSequence"],
+            "P": ["EntityWithAccessionedSequence"],
+        })
+        components = _components_map({"C": {"S": 1, "P": 1}})
+        members = _members_map({"S": ["A", "B"]})
+        with patch.object(rg, "get_labels", labels), \
+             patch.object(rg, "get_complex_components", components), \
+             patch.object(rg, "get_set_members", members), \
+             patch.object(rg, "get_reference_entity_id", _ref_entity_map({})):
+            first = rg.break_apart_entity("C")
+            second = rg.break_apart_entity("C")
+
+        assert first == second, (
+            "Re-decomposing a Complex must return the same thing. If this "
+            "fails, the memo and the function it memoizes disagree."
+        )
+        # Two set members, one other component => two variant combinations.
+        assert len(first) == 2, f"expected 2 combination uids, got {sorted(first)}"
+        assert not ({"A", "B", "P", "S"} & first), (
+            "A Complex must never decompose to bare component ids — those are "
+            "treated as ALTERNATIVES by the caller, which asserts that a free "
+            "subunit is a complete product of complex formation."
+        )
