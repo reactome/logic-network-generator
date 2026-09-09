@@ -552,6 +552,28 @@ def break_apart_entity(entity_id: str, source_entity_id: Optional[str] = None) -
     if "EntitySet" in labels or "Complex" in labels:
         cached = _store.rows_by_reactome_id(entity_id)
         if cached:
+            # The memo must return what the uncached branch below returns, and
+            # the two entity kinds return different things.
+            #
+            # A Complex returns get_broken_apart_ids(...) = the COMBINATION
+            # uids, one per set-variant, each standing for the whole complex.
+            # Its rows come from get_uids_for_iterproduct_components, which
+            # stores that combination in `uid` and puts the individual
+            # COMPONENTS in input_or_output_uid / input_or_output_reactome_id.
+            # Returning those columns therefore handed the caller the complex's
+            # subunits, and the caller feeds the result into a per-reaction
+            # itertools.product as ALTERNATIVES — so on its second and every
+            # later appearance a Complex was modelled as "any one of my
+            # subunits". CCNA + CDK2 -> CCNA:CDK2 was emitted with "CDK2 alone"
+            # as a complete output. See issue #58.
+            if "EntitySet" not in labels:
+                return {r["uid"] for r in cached}
+
+            # An EntitySet returns its MEMBERS (alternatives, not a product).
+            # Its rows come from _emit_entityset_provenance_rows, which puts
+            # each member in input_or_output_uid (nested complex: a combination
+            # uid) or input_or_output_reactome_id (plain leaf), so the union of
+            # those two columns is exactly the member set.
             leaves: Set[str] = set()
             for r in cached:
                 v = r["input_or_output_uid"]
