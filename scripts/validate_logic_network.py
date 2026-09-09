@@ -67,8 +67,14 @@ class ValidationResult:
 class LogicNetworkValidator:
     """Validates a generated logic network against Neo4j."""
 
-    def __init__(self, pathway_id: int, output_dir: Path = None):
+    def __init__(self, pathway_id, output_dir: Path = None):
+        # Reactome stable ids are the primary identifier; a dbId is accepted
+        # only because the generated output directories are named with one and
+        # some callers still pass it. Both forms are resolved to the pair once,
+        # and every query below matches on stId when one is available.
         self.pathway_id = pathway_id
+        self.pathway_stid = None
+        self.pathway_dbid = None
         self.output_dir = Path(output_dir) if output_dir else Path("output")
 
         # Connect to Neo4j. Every other module reads NEO4J_URL/USER/PASSWORD;
@@ -79,11 +85,52 @@ class LogicNetworkValidator:
         user = os.getenv("NEO4J_USER", "neo4j")
         password = os.getenv("NEO4J_PASSWORD", "test")
         self.graph = Graph(uri, auth=(user, password))
+        self._resolve_pathway_ids()
 
         # Load generated files
         self.logic_network = None
         self.uuid_to_reactome = None
         self.decomposed_uid_mapping = None
+
+    def _resolve_pathway_ids(self):
+        """Fill in both the stable id and the dbId from whichever was supplied."""
+        raw = str(self.pathway_id).strip()
+        if raw.upper().startswith("R-"):
+            row = self.graph.run(
+                "MATCH (p:Pathway {stId: $sid}) RETURN p.dbId AS db", sid=raw
+            ).evaluate()
+            self.pathway_stid = raw
+            self.pathway_dbid = row
+        else:
+            try:
+                dbid = int(raw)
+            except ValueError:
+                raise SystemExit(
+                    f"--pathway-id must be a Reactome stable id (R-HSA-...) or a "
+                    f"numeric dbId; got {raw!r}"
+                )
+            row = self.graph.run(
+                "MATCH (p:Pathway {dbId: $db}) RETURN p.stId AS sid", db=dbid
+            ).evaluate()
+            self.pathway_dbid = dbid
+            self.pathway_stid = row
+        if self.pathway_stid is None and self.pathway_dbid is None:
+            raise SystemExit(f"Pathway {raw!r} not found in Neo4j.")
+        # Directory names carry the stable id, Cypher prefers it too.
+        self.pathway_id = self.pathway_dbid if self.pathway_dbid is not None else raw
+
+    def _pathway_match(self, var: str = "p") -> str:
+        """A Cypher pathway match clause bound to $pathway_key.
+
+        stId when Reactome gives us one; dbId only as the fallback.
+        """
+        prop = "stId" if self.pathway_stid else "dbId"
+        return f"({var}:Pathway {{{prop}: $pathway_key}})"
+
+    @property
+    def pathway_key(self):
+        """The value bound to $pathway_key — the stable id where available."""
+        return self.pathway_stid if self.pathway_stid else self.pathway_dbid
 
     def _resolve_layout(self):
         """Locate this pathway's files under either output layout.
@@ -295,26 +342,29 @@ class LogicNetworkValidator:
         result = ValidationResult("Regulator Propagation")
 
         # Query Neo4j for regulators
+        pathway_match = self._pathway_match("pathway")
         positive_query = f"""
-        MATCH (pathway:Pathway {{dbId: {self.pathway_id}}})-[:hasEvent*]->(reaction:ReactionLikeEvent)
+        MATCH {pathway_match}-[:hasEvent*]->(reaction:ReactionLikeEvent)
         MATCH (reaction)-[:regulatedBy]->(regulator:PositiveRegulation)-[:regulator]->(pe:PhysicalEntity)
         RETURN COUNT(DISTINCT reaction) AS count
         """
-        neo4j_pos_count = self.graph.run(positive_query).data()[0]['count']
+        neo4j_pos_count = self.graph.run(positive_query, pathway_key=self.pathway_key).data()[0]['count']
 
+        pathway_match = self._pathway_match("pathway")
         negative_query = f"""
-        MATCH (pathway:Pathway {{dbId: {self.pathway_id}}})-[:hasEvent*]->(reaction:ReactionLikeEvent)
+        MATCH {pathway_match}-[:hasEvent*]->(reaction:ReactionLikeEvent)
         MATCH (reaction)-[:regulatedBy]->(regulator:NegativeRegulation)-[:regulator]->(pe:PhysicalEntity)
         RETURN COUNT(DISTINCT reaction) AS count
         """
-        neo4j_neg_count = self.graph.run(negative_query).data()[0]['count']
+        neo4j_neg_count = self.graph.run(negative_query, pathway_key=self.pathway_key).data()[0]['count']
 
+        pathway_match = self._pathway_match("pathway")
         catalyst_query = f"""
-        MATCH (pathway:Pathway {{dbId: {self.pathway_id}}})-[:hasEvent*]->(reaction:ReactionLikeEvent)
+        MATCH {pathway_match}-[:hasEvent*]->(reaction:ReactionLikeEvent)
         MATCH (reaction)-[:catalystActivity]->(ca:CatalystActivity)
         RETURN COUNT(DISTINCT reaction) AS count
         """
-        neo4j_catalyst_count = self.graph.run(catalyst_query).data()[0]['count']
+        neo4j_catalyst_count = self.graph.run(catalyst_query, pathway_key=self.pathway_key).data()[0]['count']
 
         # Count in logic network
         regulator_edges = self.logic_network[self.logic_network['edge_type'] == 'regulator']
@@ -424,8 +474,9 @@ class LogicNetworkValidator:
             result.add_info("All virtual reactions successfully converted")
 
         # Get Neo4j reactions
+        p_match = self._pathway_match("p")
         query = f"""
-        MATCH (p:Pathway {{dbId: $pathway_id}})-[:hasEvent*]->(r:ReactionLikeEvent)
+        MATCH {p_match}-[:hasEvent*]->(r:ReactionLikeEvent)
         OPTIONAL MATCH (r)-[:input]->(inp)
         OPTIONAL MATCH (r)-[:output]->(out)
         WITH r, collect(DISTINCT inp.{id_property}) AS inputs, collect(DISTINCT out.{id_property}) AS outputs
@@ -435,7 +486,7 @@ class LogicNetworkValidator:
         """
 
         neo4j_reaction_pairs = set()
-        reactions_data = self.graph.run(query, pathway_id=self.pathway_id).data()
+        reactions_data = self.graph.run(query, pathway_key=self.pathway_key).data()
 
         for row in reactions_data:
             inputs = row["inputs"]
@@ -538,11 +589,27 @@ class LogicNetworkValidator:
         """
         if self.decomposed_uid_mapping is None:
             return set()
+
+        # Only the PARENT columns. `component_id` and
+        # `input_or_output_reactome_id` hold the components themselves — every
+        # participating entity in the pathway — so including them made
+        # `expected - present` empty by construction and gutted the checks this
+        # helper exists to support: with all 116 catalyst edges deleted from
+        # R-HSA-69620, coverage reported 7 missing instead of 18. A decomposed
+        # entity is one that has components, not one that IS a component.
         ids = set()
-        for column in ("reactome_id", "input_or_output_reactome_id", "source_entity_id"):
-            if column in self.decomposed_uid_mapping.columns:
-                values = self.decomposed_uid_mapping[column].dropna()
-                ids.update(str(v) for v in values if str(v) not in ("", "None"))
+        for column in ("reactome_id", "source_entity_id"):
+            if column not in self.decomposed_uid_mapping.columns:
+                continue
+            frame = self.decomposed_uid_mapping
+            if "component_id" in frame.columns:
+                # A row only attests decomposition when the component differs
+                # from the parent; a self-referential row decomposes nothing.
+                frame = frame[frame[column] != frame["component_id"]]
+            for value in frame[column].dropna():
+                text = str(value)
+                if text not in ("", "None"):
+                    ids.add(text)
         return ids
 
     def _uncovered(self, expected: set, present: set, id_property: str):
@@ -585,12 +652,13 @@ class LogicNetworkValidator:
 
         # Parameterised: this query previously interpolated self.pathway_id and
         # was safe only because argparse coerces it with type=int.
+        p_match = self._pathway_match("p")
         query = f"""
-        MATCH (p:Pathway {{dbId: $pathway_id}})-[:hasEvent*]->(r:ReactionLikeEvent)
+        MATCH {p_match}-[:hasEvent*]->(r:ReactionLikeEvent)
         MATCH (r)-[:input|output]->(entity:PhysicalEntity)
         RETURN COLLECT(DISTINCT entity.{id_property}) as entity_ids
         """
-        neo4j_result = self.graph.run(query, pathway_id=self.pathway_id).data()
+        neo4j_result = self.graph.run(query, pathway_key=self.pathway_key).data()
         neo4j_entities = set(neo4j_result[0]['entity_ids']) if neo4j_result else set()
 
         # Get all entities from logic network via uuid_to_reactome mapping
@@ -641,12 +709,13 @@ class LogicNetworkValidator:
         # catalyst as "missing".
         uses_stid = self._mapping_uses_stid()
         id_property = "stId" if uses_stid else "dbId"
+        p_match = self._pathway_match("p")
         query = f"""
-        MATCH (p:Pathway {{dbId: $pathway_id}})-[:hasEvent*]->(r:ReactionLikeEvent)
+        MATCH {p_match}-[:hasEvent*]->(r:ReactionLikeEvent)
         MATCH (r)-[:catalystActivity]->(ca)-[:physicalEntity]->(catalyst)
         RETURN COLLECT(DISTINCT catalyst.{id_property}) as catalyst_ids
         """
-        neo4j_result = self.graph.run(query, pathway_id=self.pathway_id).data()
+        neo4j_result = self.graph.run(query, pathway_key=self.pathway_key).data()
         neo4j_catalysts = set(neo4j_result[0]['catalyst_ids']) if neo4j_result else set()
 
         # Get catalysts from logic network
@@ -707,14 +776,15 @@ class LogicNetworkValidator:
         # regulator of one reaction and a negative regulator of another (PI5P
         # in R-HSA-1257604). Comparing flat per-entity sets reported every such
         # dual-role regulator as wrong whatever the generator emitted.
+        p_match = self._pathway_match("p")
         query = f"""
-        MATCH (p:Pathway {{dbId: $pathway_id}})-[:hasEvent*]->(r:ReactionLikeEvent)
+        MATCH {p_match}-[:hasEvent*]->(r:ReactionLikeEvent)
         MATCH (r)-[:regulatedBy]->(reg)-[:regulator]->(pe)
         WHERE reg:PositiveRegulation OR reg:NegativeRegulation
         RETURN r.{id_property} AS reaction, pe.{id_property} AS regulator,
                CASE WHEN reg:PositiveRegulation THEN 'pos' ELSE 'neg' END AS polarity
         """
-        rows = self.graph.run(query, pathway_id=self.pathway_id).data()
+        rows = self.graph.run(query, pathway_key=self.pathway_key).data()
 
         # A set-valued regulator is flattened onto the reaction as its members,
         # so accept any leaf member wherever Neo4j names the set itself.
@@ -772,28 +842,58 @@ class LogicNetworkValidator:
         """Verify all Neo4j reactions are represented in logic network."""
         result = ValidationResult("Reaction Coverage")
 
-        # Get all reactions from Neo4j
+        # Compare reaction IDENTITIES, not counts. Counting virtual reactions
+        # against Neo4j reactions can only ever take the "extra VRs" branch,
+        # because VR expansion always inflates the total — so a genuinely
+        # dropped reaction was invisible. R-HSA-170834 loses 8 of its 100
+        # reactions (the whole SMAD/receptor degradation arm, which have an
+        # input but no output) and this check still passed.
+        uses_stid = self._mapping_uses_stid()
+        id_property = "stId" if uses_stid else "dbId"
+        p_match = self._pathway_match("p")
         query = f"""
-        MATCH (p:Pathway {{dbId: {self.pathway_id}}})-[:hasEvent*]->(r:ReactionLikeEvent)
-        RETURN COUNT(DISTINCT r) as reaction_count
+        MATCH {p_match}-[:hasEvent*]->(r:ReactionLikeEvent)
+        RETURN COLLECT(DISTINCT r.{id_property}) AS reaction_ids
         """
-        neo4j_result = self.graph.run(query).data()
-        neo4j_reaction_count = neo4j_result[0]['reaction_count'] if neo4j_result else 0
+        rows = self.graph.run(query, pathway_key=self.pathway_key).data()
+        neo4j_reactions = set(rows[0]["reaction_ids"]) if rows else set()
 
-        # Count reactions in logic network (reaction UUIDs are targets of input edges)
-        input_edges = self.logic_network[self.logic_network['edge_type'] == 'input']
-        ln_reaction_count = input_edges['target_id'].nunique()
+        # The reaction each edge came from, where the generator recorded it.
+        ln_reactions = set()
+        if "edge_reaction_id" in self.logic_network.columns:
+            for value in self.logic_network["edge_reaction_id"].dropna():
+                text = str(value)
+                if text not in ("", "None"):
+                    ln_reactions.add(text)
 
-        result.add_info(f"Neo4j reactions: {neo4j_reaction_count}")
-        result.add_info(f"Logic network reactions: {ln_reaction_count}")
+        # Fall back to the virtual-reaction nodes' own mapping when the column
+        # is absent or unpopulated (it is NaN on regulator edges).
+        if not ln_reactions:
+            input_edges = self.logic_network[self.logic_network["edge_type"] == "input"]
+            for uuid in input_edges["target_id"].unique():
+                entity_id = self._entity_for_uuid(uuid, uses_stid)
+                if entity_id is not None:
+                    ln_reactions.add(entity_id)
 
-        if ln_reaction_count < neo4j_reaction_count:
-            result.fail(f"Missing {neo4j_reaction_count - ln_reaction_count} reactions")
-        elif ln_reaction_count > neo4j_reaction_count:
-            extra = ln_reaction_count - neo4j_reaction_count
-            result.add_info(f"Logic network has {extra} virtual reactions (from EntitySet expansion) ✓")
+        virtual_reactions = self.logic_network[
+            self.logic_network["edge_type"] == "input"
+        ]["target_id"].nunique()
+
+        result.add_info(f"Neo4j reactions: {len(neo4j_reactions)}")
+        result.add_info(f"Logic network reactions: {len(ln_reactions)}")
+        result.add_info(f"Virtual reactions: {virtual_reactions}")
+
+        missing = neo4j_reactions - ln_reactions
+        if missing:
+            result.fail(f"Missing {len(missing)} reactions from Neo4j")
+            for reaction_id in sorted(missing)[:5]:
+                result.fail(f"  Missing reaction: {reaction_id}")
         else:
-            result.add_info("All reactions present (no EntitySet expansion) ✓")
+            result.add_info("All Neo4j reactions represented \u2713")
+
+        extra = ln_reactions - neo4j_reactions
+        if extra:
+            result.warn(f"{len(extra)} reactions in the network are not in this pathway")
 
         return result
 
@@ -802,8 +902,9 @@ class LogicNetworkValidator:
         result = ValidationResult("Edge Count Verification")
 
         # Query Neo4j for unique entity counts per edge type
+        p_match = self._pathway_match("p")
         query = f"""
-        MATCH (p:Pathway {{dbId: {self.pathway_id}}})-[:hasEvent*]->(r:ReactionLikeEvent)
+        MATCH {p_match}-[:hasEvent*]->(r:ReactionLikeEvent)
         OPTIONAL MATCH (r)-[:input]->(inp)
         OPTIONAL MATCH (r)-[:output]->(out)
         OPTIONAL MATCH (r)-[:catalystActivity]->(ca)-[:physicalEntity]->(cat)
@@ -815,7 +916,7 @@ class LogicNetworkValidator:
             COUNT(DISTINCT regulator) as regulator_count
         """
 
-        neo4j_result = self.graph.run(query).data()
+        neo4j_result = self.graph.run(query, pathway_key=self.pathway_key).data()
         neo4j_counts = neo4j_result[0] if neo4j_result else {}
 
         # Get logic network edge counts
@@ -829,8 +930,24 @@ class LogicNetworkValidator:
         result.add_info(f"Catalyst edges: Neo4j entities={neo4j_counts.get('catalyst_count', 0)}, LN edges={ln_catalysts}")
         result.add_info(f"Regulator edges: Neo4j entities={neo4j_counts.get('regulator_count', 0)}, LN edges={ln_regulators}")
 
-        # Note: Logic network can have MORE edges due to EntitySet expansion
-        result.add_info("Note: Logic network may have more edges due to EntitySet expansion")
+        # This check emitted only add_info, so it was structurally incapable of
+        # failing. Expansion means the network legitimately has MORE edges than
+        # Neo4j has distinct entities, so the only sound assertion is the floor:
+        # a role Neo4j records must not vanish entirely.
+        result.add_info("Logic network may have more edges than Neo4j entities (expansion)")
+
+        for role, ln_count, neo4j_key in (
+            ("input", ln_inputs, "input_count"),
+            ("output", ln_outputs, "output_count"),
+            ("catalyst", ln_catalysts, "catalyst_count"),
+            ("regulator", ln_regulators, "regulator_count"),
+        ):
+            expected = neo4j_counts.get(neo4j_key, 0) or 0
+            if expected > 0 and ln_count == 0:
+                result.fail(
+                    f"Neo4j has {expected} {role} entities but the logic network "
+                    f"has no {role} edges at all"
+                )
 
         return result
 
@@ -905,9 +1022,9 @@ def main():
     parser = argparse.ArgumentParser(description="Validate generated logic network")
     parser.add_argument(
         "--pathway-id",
-        type=int,
         required=True,
-        help="Reactome pathway ID to validate"
+        help="Reactome pathway stable id (R-HSA-69620). A numeric dbId is "
+             "accepted for back-compat but the stable id is preferred.",
     )
 
     parser.add_argument(
