@@ -1,50 +1,93 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# logic-network-generator Constitution
+
+The generator turns curated Reactome pathways into logic networks that
+DeltaSignal solves. These principles govern what belongs here and what does
+not.
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Represent curator intent (NON-NEGOTIABLE)
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+Build the logic network to reflect **how curators intended the pathway to be
+designed**. DeltaSignal decides how best to process it.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+The corollary is the one that actually bites: when a *faithful* representation
+regresses the benchmark, the fix goes in DeltaSignal's processing, not in an
+unfaithful encoding here. `LNG_SET_MEMBERS_OR` is the worked example — marking
+set-valued catalysts as OR is biologically correct and costs 51 of 223 cases,
+because DeltaSignal has no aggregator for "one of N redundant alternatives was
+lost". The change stays default-OFF until the solver can process it. Do not
+resolve that tension by making the network lie.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### II. Set-splitting already encodes the OR
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+Because EntitySets are *split* — each alternative becomes its own virtual
+reaction — a member genuinely IS required within its own VR, so `and` is
+correct for inputs and outputs. OR is almost never needed.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+The only exception is **sets we explicitly do not split on**: catalysts and
+positive regulators, which `append_regulators` flattens onto the reaction's
+single existing VR. Only that path may be given OR semantics. Never extend it
+to input/output edges.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### III. Validate mapping changes through DeltaSignal
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+Any change to how regulators, catalysts, or connections are mapped must be
+validated end-to-end against DeltaSignal before it is called an improvement.
+An edge-count delta, a connectivity percentage, or a reachability figure is
+not evidence of a better model — several such "wins" in this repo's history
+were accuracy-neutral or negative. Report the benchmark before/after.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+### IV. Verify before reporting
+
+A claim about the pipeline must be checked against ground truth — Neo4j, the
+generated artifacts, or a benchmark run — before it is stated as fact. This
+principle exists because it has been violated: a cache-fingerprint feature was
+reported as landed while having zero call sites, and a solver convergence
+figure was reported that turned out to be the measuring bug's own artifact.
+
+When a check disagrees with the output, establish which one is wrong before
+"fixing" either.
+
+### V. Checks must be able to fail
+
+A validator that cannot fail is worse than none: it trains readers to ignore
+it and it hides the defects underneath. Every check states how much it
+actually compared, and every relaxation is tied to a named structural reason
+with the underlying defect still reachable. Confirm sensitivity by corrupting
+the input on purpose.
+
+### VI. Determinism
+
+Generation must be reproducible: same inputs, same Reactome release, same
+environment, same output. Generation-affecting settings belong in the cache
+fingerprint, and a cache is reused only when that fingerprint matches — never
+on mere file existence.
+
+## Additional Constraints
+
+- **Reactome release is part of the input.** Record it; a network is only
+  comparable to another at the same release. Version skew has previously been
+  misread as a connectivity bug.
+- **Never log or echo credentials.** `NEO4J_URL` may carry a password; redact
+  before it reaches a log, an exception message, or an artifact.
+- **Parameterise all Cypher.** Never interpolate, even where an argument
+  parser happens to constrain the type.
+
+## Development Workflow
+
+- Generation-affecting changes ship **default-OFF** behind an `LNG_*` flag
+  until measured, and the flag joins the cache fingerprint.
+- A negative or neutral result is recorded in the spec with its numbers, not
+  discarded. The record is what stops the next attempt from repeating it.
+- Findings that are out of scope for the change at hand become tracked tasks
+  rather than being chased inline or dropped.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes convention and habit. Specs and plans under
+`specs/` are checked against it; a plan that conflicts with a principle must
+either change or state the justification explicitly. Amendments require a
+stated rationale and a version bump.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-09-09 | **Last Amended**: 2026-09-09
