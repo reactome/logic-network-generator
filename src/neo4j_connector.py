@@ -51,9 +51,57 @@ def _safe_neo4j_url() -> str:
         authority = hostpart
     else:
         authority = rest
-    # Drop any path/query, leaving host[:port].
-    authority = authority.split("/", 1)[0].split("?", 1)[0]
+    # Drop any path/query/fragment, leaving host[:port]. "#" matters because
+    # bolt://neo4j:pw@host:7687#SECRET previously kept the fragment.
+    authority = authority.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
     return f"{scheme}://{authority}" if authority else "<neo4j-url>"
+
+
+def _safe_exception(exc: BaseException) -> str:
+    """An exception rendered without the credentials py2neo puts in its text.
+
+    `_safe_neo4j_url()` above redacts OUR message, but every caller then
+    appended `Original error: {str(e)}` — and py2neo's own text embeds the
+    ConnectionProfile, which is exactly the mis-parse that redactor exists to
+    avoid. With NEO4J_URL=bolt://neo4j:p@ssSECRET@host the appended text read:
+
+        Cannot open connection to ConnectionProfile('bolt://ssSECRET@host')
+
+    so the password fragment survived, in the same log line as the redaction.
+    Both repositories are public, and the realistic disclosure path is someone
+    pasting a stack trace into an issue.
+
+    The exception TYPE is the part with diagnostic value; the message body is
+    py2neo boilerplate plus the profile. Return the type, and the message only
+    when it is demonstrably free of credential material.
+    """
+    detail = str(exc)
+    # Anything resembling embedded credentials, an authority with userinfo, or
+    # py2neo's profile repr means the text cannot be shown.
+    unsafe = (
+        "://" in detail
+        or "ConnectionProfile" in detail
+        or "IPv4Address" in detail
+        or "@" in detail
+    )
+    password = os.getenv("NEO4J_PASSWORD") or ""
+    if password and password in detail:
+        unsafe = True
+    if unsafe:
+        return f"{type(exc).__name__} (message withheld: may contain credentials)"
+    return f"{type(exc).__name__}: {detail}"
+
+
+def _traceback_kwargs() -> Dict[str, Any]:
+    """Logger kwargs for an exception on a Neo4j path.
+
+    A traceback through py2neo carries the same ConnectionProfile the message
+    does, so `**_traceback_kwargs()` reintroduces the disclosure the message fix just
+    closed. Tracebacks are opt-in via LNG_DEBUG_TRACEBACKS=1 for local
+    debugging, off by default so nothing credential-bearing reaches
+    debug_log.txt (mode 0664) or stdout.
+    """
+    return {"exc_info": os.getenv("LNG_DEBUG_TRACEBACKS") == "1"}
 
 
 # Module-level caches for bulk pre-fetched data
@@ -326,11 +374,11 @@ def get_reaction_connections(pathway_id: str) -> pd.DataFrame:
     except ValueError:
         raise
     except Exception as e:
-        logger.error(f"Error querying Neo4j for pathway {pathway_id}", exc_info=True)
+        logger.error(f"Error querying Neo4j for pathway {pathway_id}", **_traceback_kwargs())
         raise ConnectionError(
             f"Failed to connect to Neo4j database at "
             f"{_safe_neo4j_url()}. "
-            f"Ensure Neo4j is running and accessible. Original error: {str(e)}"
+            f"Ensure Neo4j is running and accessible. Original error: {_safe_exception(e)}"
         ) from e
 
 
@@ -358,11 +406,11 @@ def get_top_level_pathways() -> List[Dict[str, Any]]:
         logger.info(f"Found {len(result)} top-level pathways")
         return result
     except Exception as e:
-        logger.error("Error in get_top_level_pathways", exc_info=True)
+        logger.error("Error in get_top_level_pathways", **_traceback_kwargs())
         raise ConnectionError(
             f"Failed to query top-level pathways from Neo4j at "
             f"{_safe_neo4j_url()}. "
-            f"Ensure Neo4j is running and accessible. Original error: {str(e)}"
+            f"Ensure Neo4j is running and accessible. Original error: {_safe_exception(e)}"
         ) from e
 
 
@@ -406,12 +454,12 @@ def get_pathway_participating_entities(pathway_id: str) -> Set[str]:
     except Exception as e:
         logger.error(
             f"Error in get_pathway_participating_entities for {pathway_id}",
-            exc_info=True,
+            **_traceback_kwargs(),
         )
         raise ConnectionError(
             f"Failed to query participating entities from Neo4j at "
             f"{_safe_neo4j_url()}. "
-            f"Original error: {str(e)}"
+            f"Original error: {_safe_exception(e)}"
         ) from e
 
 
@@ -453,12 +501,12 @@ def get_pathway_entity_reactions(
         return out
     except Exception as e:
         logger.error(
-            f"Error in get_pathway_entity_reactions for {pathway_id}", exc_info=True
+            f"Error in get_pathway_entity_reactions for {pathway_id}", **_traceback_kwargs()
         )
         raise ConnectionError(
             f"Failed to query entity reactions from Neo4j at "
             f"{_safe_neo4j_url()}. "
-            f"Original error: {str(e)}"
+            f"Original error: {_safe_exception(e)}"
         ) from e
 
 
@@ -489,11 +537,11 @@ def get_pathway_name(pathway_id: str) -> str:
     except ValueError:
         raise
     except Exception as e:
-        logger.error(f"Error in get_pathway_name for {pathway_id}", exc_info=True)
+        logger.error(f"Error in get_pathway_name for {pathway_id}", **_traceback_kwargs())
         raise ConnectionError(
             f"Failed to query pathway name from Neo4j at "
             f"{_safe_neo4j_url()}. "
-            f"Original error: {str(e)}"
+            f"Original error: {_safe_exception(e)}"
         ) from e
 
 
@@ -509,7 +557,7 @@ def get_labels(entity_id: str) -> List[str]:
         _labels_cache[entity_id] = result
         return result
     except Exception:
-        logger.error("Error in get_labels", exc_info=True)
+        logger.error("Error in get_labels", **_traceback_kwargs())
         raise
 
 
@@ -532,7 +580,7 @@ def get_complex_components(entity_id: str) -> Dict[str, int]:
         _components_cache[entity_id] = result
         return result
     except Exception:
-        logger.error("Error in get_complex_components", exc_info=True)
+        logger.error("Error in get_complex_components", **_traceback_kwargs())
         raise
 
 
@@ -555,7 +603,7 @@ def get_set_members(entity_id: str) -> Set[str]:
         _members_cache[entity_id] = result
         return result
     except Exception:
-        logger.error("Error in get_set_members", exc_info=True)
+        logger.error("Error in get_set_members", **_traceback_kwargs())
         raise
 
 
@@ -579,7 +627,7 @@ def get_reaction_input_output_ids(reaction_id: str, input_or_output: str) -> Set
     try:
         return set(get_graph().run(query, reaction_id=reaction_id).data()[0]["io_ids"])
     except Exception:
-        logger.error("Error in get_reaction_input_output_ids", exc_info=True)
+        logger.error("Error in get_reaction_input_output_ids", **_traceback_kwargs())
         raise
 
 
@@ -607,7 +655,7 @@ def get_reaction_io_stoichiometry(reaction_id: str, input_or_output: str) -> Dic
     try:
         data = get_graph().run(query, reaction_id=reaction_id).data()
     except Exception:
-        logger.error("Error in get_reaction_io_stoichiometry", exc_info=True)
+        logger.error("Error in get_reaction_io_stoichiometry", **_traceback_kwargs())
         raise
 
     result: Dict[str, int] = {}
@@ -662,7 +710,7 @@ def get_modifier_isoform_entity_set_ids() -> Set[str]:
     try:
         data = get_graph().run(query, genes=list(_MODIFIER_GENE_NAMES)).data()
     except Exception:
-        logger.error("Error in get_modifier_isoform_entity_set_ids", exc_info=True)
+        logger.error("Error in get_modifier_isoform_entity_set_ids", **_traceback_kwargs())
         raise
     _modifier_isoform_set_cache = set(data[0]["stids"]) if data else set()
     return _modifier_isoform_set_cache
@@ -692,7 +740,7 @@ def get_reference_entity_id(entity_id: str) -> Union[str, None]:
         _reference_entity_cache[entity_id] = result
         return result
     except Exception:
-        logger.error("Error in get_reference_entity_id", exc_info=True)
+        logger.error("Error in get_reference_entity_id", **_traceback_kwargs())
         raise
 
 
@@ -721,6 +769,6 @@ def get_reactome_release() -> Optional[int]:
         logger.warning(
             "Could not read the Reactome release from DBInfo; cache fingerprints "
             "will not include it.",
-            exc_info=True,
+            **_traceback_kwargs(),
         )
     return None
