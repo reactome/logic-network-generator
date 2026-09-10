@@ -37,6 +37,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.credential_redaction import install as _install_credential_redaction
 from src.argument_parser import logger  # noqa: E402
 from src.neo4j_connector import get_graph  # noqa: E402
 
@@ -403,6 +404,9 @@ def validate_one_pathway(
         "failure_categories": dict(failure_categories),
         "failed_cases": failed_cases,
     }
+
+
+_install_credential_redaction()
 
 
 def main():

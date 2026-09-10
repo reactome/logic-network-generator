@@ -21,6 +21,11 @@ import pandas as pd
 from py2neo import Graph
 import os
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.credential_redaction import install as _install_credential_redaction
+
+_install_credential_redaction()
+
 # Depth limit when resolving an EntitySet to its leaf members. Sets nest a few
 # levels at most; an unbounded traversal is slow and can revisit cycles.
 MAX_SET_NESTING = 5

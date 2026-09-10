@@ -3,6 +3,8 @@ import logging
 import sys
 from argparse import Namespace
 
+from src import credential_redaction
+
 
 def parse_args() -> Namespace:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -49,6 +51,12 @@ def configure_logging(debug_flag: bool, verbose_flag: bool) -> None:
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     console_handler.setFormatter(formatter)
     logging.getLogger().addHandler(console_handler)
+
+    # Credentials must not reach debug_log.txt (mode 0664), stdout or stderr.
+    # Applied here, at the output boundary, because per-call-site redaction
+    # demonstrably misses ungated exc_info in other modules, chained
+    # __cause__, and entrypoints with no handler at all.
+    credential_redaction.install()
 
 
 logger: logging.Logger = logging.getLogger(__name__)
