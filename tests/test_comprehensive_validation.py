@@ -135,15 +135,23 @@ class TestRegulatorCompleteness:
 
     @pytest.mark.parametrize("pathway_id", AVAILABLE_PATHWAYS)
     def test_negative_regulators_marked_neg(self, graph, pathway_id):
-        """All regulator edges with pos_neg='neg' should only be negative regulators."""
+        """Negative edges are only the two edge types that may be negative.
+
+        `regulator` is the curated NegativeRegulation. `depletion` is the
+        synthetic catalyst->substrate consumption edge, which is negative by
+        construction and postdates this test — the solver routes it separately
+        and applies divide-form inhibition to it (see `depletion_uuids` in
+        reaction_model.jl). Nothing else may carry pos_neg='neg'.
+        """
         pathway_dir = find_pathway_dir(pathway_id)
         network = pd.read_csv(pathway_dir / "logic_network.csv")
 
+        negative_edge_types = {"regulator", "depletion"}
         neg_edges = network[network['pos_neg'] == 'neg']
-        # All negative edges should be regulators (not catalysts or main edges)
         for _, edge in neg_edges.iterrows():
-            assert edge['edge_type'] == 'regulator', (
-                f"Found neg edge with edge_type='{edge['edge_type']}' instead of 'regulator'"
+            assert edge['edge_type'] in negative_edge_types, (
+                f"Found neg edge with edge_type='{edge['edge_type']}'; "
+                f"only {sorted(negative_edge_types)} may be negative"
             )
 
 
