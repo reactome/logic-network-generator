@@ -1,4 +1,6 @@
 import os
+
+from src.credential_redaction import scrub
 from typing import Any, Dict, List, Optional, Set, Union
 
 import pandas as pd
@@ -84,12 +86,14 @@ def _safe_exception(exc: BaseException) -> str:
         or "IPv4Address" in detail
         or "@" in detail
     )
-    password = os.getenv("NEO4J_PASSWORD") or ""
-    if password and password in detail:
-        unsafe = True
     if unsafe:
         return f"{type(exc).__name__} (message withheld: may contain credentials)"
-    return f"{type(exc).__name__}: {detail}"
+    # A message merely CONTAINING the password is scrubbed, not withheld. The
+    # documented dev passwords here are ordinary words ("test" in README.md,
+    # "reactome" in practice), so withholding on a substring match discarded
+    # real diagnostics: "Cannot find /opt/reactome/data/graph.db" and
+    # "KeyError: 'reactome_release'" both vanished entirely.
+    return f"{type(exc).__name__}: {scrub(detail)}"
 
 
 def _traceback_kwargs() -> Dict[str, Any]:
