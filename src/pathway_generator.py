@@ -400,6 +400,7 @@ def generate_pathway_file(
                 result.reaction_id_map,
                 result.catalyst_regulator_map,
                 str(pathway_output_dir / "node_reaction_context.csv"),
+                logic_network=result.logic_network,
             )
         except Exception as e:
             logger.error(f"Failed to write node provenance files: {e}", exc_info=True)
