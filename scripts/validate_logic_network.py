@@ -119,8 +119,16 @@ class LogicNetworkValidator:
             ).evaluate()
             self.pathway_dbid = dbid
             self.pathway_stid = row
-        if self.pathway_stid is None and self.pathway_dbid is None:
-            raise SystemExit(f"Pathway {raw!r} not found in Neo4j.")
+        # Unreachable as originally written: both branches above assign one of
+        # the two fields unconditionally, so the conjunction was never true and
+        # a nonexistent id sailed through to produce the malformed glob
+        # "*_R-HSA-R-HSA-99999999/". Test the field the LOOKUP was meant to
+        # fill, which is the one that is None when the pathway does not exist.
+        if self.pathway_dbid is None or self.pathway_stid is None:
+            raise SystemExit(
+                f"Pathway {raw!r} not found in Neo4j (Reactome release "
+                f"{os.getenv('LNG_REACTOME_RELEASE', 'current')})."
+            )
         # Directory names carry the stable id, Cypher prefers it too.
         self.pathway_id = self.pathway_dbid if self.pathway_dbid is not None else raw
 
@@ -388,21 +396,33 @@ class LogicNetworkValidator:
         result.add_info(f"Neo4j: {neo4j_catalyst_count} reactions with catalysts")
         result.add_info(f"Logic network: {logic_catalyst_reactions} virtual reactions with catalysts")
 
-        # Note: Logic network may have more because of EntitySet decomposition
-        if logic_pos_reactions >= neo4j_pos_count:
-            result.add_info("Positive regulators: ✓ (may be duplicated for virtual reactions)")
-        else:
-            result.warn(f"Missing positive regulators: expected >={neo4j_pos_count}, got {logic_pos_reactions}")
-
-        if logic_neg_reactions >= neo4j_neg_count:
-            result.add_info("Negative regulators: ✓ (may be duplicated for virtual reactions)")
-        else:
-            result.warn(f"Missing negative regulators: expected >={neo4j_neg_count}, got {logic_neg_reactions}")
-
-        if logic_catalyst_reactions >= neo4j_catalyst_count:
-            result.add_info("Catalysts: ✓ (may be duplicated for virtual reactions)")
-        else:
-            result.warn(f"Missing catalysts: expected >={neo4j_catalyst_count}, got {logic_catalyst_reactions}")
+        # Expansion means the network legitimately has MORE regulated virtual
+        # reactions than Neo4j has regulated reactions, so a shortfall cannot
+        # be an exact assertion. But a role Neo4j records must not vanish
+        # entirely: that is a floor, and it is checkable.
+        #
+        # Every branch below used to be warn() only, so this check could not
+        # fail — deleting every regulator edge in the network still gave
+        # "PASS: Regulator Propagation" and 11/11. That is the same defect
+        # fixed in validate_edge_counts, one method away, and missed here.
+        for label, expected_count, emitted in (
+            ("positive regulator", neo4j_pos_count, logic_pos_reactions),
+            ("negative regulator", neo4j_neg_count, logic_neg_reactions),
+            ("catalyst", neo4j_catalyst_count, logic_catalyst_reactions),
+        ):
+            if emitted >= expected_count:
+                result.add_info(
+                    f"{label.capitalize()}s: ✓ (may be duplicated for virtual reactions)"
+                )
+            elif emitted == 0 and expected_count > 0:
+                result.fail(
+                    f"Neo4j has {expected_count} reactions with a {label} but the "
+                    f"logic network has none at all"
+                )
+            else:
+                result.warn(
+                    f"Missing {label}s: expected >={expected_count}, got {emitted}"
+                )
 
         return result
 
@@ -624,23 +644,45 @@ class LogicNetworkValidator:
         members that did *not* survive: a set the generator split only halfway
         is a real defect, so it is reported separately rather than excused.
         """
-        # A decomposed Complex is represented by its components, not by its own
-        # id, so count it as present rather than missing.
-        present = present | self._decomposed_ids()
-
+        # ORDER MATTERS. The decomposed-Complex excuse must be applied AFTER
+        # the EntitySet analysis, never before it.
+        #
+        # A split EntitySet is itself a decomposition parent — its stId sits in
+        # decomposed_uid_mapping.reactome_id — so unioning _decomposed_ids()
+        # into `present` up front excused every set before its members were
+        # ever examined, took the early return, and never called
+        # _set_leaf_members at all. The `partial` branch below was therefore
+        # unreachable: deleting ALL seven members of R-HSA-1445138 still
+        # reported "9 EntitySets represented by their members" and 11/11.
+        #
+        # That is the same over-broad excuse this helper was rewritten to
+        # remove, one layer down: the earlier fix restored sensitivity for
+        # plain entities and left sets fully masked.
         direct = expected - present
         if not direct:
             return set(), {}
 
         members = self._set_leaf_members(direct, id_property)
+        decomposed = self._decomposed_ids()
         missing, partial = set(), {}
         for entity_id in direct:
             leaves = members.get(entity_id)
-            if not leaves:
-                # Not a set (or a set with no resolvable leaves) — genuinely absent.
+            if leaves:
+                # A set is covered only when its members actually survived.
+                # Being a decomposition parent does not excuse the SET — that
+                # was the masking bug — but it does excuse a MEMBER: a member
+                # that is itself a decomposed Complex is represented by its
+                # components rather than by its own id, so it is present in
+                # the only sense available to it.
+                absent = leaves - present - decomposed
+                if absent:
+                    partial[entity_id] = absent
+            elif entity_id in decomposed:
+                # A decomposed Complex is represented by its components rather
+                # than by its own id.
+                continue
+            else:
                 missing.add(entity_id)
-            elif not leaves <= present:
-                partial[entity_id] = leaves - present
         return missing, partial
 
     def validate_entity_coverage(self) -> ValidationResult:
