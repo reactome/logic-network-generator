@@ -2442,6 +2442,68 @@ def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
     logger.info(f"Exported {len(rows)} node-reaction-context rows: {output_file}")
 
 
+def export_cofactors(pathway_logic_network: pd.DataFrame,
+                     reactome_id_to_uuid: Dict[str, str],
+                     output_file: str) -> None:
+    """Write cofactors.csv — which nodes in THIS network are metabolic cofactors.
+
+    The network keeps every participant Reactome records, cofactors included:
+    the generator represents pathways as curators intended. But a consumer
+    deciding whether a perturbation may travel through ATP needs to know which
+    nodes those are, and that knowledge must travel WITH the artifacts. A
+    consumer holding its own copy of the list is a copy that silently goes
+    stale — the generator and DeltaSignal each kept one and they had diverged,
+    with six of thirteen entries on this side stale or mislabelled before the
+    set was derived rather than typed.
+
+    So the list ships in the bundle. Pull a pathway out of S3 and it carries
+    its own answer, pinned to the release it was generated from.
+
+    Output CSV columns:
+        - stable_id: the Reactome stable ID of the cofactor species
+        - molecule: which cofactor it is (ATP, NAD+, Pi, …)
+        - chebi_id: the ChEBI identifier the membership was derived from
+        - name: the release's display name, including compartment
+        - in_network: 1 if this species appears as a node in this pathway
+        - reactome_release: the release this was derived from
+
+    Every known cofactor is listed, not only those present, so a consumer can
+    tell an empty intersection from a missing file. The file is written even
+    when the pathway contains none.
+    """
+    from src.neo4j_connector import get_cofactor_species, get_reactome_release
+
+    species = get_cofactor_species()
+    release = get_reactome_release()
+
+    present: set[str] = set()
+    if not pathway_logic_network.empty:
+        uuids = set(pathway_logic_network["source_id"].dropna().unique())
+        uuids.update(pathway_logic_network["target_id"].dropna().unique())
+        for stable_id, uuid in reactome_id_to_uuid.items():
+            if uuid in uuids:
+                present.add(stable_id)
+
+    present_count = sum(1 for e in species if e["stable_id"] in present)
+    rows = [
+        {
+            "stable_id": entry["stable_id"],
+            "molecule": entry["molecule"],
+            "chebi_id": entry["chebi_id"],
+            "name": entry["name"],
+            "in_network": 1 if entry["stable_id"] in present else 0,
+            "reactome_release": release if release is not None else "",
+        }
+        for entry in species
+    ]
+    pd.DataFrame(rows, columns=["stable_id", "molecule", "chebi_id", "name",
+                                "in_network", "reactome_release"]).to_csv(
+        output_file, index=False)
+    logger.info(
+        f"Exported {len(rows)} cofactor species "
+        f"({present_count} present in this network) to {output_file}")
+
+
 def export_node_resolution(pathway_id: str,
                            pathway_logic_network: pd.DataFrame,
                            reaction_id_map: pd.DataFrame,

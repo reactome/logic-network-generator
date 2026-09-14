@@ -187,3 +187,51 @@ def test_glyph_id_and_diagram_are_written_together(tmp_path, monkeypatch):
             f"glyph_id={row['glyph_id']!r} and diagram_stid={row['diagram_stid']!r} "
             "must be present together or absent together"
         )
+
+
+def test_export_cofactors_lists_all_and_flags_present(tmp_path, monkeypatch):
+    """Every known cofactor is listed; only those in the network are flagged.
+
+    Listing all of them is what lets a consumer tell "this pathway has no
+    cofactors" from "this bundle predates the file".
+    """
+    monkeypatch.setattr(neo4j_connector, "get_cofactor_species", lambda: [
+        {"stable_id": "R-ALL-113592", "molecule": "ATP", "chebi_id": "30616",
+         "name": "ATP [cytosol]"},
+        {"stable_id": "R-ALL-29356", "molecule": "H2O", "chebi_id": "15377",
+         "name": "H2O [cytosol]"},
+    ])
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+
+    edges = pd.DataFrame([{"source_id": "u-atp", "target_id": "u-rxn"}])
+    out = tmp_path / "cofactors.csv"
+    m.export_cofactors(edges, {"R-ALL-113592": "u-atp"}, str(out))
+
+    df = pd.read_csv(out)
+    assert list(df.columns) == ["stable_id", "molecule", "chebi_id", "name",
+                                "in_network", "reactome_release"]
+    assert len(df) == 2, "every known cofactor is listed, not only the present ones"
+    assert set(df.loc[df.in_network == 1, "stable_id"]) == {"R-ALL-113592"}
+    assert set(df["reactome_release"]) == {97}, "the release must travel with the list"
+
+
+def test_export_cofactors_writes_a_file_even_when_none_are_present(tmp_path, monkeypatch):
+    """A pathway with no cofactors still gets the file, all flags zero.
+
+    A missing file and an empty intersection mean different things and a
+    consumer must be able to distinguish them.
+    """
+    monkeypatch.setattr(neo4j_connector, "get_cofactor_species", lambda: [
+        {"stable_id": "R-ALL-113592", "molecule": "ATP", "chebi_id": "30616",
+         "name": "ATP [cytosol]"},
+    ])
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+
+    edges = pd.DataFrame([{"source_id": "u-x", "target_id": "u-y"}])
+    out = tmp_path / "cofactors.csv"
+    m.export_cofactors(edges, {"R-HSA-9999": "u-x"}, str(out))
+
+    df = pd.read_csv(out)
+    assert out.exists()
+    assert len(df) == 1
+    assert int(df.in_network.sum()) == 0
