@@ -2470,12 +2470,23 @@ def export_node_resolution(pathway_id: str,
                                      get_reactome_release, get_set_members,
                                      get_modifier_isoform_entity_set_ids)
     from src.set_resolution import make_neo4j_resolver
+    from src.diagram_connectivity import (covering_diagram_stid,
+                                          diagram_glyph_positions)
 
     release = get_reactome_release()
     release_str = str(release) if release is not None else ""
     uuid_to_str = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
     vr_to_reaction = dict(zip(reaction_id_map["uid"].astype(str),
                               reaction_id_map["reactome_id"].astype(str)))
+
+    # (reaction, entity, role) -> glyph ids. A glyph id is unique only within
+    # its diagram, so the diagram is recorded with it or neither is written.
+    try:
+        glyph_positions = diagram_glyph_positions(pathway_id)
+        diagram_stid = covering_diagram_stid(pathway_id) or ""
+    except Exception:
+        logger.warning(f"no diagram glyph positions for {pathway_id}")
+        glyph_positions, diagram_stid = {}, ""
 
     rows: List[Dict[str, Any]] = []
     seen: Set[tuple] = set()
@@ -2488,12 +2499,18 @@ def export_node_resolution(pathway_id: str,
         if key in seen:
             return
         seen.add(key)
+        # The diagram draws an entity once PER REACTION, so naming the
+        # reaction and the role identifies the glyph exactly — measured, 0 of
+        # 156 triples in R-HSA-1257604 resolve to more than one, while four
+        # entities are drawn up to nine times. That is what makes "which of
+        # the two ATP glyphs did this uuid come from" answerable.
+        glyphs = glyph_positions.get((reaction_stid, stable_id, role), [])
+        glyph_id = str(glyphs[0]) if len(glyphs) == 1 else ""
         rows.append({
             "stable_id": stable_id, "uuid": node_uuid, "relation": relation,
             "depth": depth, "role": role, "reaction_stid": reaction_stid,
-            # Populated by the diagram work (US3); the columns exist now so
-            # consumers do not have to branch on schema version later.
-            "glyph_id": "", "diagram_stid": "",
+            "glyph_id": glyph_id,
+            "diagram_stid": diagram_stid if glyph_id else "",
             "release": release_str,
         })
 

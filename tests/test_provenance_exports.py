@@ -146,3 +146,44 @@ def test_context_export_emits_no_orphaned_rows(tmp_path):
         "catalyst row must name the decomposed member the network wires up, "
         f"not the parent fetch-row UUID; got {catalysts[0]['context_node']}"
     )
+
+
+def test_glyph_id_and_diagram_are_written_together(tmp_path, monkeypatch):
+    """A glyph id without its diagram is meaningless, and vice versa.
+
+    Glyph ids are unique only WITHIN a diagram — the same integer identifies a
+    different drawing in another one — so a row carrying one without the other
+    cannot be resolved back to anything. This is the invariant behind Adam's
+    question: knowing a uuid came from glyph 535 is only useful if you also
+    know which diagram 535 belongs to.
+    """
+    monkeypatch.setattr(m, "get_labels", lambda e: ["EntityWithAccessionedSequence"], raising=False)
+
+    rxn = "aaaaaaaa-0000-0000-0000-0000000000r1"
+    src = "aaaaaaaa-0000-0000-0000-000000000001"
+    edges = pd.DataFrame([
+        {"source_id": src, "target_id": rxn, "pos_neg": "pos", "and_or": "and",
+         "edge_type": "input", "stoichiometry": 1, "edge_reaction_id": "R-HSA-100"},
+    ])
+    reaction_id_map = pd.DataFrame({"uid": [rxn], "reactome_id": ["R-HSA-100"]})
+
+    import src.diagram_connectivity as dc
+    # One entity at one reaction, drawn once: the triple resolves to a glyph.
+    monkeypatch.setattr(dc, "diagram_glyph_positions",
+                        lambda pid: {("R-HSA-100", "R-HSA-999", "input"): [535]})
+    monkeypatch.setattr(dc, "covering_diagram_stid", lambda pid: "R-HSA-1257604")
+    monkeypatch.setattr(m, "get_pathway_participating_entities", lambda pid: set(), raising=False)
+
+    out = tmp_path / "node_resolution.csv"
+    exc = tmp_path / "node_exclusions.csv"
+    m.export_node_resolution("R-HSA-100", edges, reaction_id_map,
+                             {src: "R-HSA-999"}, str(out), str(exc))
+
+    rows = pd.read_csv(out, dtype=str, keep_default_na=False).to_dict("records")
+    for row in rows:
+        has_glyph = bool(row["glyph_id"].strip())
+        has_diagram = bool(row["diagram_stid"].strip())
+        assert has_glyph == has_diagram, (
+            f"glyph_id={row['glyph_id']!r} and diagram_stid={row['diagram_stid']!r} "
+            "must be present together or absent together"
+        )
