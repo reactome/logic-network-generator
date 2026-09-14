@@ -1,5 +1,6 @@
 import os
 import uuid
+from collections import Counter
 from typing import Dict, List, Any, NamedTuple, Optional, Set, Tuple
 
 import pandas as pd
@@ -2359,8 +2360,26 @@ def export_nodes(pathway_logic_network: pd.DataFrame,
 def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
                                  reaction_id_map: pd.DataFrame,
                                  catalyst_regulator_map: pd.DataFrame,
-                                 output_file: str) -> None:
-    """Write node_reaction_context.csv — (node, reaction, role) location rows."""
+                                 output_file: str,
+                                 logic_network: Optional[pd.DataFrame] = None) -> None:
+    """Write node_reaction_context.csv — (node, reaction, role) location rows.
+
+    Catalyst and regulator rows are read from the emitted network, NOT from
+    ``catalyst_regulator_map``. Those fetch rows carry the UNDECOMPOSED PARENT
+    entity's uuid, while ``append_regulators`` decomposes each catalyst and
+    regulator to its terminal members and wires the edges from the member
+    uuids. Exporting the parent therefore named a node that does not exist:
+    measured on the ten-pathway catalog, 100% of 2,228 catalyst rows and 100%
+    of 1,018 regulator rows were orphaned — 31.3% of the export, and exactly
+    the two roles that carry the causality — while input and output were
+    clean at 0%. That is issue #67.
+
+    Deriving these rows from the network instead makes the export correct by
+    construction: it reports what was actually wired rather than what was
+    fetched. Catalyst and regulator edges carry no ``edge_reaction_id``, but
+    their TARGET is the virtual-reaction node, so the reaction is recovered
+    through ``reaction_id_map`` the same way the input/output rows do it.
+    """
     vr_to_reaction = dict(zip(reaction_id_map["uid"].astype(str),
                               reaction_id_map["reactome_id"].astype(str)))
     seen: Set[tuple] = set()
@@ -2376,17 +2395,47 @@ def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
         seen.add(key)
         rows.append({"context_node": str(node_uuid), "reaction_id": rid, "role": role})
 
-    if catalyst_regulator_map is not None and not catalyst_regulator_map.empty:
-        for _, r in catalyst_regulator_map.iterrows():
-            cr_uuid = r.get("uuid"); rid = r.get("reaction_id"); et = str(r.get("edge_type"))
-            if pd.isna(cr_uuid) or pd.isna(rid):
+    has_cr = catalyst_regulator_map is not None and not catalyst_regulator_map.empty
+    if has_cr and logic_network is None:
+        # Falling back to the fetch rows here would silently restore #67.
+        raise ValueError(
+            "export_node_reaction_context needs the logic network to place "
+            "catalyst and regulator nodes; the catalyst_regulator_map holds "
+            "undecomposed parent uuids that are absent from the network (#67)."
+        )
+    if logic_network is not None and not logic_network.empty:
+        for _, e in logic_network.iterrows():
+            role = str(e.get("edge_type") or "")
+            if role not in ("catalyst", "regulator"):
                 continue
-            role = "catalyst" if et == "catalyst" else "regulator"
-            key = (str(cr_uuid), str(rid), role)
+            # Distinct names from the registry loop above, whose `node_uuid`
+            # and `rid` are already narrowed to str; rebinding them with
+            # DataFrame values (Any | None) is a type error, not a style
+            # preference.
+            edge_node = e.get("source_id")
+            edge_reaction = vr_to_reaction.get(str(e.get("target_id")))
+            if pd.isna(edge_node) or edge_reaction is None:
+                continue
+            key = (str(edge_node), edge_reaction, role)
             if key in seen:
                 continue
             seen.add(key)
-            rows.append({"context_node": str(cr_uuid), "reaction_id": str(rid), "role": role})
+            rows.append({"context_node": str(edge_node),
+                         "reaction_id": edge_reaction, "role": role})
+
+    # A context row naming a node that is not in the network is meaningless to
+    # every consumer, so refuse to write one rather than shipping it quietly.
+    if logic_network is not None and not logic_network.empty:
+        live = set(logic_network["source_id"].astype(str)) | set(
+            logic_network["target_id"].astype(str))
+        orphaned = [r for r in rows if r["context_node"] not in live]
+        if orphaned:
+            by_role = Counter(r["role"] for r in orphaned)
+            raise ValueError(
+                f"{len(orphaned)} of {len(rows)} context rows name nodes absent "
+                f"from the logic network (by role: {dict(by_role)}). Refusing to "
+                f"write {output_file}."
+            )
 
     cols = ["context_node", "reaction_id", "role"]
     pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
