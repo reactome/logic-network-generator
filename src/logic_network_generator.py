@@ -2408,16 +2408,20 @@ def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
             role = str(e.get("edge_type") or "")
             if role not in ("catalyst", "regulator"):
                 continue
-            edge_node_uuid = e.get("source_id")
-            rid = vr_to_reaction.get(str(e.get("target_id")))
-            if pd.isna(edge_node_uuid) or rid is None:
+            # Distinct names from the registry loop above, whose `node_uuid`
+            # and `rid` are already narrowed to str; rebinding them with
+            # DataFrame values (Any | None) is a type error, not a style
+            # preference.
+            edge_node = e.get("source_id")
+            edge_reaction = vr_to_reaction.get(str(e.get("target_id")))
+            if pd.isna(edge_node) or edge_reaction is None:
                 continue
-            key = (str(edge_node_uuid), rid, role)
+            key = (str(edge_node), edge_reaction, role)
             if key in seen:
                 continue
             seen.add(key)
-            rows.append({"context_node": str(edge_node_uuid), "reaction_id": rid,
-                         "role": role})
+            rows.append({"context_node": str(edge_node),
+                         "reaction_id": edge_reaction, "role": role})
 
     # A context row naming a node that is not in the network is meaningless to
     # every consumer, so refuse to write one rather than shipping it quietly.
