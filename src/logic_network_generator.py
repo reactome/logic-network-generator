@@ -2435,3 +2435,180 @@ def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
     cols = ["context_node", "reaction_id", "role"]
     pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
     logger.info(f"Exported {len(rows)} node-reaction-context rows: {output_file}")
+
+
+def export_node_resolution(pathway_id: str,
+                           pathway_logic_network: pd.DataFrame,
+                           reaction_id_map: pd.DataFrame,
+                           uuid_mapping: Dict[str, str],
+                           output_file: str,
+                           exclusions_file: str) -> None:
+    """Write node_resolution.csv and node_exclusions.csv.
+
+    One table answers both directions: grouped by ``stable_id`` it says which
+    nodes represent a Reactome entity, grouped by ``uuid`` it says what a node
+    stands for. See specs/005-node-identity-mapping in the deltasignal repo.
+
+    The motivating gap is set-valued readouts. EntitySets are split into their
+    member species, so a set has no node of its own and nothing recorded the
+    link back; that silently cost the benchmark 204 of 847 cases, every one of
+    the 20 blocked readouts being a set. ``set_member`` rows are that link.
+
+    Absence is declared rather than silent. ``node_exclusions.csv`` is NOT
+    expected to be empty: roughly 182 entries per catalog are the deliberately
+    atomic modifier sets (ubiquitin's UBB/UBC repeat units and the rest of
+    ``get_modifier_isoform_entity_set_ids``), which are a design decision, and
+    the rest are a real gap. The ``reason`` column is the only thing separating
+    those two in one list, so it is required and must be specific.
+    """
+    from src.neo4j_connector import (get_labels, get_pathway_participating_entities,
+                                     get_reactome_release, get_set_members,
+                                     get_modifier_isoform_entity_set_ids)
+    from src.set_resolution import make_neo4j_resolver
+
+    release = get_reactome_release()
+    release_str = str(release) if release is not None else ""
+    uuid_to_str = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
+    vr_to_reaction = dict(zip(reaction_id_map["uid"].astype(str),
+                              reaction_id_map["reactome_id"].astype(str)))
+
+    rows: List[Dict[str, Any]] = []
+    seen: Set[tuple] = set()
+
+    def add(stable_id: str, node_uuid: str, relation: str, depth: int,
+            role: str = "", reaction_stid: str = "") -> None:
+        if not stable_id or not node_uuid:
+            return
+        key = (stable_id, node_uuid, relation, role, reaction_stid)
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append({
+            "stable_id": stable_id, "uuid": node_uuid, "relation": relation,
+            "depth": depth, "role": role, "reaction_stid": reaction_stid,
+            # Populated by the diagram work (US3); the columns exist now so
+            # consumers do not have to branch on schema version later.
+            "glyph_id": "", "diagram_stid": "",
+            "release": release_str,
+        })
+
+    # 1. Reaction nodes.
+    for vr_uid, rid in vr_to_reaction.items():
+        if vr_uid in uuid_to_str:
+            continue  # an entity node that happens to share the id space
+        add(rid, vr_uid, "reaction", 0, "", rid)
+
+    # 2. Entity nodes: what each node directly stands for.
+    stid_to_uuids: Dict[str, Set[str]] = {}
+    for node_uuid, node_str in uuid_to_str.items():
+        if "::variant::" in node_str:
+            parent = node_str.split("::variant::")[0]
+            add(parent, node_uuid, "variant", 0)
+            stid_to_uuids.setdefault(parent, set()).add(node_uuid)
+            for member in node_str.split("::variant::")[-1].split("_"):
+                if member.startswith("R-"):
+                    add(member, node_uuid, "set_member", 1)
+                    stid_to_uuids.setdefault(member, set()).add(node_uuid)
+        else:
+            add(node_str, node_uuid, "self", 0)
+            stid_to_uuids.setdefault(node_str, set()).add(node_uuid)
+            try:
+                labels = get_labels(node_str)
+            except Exception:
+                labels = []
+            if "Complex" in labels:
+                try:
+                    for component in sorted(get_terminal_components(node_str)):
+                        if component != node_str:
+                            add(component, node_uuid, "complex_component", 1)
+                except Exception:
+                    logger.warning(f"could not decompose complex {node_str}")
+
+    # 3. Reaction position, from the network itself rather than the fetch rows
+    #    (see export_node_reaction_context and issue #67).
+    for _, e in pathway_logic_network.iterrows():
+        etype = str(e.get("edge_type") or "")
+        if etype in ("input", "catalyst", "regulator"):
+            node_uuid, rxn_uuid = str(e.get("source_id")), str(e.get("target_id"))
+        elif etype == "output":
+            rxn_uuid, node_uuid = str(e.get("source_id")), str(e.get("target_id"))
+        else:
+            continue
+        rid = vr_to_reaction.get(rxn_uuid)
+        node_str = uuid_to_str.get(node_uuid)
+        if not rid or not node_str:
+            continue
+        base = node_str.split("::variant::")[0]
+        add(base, node_uuid, "self" if "::variant::" not in node_str else "variant",
+            0, etype, rid)
+
+    # 4. THE POINT: set -> the member nodes it was split into.
+    excluded: List[Dict[str, str]] = []
+    try:
+        participating = get_pathway_participating_entities(pathway_id)
+    except Exception:
+        logger.warning("could not list participating entities; set rows omitted")
+        participating = set()
+    try:
+        atomic = set(get_modifier_isoform_entity_set_ids())
+    except Exception:
+        atomic = set()
+    resolve = make_neo4j_resolver(get_set_members, get_labels)
+
+    for stable_id in sorted(participating):
+        try:
+            labels = get_labels(stable_id)
+        except Exception:
+            labels = []
+        if "EntitySet" not in labels:
+            if stable_id not in stid_to_uuids:
+                excluded.append({"stable_id": stable_id,
+                                 "reason": "participates but no node was generated",
+                                 "release": release_str})
+            continue
+        if stable_id in stid_to_uuids:
+            continue  # the set itself is a node; nothing was split
+        resolution = resolve(stable_id)
+        hits = 0
+        for leaf in resolution.leaves:
+            for node_uuid in sorted(stid_to_uuids.get(leaf.stable_id, ())):
+                add(stable_id, node_uuid, "set_member", leaf.depth)
+                hits += 1
+        if hits == 0:
+            # Name the leaves. "none resolved" is true of a design decision and
+            # of a bug alike; the ids are what lets a reader tell them apart.
+            leaf_ids = ", ".join(l.stable_id for l in resolution.leaves[:4]) or "none"
+            reason = ("atomic modifier set, deliberately not expanded"
+                      if stable_id in atomic else
+                      f"set has no node and none of its {len(resolution.leaves)} "
+                      f"leaves resolved ({leaf_ids})")
+            excluded.append({"stable_id": stable_id, "reason": reason,
+                             "release": release_str})
+        elif resolution.truncated:
+            excluded.append({
+                "stable_id": stable_id,
+                "reason": f"partially resolved: depth bound hit at "
+                          f"{resolution.max_depth_reached}",
+                "release": release_str})
+        else:
+            missing = [l.stable_id for l in resolution.leaves
+                       if l.stable_id not in stid_to_uuids]
+            if missing:
+                # Reported, not silently combined over what did resolve.
+                reason = ("atomic modifier set, deliberately not expanded"
+                          if stable_id in atomic else
+                          f"partially resolved: {len(missing)} of "
+                          f"{len(resolution.leaves)} leaves have no node "
+                          f"({', '.join(sorted(missing)[:3])})")
+                excluded.append({"stable_id": stable_id, "reason": reason,
+                                 "release": release_str})
+
+    cols = ["stable_id", "uuid", "relation", "depth", "role", "reaction_stid",
+            "glyph_id", "diagram_stid", "release"]
+    pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
+    pd.DataFrame(excluded, columns=["stable_id", "reason", "release"]).to_csv(
+        exclusions_file, index=False)
+    set_rows = sum(1 for r in rows if r["relation"] == "set_member")
+    logger.info(
+        f"Exported {len(rows)} node-resolution rows ({set_rows} set_member), "
+        f"{len(excluded)} exclusions: {output_file}")

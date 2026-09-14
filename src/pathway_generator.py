@@ -13,6 +13,7 @@ from src.logic_network_generator import (
     create_pathway_logic_network,
     export_entity_reaction_proxy_mapping,
     export_node_reaction_context,
+    export_node_resolution,
     export_nodes,
     export_uuid_to_reactome_mapping,
 )
@@ -401,6 +402,14 @@ def generate_pathway_file(
                 result.catalyst_regulator_map,
                 str(pathway_output_dir / "node_reaction_context.csv"),
                 logic_network=result.logic_network,
+            )
+            export_node_resolution(
+                pathway_id,
+                result.logic_network,
+                result.reaction_id_map,
+                result.uuid_mapping,
+                str(pathway_output_dir / "node_resolution.csv"),
+                str(pathway_output_dir / "node_exclusions.csv"),
             )
         except Exception as e:
             logger.error(f"Failed to write node provenance files: {e}", exc_info=True)
