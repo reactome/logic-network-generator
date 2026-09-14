@@ -20,7 +20,7 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 
@@ -162,3 +162,63 @@ def augment_reaction_connections(pathway_id: str,
         f"pairs not in precedingEvent (of {len(pairs)} drawn)"
     )
     return pd.concat([reaction_connections, pd.DataFrame(new_rows)], ignore_index=True)
+
+
+def diagram_glyph_positions(pathway_id: str) -> Dict[Tuple[str, str, str], List[int]]:
+    """``(reaction_stId, entity_stId, role) -> [glyph_id]`` for one pathway.
+
+    Adam: *"two nodes in the reactome pathway diagram that are in the same
+    compartment could be the same thing but in two different places. We need
+    to be able to know which one the uuid was from."*
+
+    That identity exists and this module already read it — ``x["id"]`` on each
+    input/output/catalyst entry is the DiagramObject id, which is what the
+    pathway browser selects and highlights — and then discarded it after
+    pairing producers with consumers. This exposes it instead.
+
+    The triple is a **unique** key, which is what makes the question
+    answerable: measured on R-HSA-1257604, 0 of 156 triples resolve to more
+    than one glyph. An entity drawn nine times (ATP, ADP) is drawn once per
+    reaction, so naming the reaction and the role disambiguates it exactly.
+    The return type is still a list because a future diagram could break that
+    assumption, and silently returning the first of several would hide it.
+
+    Returns an empty mapping when no diagram covers the pathway.
+    """
+    ddir = _diagram_dir()
+    diagram_stid = _covering_diagram_stid(pathway_id)
+    if not diagram_stid:
+        return {}
+
+    layout = json.loads((ddir / f"{diagram_stid}.json").read_text())
+    graph = json.loads((ddir / f"{diagram_stid}.graph.json").read_text())
+
+    edge_dbid_to_stid = {e["dbId"]: e["stId"] for e in graph.get("edges", []) if e.get("stId")}
+    node_dbid_to_stid = {n["dbId"]: n["stId"] for n in graph.get("nodes", []) if n.get("stId")}
+    glyph_to_entity_dbid = {n["id"]: n.get("reactomeId") for n in layout.get("nodes", [])}
+
+    roles = {"inputs": "input", "outputs": "output", "catalysts": "catalyst"}
+    positions: Dict[Tuple[str, str, str], List[int]] = {}
+    for edge in layout.get("edges", []):
+        reaction_stid = edge_dbid_to_stid.get(edge.get("reactomeId"))
+        if not reaction_stid:
+            continue
+        for key, role in roles.items():
+            for entry in edge.get(key, []):
+                glyph_id = entry.get("id")
+                entity_stid = node_dbid_to_stid.get(glyph_to_entity_dbid.get(glyph_id))
+                if glyph_id is None or not entity_stid:
+                    continue
+                positions.setdefault((reaction_stid, entity_stid, role), [])
+                if glyph_id not in positions[(reaction_stid, entity_stid, role)]:
+                    positions[(reaction_stid, entity_stid, role)].append(glyph_id)
+    return positions
+
+
+def covering_diagram_stid(pathway_id: str) -> str:
+    """The diagram a pathway is drawn in — its own, or the nearest ancestor's.
+
+    A glyph id is unique only WITHIN a diagram, so it is meaningless without
+    this. Exposed so callers can record the pair together.
+    """
+    return _covering_diagram_stid(pathway_id)
