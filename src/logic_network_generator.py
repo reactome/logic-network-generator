@@ -2408,15 +2408,16 @@ def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
             role = str(e.get("edge_type") or "")
             if role not in ("catalyst", "regulator"):
                 continue
-            node_uuid = e.get("source_id")
+            edge_node_uuid = e.get("source_id")
             rid = vr_to_reaction.get(str(e.get("target_id")))
-            if pd.isna(node_uuid) or rid is None:
+            if pd.isna(edge_node_uuid) or rid is None:
                 continue
-            key = (str(node_uuid), rid, role)
+            key = (str(edge_node_uuid), rid, role)
             if key in seen:
                 continue
             seen.add(key)
-            rows.append({"context_node": str(node_uuid), "reaction_id": rid, "role": role})
+            rows.append({"context_node": str(edge_node_uuid), "reaction_id": rid,
+                         "role": role})
 
     # A context row naming a node that is not in the network is meaningless to
     # every consumer, so refuse to write one rather than shipping it quietly.
@@ -2534,13 +2535,14 @@ def export_node_resolution(pathway_id: str,
             rxn_uuid, node_uuid = str(e.get("source_id")), str(e.get("target_id"))
         else:
             continue
-        rid = vr_to_reaction.get(rxn_uuid)
-        node_str = uuid_to_str.get(node_uuid)
-        if not rid or not node_str:
+        edge_rid = vr_to_reaction.get(rxn_uuid)
+        edge_node_str = uuid_to_str.get(node_uuid)
+        if not edge_rid or not edge_node_str:
             continue
-        base = node_str.split("::variant::")[0]
-        add(base, node_uuid, "self" if "::variant::" not in node_str else "variant",
-            0, etype, rid)
+        base = edge_node_str.split("::variant::")[0]
+        add(base, node_uuid,
+            "self" if "::variant::" not in edge_node_str else "variant",
+            0, etype, edge_rid)
 
     # 4. THE POINT: set -> the member nodes it was split into.
     excluded: List[Dict[str, str]] = []
@@ -2577,7 +2579,7 @@ def export_node_resolution(pathway_id: str,
         if hits == 0:
             # Name the leaves. "none resolved" is true of a design decision and
             # of a bug alike; the ids are what lets a reader tell them apart.
-            leaf_ids = ", ".join(l.stable_id for l in resolution.leaves[:4]) or "none"
+            leaf_ids = ", ".join(leaf.stable_id for leaf in resolution.leaves[:4]) or "none"
             reason = ("atomic modifier set, deliberately not expanded"
                       if stable_id in atomic else
                       f"set has no node and none of its {len(resolution.leaves)} "
@@ -2591,8 +2593,8 @@ def export_node_resolution(pathway_id: str,
                           f"{resolution.max_depth_reached}",
                 "release": release_str})
         else:
-            missing = [l.stable_id for l in resolution.leaves
-                       if l.stable_id not in stid_to_uuids]
+            missing = [leaf.stable_id for leaf in resolution.leaves
+                       if leaf.stable_id not in stid_to_uuids]
             if missing:
                 # Reported, not silently combined over what did resolve.
                 reason = ("atomic modifier set, deliberately not expanded"

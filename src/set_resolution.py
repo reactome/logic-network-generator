@@ -22,7 +22,7 @@ anything observed needs it. `MAX_DEPTH` is a second guard on the same risk.
 
 from __future__ import annotations
 
-from typing import Dict, List, NamedTuple, Optional, Set
+from typing import Dict, List, NamedTuple, Set
 
 from src.argument_parser import logger
 
