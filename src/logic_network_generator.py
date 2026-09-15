@@ -2476,13 +2476,20 @@ def export_cofactors(pathway_logic_network: pd.DataFrame,
     species = get_cofactor_species()
     release = get_reactome_release()
 
+    # `reactome_id_to_uuid` can be stored in either direction, and one stable
+    # id routinely maps to SEVERAL uuids (that is the positional-decomposition
+    # silo — GPVI carries four separate GTP nodes). Both facts break a naive
+    # `for stable_id, uuid in mapping.items()` scan: the wrong direction marks
+    # every row absent, and the right one still undercounts a split entity.
+    # `_uuid_to_stable_id_map` already solves both and is what the other
+    # exporters use.
     present: set[str] = set()
     if not pathway_logic_network.empty:
-        uuids = set(pathway_logic_network["source_id"].dropna().unique())
-        uuids.update(pathway_logic_network["target_id"].dropna().unique())
-        for stable_id, uuid in reactome_id_to_uuid.items():
-            if uuid in uuids:
-                present.add(stable_id)
+        for node_id in _uuid_to_stable_id_map(
+                pathway_logic_network, reactome_id_to_uuid).values():
+            # A set_variant node is "{parent}::variant::{members}"; a cofactor
+            # is always a plain stId, so the split is a cheap exact match.
+            present.add(node_id)
 
     present_count = sum(1 for e in species if e["stable_id"] in present)
     rows = [

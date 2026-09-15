@@ -235,3 +235,53 @@ def test_export_cofactors_writes_a_file_even_when_none_are_present(tmp_path, mon
     assert out.exists()
     assert len(df) == 1
     assert int(df.in_network.sum()) == 0
+
+
+def test_export_cofactors_handles_both_mapping_directions(tmp_path, monkeypatch):
+    """`reactome_id_to_uuid` is stored either direction depending on caller.
+
+    The first version of this exporter assumed stable_id -> uuid. Given the
+    other direction it marked EVERY row absent and shipped a file saying no
+    pathway contains any cofactor. The original test constructed the mapping in
+    the assumed direction, so it passed either way and could not catch this.
+    """
+    monkeypatch.setattr(neo4j_connector, "get_cofactor_species", lambda: [
+        {"stable_id": "R-ALL-113592", "molecule": "ATP", "chebi_id": "30616",
+         "name": "ATP [cytosol]"},
+    ])
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+
+    uuid = "aaaaaaaa-0000-0000-0000-000000000001"
+    edges = pd.DataFrame([{"source_id": uuid, "target_id": "u-rxn"}])
+
+    for direction, mapping in (
+        ("stable_id -> uuid", {"R-ALL-113592": uuid}),
+        ("uuid -> stable_id", {uuid: "R-ALL-113592"}),
+    ):
+        out = tmp_path / f"cofactors_{direction.split()[0]}.csv"
+        m.export_cofactors(edges, mapping, str(out))
+        df = pd.read_csv(out)
+        assert int(df.in_network.sum()) == 1, f"ATP missed with {direction}"
+
+
+def test_export_cofactors_finds_an_entity_split_across_uuids(tmp_path, monkeypatch):
+    """One stable id routinely maps to several uuids (the silo).
+
+    A dict keyed by stable id holds only one of them, so scanning the mapping
+    by key undercounts a split entity. GPVI carries four separate GTP nodes.
+    """
+    monkeypatch.setattr(neo4j_connector, "get_cofactor_species", lambda: [
+        {"stable_id": "R-ALL-29438", "molecule": "GTP", "chebi_id": "37565",
+         "name": "GTP [cytosol]"},
+    ])
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+
+    u1 = "aaaaaaaa-0000-0000-0000-00000000000a"
+    u2 = "aaaaaaaa-0000-0000-0000-00000000000b"
+    # Only the SECOND occurrence appears in the network.
+    edges = pd.DataFrame([{"source_id": u2, "target_id": "u-rxn"}])
+    out = tmp_path / "cofactors.csv"
+    m.export_cofactors(edges, {u1: "R-ALL-29438", u2: "R-ALL-29438"}, str(out))
+
+    df = pd.read_csv(out)
+    assert int(df.in_network.sum()) == 1, "split entity missed when only one uuid is used"
