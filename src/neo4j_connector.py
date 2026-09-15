@@ -720,6 +720,79 @@ def get_modifier_isoform_entity_set_ids() -> Set[str]:
     return _modifier_isoform_set_cache
 
 
+# Metabolic cofactors, keyed by ChEBI rather than by name or stable id.
+#
+# ChEBI identity is the only stable handle here. A name query silently misses
+# compartment variants and matches by substring ("phosphate" pulls in pyridoxal
+# 5'-phosphate); stable ids go stale between releases. An audit of the
+# thirteen hand-written ids this module used to carry found six that were
+# stale or mislabelled against Release97 — R-ALL-29438 commented "PPi" is
+# GTP, R-ALL-29390 commented "Pi variant" is PXLP, R-ALL-29360 commented
+# "ADP variant" is NAD+, and three did not exist at all.
+#
+# Energy and phosphate carriers, redox pairs, one-carbon donors, water,
+# dissolved gases and bulk ions. Deliberately NOT here: second messengers
+# (Ca2+, PIP3, PI(4,5)P2, cAMP, cGMP, DAG, IP3) and modifier tags whose
+# transfer is the regulatory event (ubiquitin, SUMO) — in a signalling pathway
+# those ARE the signal.
+_COFACTOR_CHEBI: Dict[str, List[str]] = {
+    "ATP": ["30616"], "ADP": ["456216"], "AMP": ["456215"],
+    "GTP": ["37565"], "GDP": ["58189"], "GMP": ["58115"],
+    "CTP": ["37563"], "CDP": ["58069"],
+    "UTP": ["46398"], "UDP": ["17659", "58223"],
+    "NAD+": ["57540"], "NADH": ["57945"],
+    "NADP+": ["18009", "58349"], "NADPH": ["16474", "57783"],
+    "FAD": ["57692"], "FADH2": ["58307"],
+    "CoA-SH": ["57287"], "AdoMet": ["59789"], "AdoHcy": ["57856"],
+    "H2O": ["15377"], "H+": ["15378"],
+    "Pi": ["43474"], "PPi": ["33019"],
+    "O2": ["15379"], "CO2": ["16526"],
+    "Na+": ["29101"], "K+": ["29103"], "Cl-": ["17996"],
+}
+
+_cofactor_cache: Optional[List[Dict[str, str]]] = None
+
+
+def get_cofactor_species() -> List[Dict[str, str]]:
+    """Every SimpleEntity in the connected release that IS one of the cofactors.
+
+    Returns one dict per species with ``stable_id``, ``molecule``, ``chebi_id``
+    and ``name``, covering every compartment variant the release defines.
+    Derived rather than hand-maintained so a new compartment appears by itself
+    and a renamed or retired stable id disappears by itself.
+
+    Cached for the process. Raises if Neo4j is unreachable.
+    """
+    global _cofactor_cache
+    if _cofactor_cache is not None:
+        return _cofactor_cache
+    query = """
+        MATCH (se:SimpleEntity)-[:referenceEntity]->(rm:ReferenceMolecule)
+        WHERE rm.identifier IN $ids
+        RETURN DISTINCT se.stId AS stable_id, se.displayName AS name,
+                        rm.identifier AS chebi_id
+        ORDER BY stable_id
+    """
+    by_chebi = {c: mol for mol, ids in _COFACTOR_CHEBI.items() for c in ids}
+    try:
+        rows = get_graph().run(query, ids=list(by_chebi)).data()
+    except Exception:
+        logger.error("Error in get_cofactor_species", **_traceback_kwargs())
+        raise
+    out = [
+        {
+            "stable_id": r["stable_id"],
+            "molecule": by_chebi[r["chebi_id"]],
+            "chebi_id": r["chebi_id"],
+            "name": r["name"] or "",
+        }
+        for r in rows
+        if r.get("stable_id")
+    ]
+    _cofactor_cache = sorted(out, key=lambda d: (d["molecule"], d["stable_id"]))
+    return _cofactor_cache
+
+
 def get_reference_entity_id(entity_id: str) -> Union[str, None]:
     if entity_id in _reference_entity_cache:
         return _reference_entity_cache[entity_id]

@@ -11,6 +11,7 @@ from src.argument_parser import logger
 from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.logic_network_generator import (
     create_pathway_logic_network,
+    export_cofactors,
     export_entity_reaction_proxy_mapping,
     export_node_reaction_context,
     export_node_resolution,
@@ -410,6 +411,13 @@ def generate_pathway_file(
                 result.uuid_mapping,
                 str(pathway_output_dir / "node_resolution.csv"),
                 str(pathway_output_dir / "node_exclusions.csv"),
+            )
+            # Ships WITH the networks so an artifact bundle pulled from S3
+            # carries its own answer to "which of these nodes is ATP".
+            export_cofactors(
+                result.logic_network,
+                result.uuid_mapping,
+                str(pathway_output_dir / "cofactors.csv"),
             )
         except Exception as e:
             logger.error(f"Failed to write node provenance files: {e}", exc_info=True)
