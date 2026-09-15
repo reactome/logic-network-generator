@@ -11,6 +11,11 @@ services:
       - "7687:7687"  # Bolt
     environment:
       - NEO4J_dbms_memory_heap_maxSize=8g
+      # This image ships JDK 11, whose container-metrics probe NPEs reading
+      # cgroup v2 on a newer host kernel — Neo4j then dies before startup with
+      # ExceptionInInitializerError out of CgroupV2Subsystem.getInstance. The
+      # heap is pinned above, so container-aware sizing buys nothing here.
+      - NEO4J_dbms_jvm_additional=-XX:-UseContainerSupport
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
