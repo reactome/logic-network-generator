@@ -342,8 +342,20 @@ def generate_pathway_file(
         # Realisation links the diagram draws between a specific complex and
         # the generic one it instantiates. Gated on the same flag as the other
         # diagram-derived connectivity.
+        # DEFAULT OFF. The edge is correct in principle and inert in practice:
+        # the target complex already carries `and` assembly edges to every
+        # constituent protein, and DeltaSignal combines an AND cluster with an
+        # OR cluster as max(and, or), so a DECREASE through this edge is
+        # discarded — measured on TGF-beta, member DOWN leaves the generic at
+        # 1.0 while member UP reaches 80.0. One-directional propagation is
+        # worse than none, because it looks like it works.
+        #
+        # It becomes load-bearing under DS_OR_COMBINE=gate, which is itself
+        # default-off and measured inert precisely because nothing in the
+        # catalog produced mixed and/or clusters. This produces them. The two
+        # therefore have to be enabled and measured TOGETHER, and neither alone.
         set_member_pairs = None
-        if os.environ.get("LNG_DIAGRAM_SET_MEMBER", "1") == "1":
+        if os.environ.get("LNG_DIAGRAM_SET_MEMBER", "0") == "1":
             try:
                 set_member_pairs = diagram_set_member_pairs(pathway_id)
             except Exception:

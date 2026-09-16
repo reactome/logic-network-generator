@@ -1391,6 +1391,15 @@ def _emit_diagram_set_member_edges(
     pool. `or` because any member realises it, so the edge never imposes
     AND-completeness on the target.
 
+    OFF BY DEFAULT, and the reason is worth stating. The target already carries
+    `and` assembly edges to every constituent protein, and DeltaSignal combines
+    an AND cluster with an OR cluster as `max(and, or)`, so a DECREASE arriving
+    on this edge is discarded while an increase is not: measured on TGF-beta,
+    driving the members down leaves the generic at 1.0, driving them up reaches
+    80.0. An edge that propagates one direction only is worse than no edge,
+    because it looks like it works. Enable together with DS_OR_COMBINE=gate,
+    never alone.
+
     Both endpoints must already be nodes. A link whose other end is absent
     means the entity participates in no curated reaction here, and inventing a
     node for it is a much larger change (issue #41).
