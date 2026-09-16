@@ -940,14 +940,16 @@ def _expand_complex_variants(complex_id: str) -> List[tuple]:
 # Release97; the list this replaced had SIX of thirteen wrong, which is why
 # the live set is now derived rather than typed:
 #
-#   R-ALL-29438 was commented "PPi" and is GTP
+#   R-ALL-29438 was commented "PPi" and is GTP     <- still a cofactor
+#   R-ALL-29360 was commented "ADP variant" and is NAD+  <- still a cofactor
 #   R-ALL-29390 was commented "Pi variant" and is PXLP (pyridoxal 5'-phosphate)
-#   R-ALL-29360 was commented "ADP variant" and is NAD+
 #   R-ALL-217093 / R-ALL-110114 / R-ALL-29986 do not exist in Release97 at all
 #
-# The effect of those errors was not cosmetic: PPi, several NAD(P)(H) forms and
-# a Pi variant were never excluded from depletion edges, handoff leaves or
-# diagram bridges, while PXLP was excluded and should not have been.
+# Note the distinction, which an earlier version of this seed got wrong: a
+# WRONG COMMENT is not a wrong ENTRY. GTP and NAD+ are both in
+# `_COFACTOR_CHEBI`, so dropping them because their labels were wrong would
+# make the offline path exclude FEWER real cofactors than the list it replaced.
+# Only PXLP was a genuine false positive; the three absent ids were inert.
 #
 # Used only when Neo4j is unreachable. `get_cofactor_species()` derives the
 # real set by ChEBI identity against the connected release — 253 species at
@@ -960,6 +962,8 @@ _COFACTOR_STIDS_SEED: frozenset = frozenset({
     "R-ALL-29356",   # H2O [cytosol]
     "R-ALL-29372",   # Pi [cytosol]
     "R-ALL-73473",   # NADH [cytosol]
+    "R-ALL-29438",   # GTP [cytosol]   (was mis-commented "PPi")
+    "R-ALL-29360",   # NAD+ [cytosol]  (was mis-commented "ADP variant")
 })
 
 _cofactor_stids_cache: Optional[frozenset] = None
@@ -975,18 +979,30 @@ def _cofactor_stids() -> frozenset:
     minimal rather than a stale snapshot.
     """
     global _cofactor_stids_cache
-    if _cofactor_stids_cache is None:
-        try:
-            from src.neo4j_connector import get_cofactor_species
-            derived = frozenset(e["stable_id"] for e in get_cofactor_species())
-            _cofactor_stids_cache = derived or _COFACTOR_STIDS_SEED
-        except Exception:
-            logger.warning(
-                "Could not derive the cofactor set from Neo4j; falling back to "
-                "the offline seed. Depletion edges, handoff leaves and diagram "
-                "bridges will treat fewer species as cofactors than they should."
-            )
-            _cofactor_stids_cache = _COFACTOR_STIDS_SEED
+    if _cofactor_stids_cache is not None:
+        return _cofactor_stids_cache
+    try:
+        from src.neo4j_connector import get_cofactor_species
+        derived = frozenset(e["stable_id"] for e in get_cofactor_species())
+    except Exception:
+        # Deliberately NOT cached. Memoising the failure would let one
+        # transient connection reset on pathway 1 silently build pathways
+        # 2..N with 9 cofactors instead of 253 — while `export_cofactors`
+        # queries Neo4j separately, succeeds, and ships a cofactors.csv
+        # listing all 253 beside a network built without them. Retrying per
+        # call is cheap next to a whole catalog built wrong.
+        logger.warning(
+            "Could not derive the cofactor set from Neo4j; using the offline "
+            "seed for THIS call only. Depletion edges, handoff leaves and "
+            "diagram bridges will treat fewer species as cofactors than they "
+            "should. Networks built now are not comparable with ones built "
+            "while the database was reachable."
+        )
+        return _COFACTOR_STIDS_SEED
+    if not derived:
+        logger.warning("Neo4j returned no cofactor species; using the offline seed.")
+        return _COFACTOR_STIDS_SEED
+    _cofactor_stids_cache = derived
     return _cofactor_stids_cache
 
 # Ubiquitin entity stIds (human + cross-species variants). A reaction that
@@ -1422,14 +1438,21 @@ def _emit_diagram_set_member_edges(
         degree[e["source_id"]] = degree.get(e["source_id"], 0) + 1
         degree[e["target_id"]] = degree.get(e["target_id"], 0) + 1
 
+    # Ties are common (several occurrences each with degree 1) and a uuid4 is
+    # regenerated every run, so breaking ties on the uuid STRING would attach
+    # the edge to a different occurrence run to run — defeating the
+    # reproducibility the pinned PYTHONHASHSEED exists to give. Break on
+    # insertion order instead, which follows the deterministic build.
+    ordinal = {u: i for i, u in enumerate(reactome_id_to_uuid)}
+
     emitted = 0
     for member_stid, set_stid in sorted(set_member_pairs):
         srcs = by_stid.get(member_stid, [])
         tgts = by_stid.get(set_stid, [])
         if not srcs or not tgts:
             continue
-        src = max(srcs, key=lambda u: (degree.get(u, 0), u))
-        tgt = max(tgts, key=lambda u: (degree.get(u, 0), u))
+        src = max(srcs, key=lambda u: (degree.get(u, 0), -ordinal.get(u, 0)))
+        tgt = max(tgts, key=lambda u: (degree.get(u, 0), -ordinal.get(u, 0)))
         if src == tgt or (src, tgt) in seen:
             continue
         seen.add((src, tgt))
@@ -1987,12 +2010,17 @@ def create_pathway_logic_network(
     # only (cofactor hubs already excluded by the caller). See #39.
     if diagram_bridge_pairs:
         n_bridges = 0
+        # Hoisted: this was a module constant before the set became
+        # derived, and rebuilding a ~256-element union per
+        # (pair x producer_vr x consumer_vr) triple is 10^5-10^6
+        # allocations on a variant-expanded pathway.
+        bridge_excluded = _bridge_excluded_stids()
         for a_rid, b_rid in diagram_bridge_pairs:
             for p_vr in reactome_to_vr.get(a_rid, []):
                 p_outputs = set(vr_entities.get(p_vr, ([], [], {}, {}))[1])
                 for f_vr in reactome_to_vr.get(b_rid, []):
                     f_inputs = set(vr_entities.get(f_vr, ([], [], {}, {}))[0])
-                    for eid in (p_outputs & f_inputs) - _bridge_excluded_stids():
+                    for eid in (p_outputs & f_inputs) - bridge_excluded:
                         src = entity_uuid_registry.get((eid, p_vr, "output"))
                         tgt = entity_uuid_registry.get((eid, f_vr, "input"))
                         # Skip if missing or already the same node (already

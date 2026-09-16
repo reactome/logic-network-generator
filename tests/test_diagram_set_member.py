@@ -7,9 +7,26 @@ No Neo4j: the derivation is stubbed.
 """
 import json
 
+import pytest
+
 import src.logic_network_generator as m
 from src import diagram_connectivity as dc
 from src import neo4j_connector
+
+
+@pytest.fixture(autouse=True)
+def _clear_module_caches():
+    """Reset the caches these tests touch, on failure as well as success.
+
+    An assertion failure used to leave a stub cofactor set latched in
+    `_cofactor_stids_cache`, and `_handoff_leaf_cache` holds leaves computed
+    under it, so every later test in the session saw the stub.
+    """
+    m._cofactor_stids_cache = None
+    m._handoff_leaf_cache.clear()
+    yield
+    m._cofactor_stids_cache = None
+    m._handoff_leaf_cache.clear()
 
 
 def _layout(links):
@@ -93,10 +110,50 @@ def test_cofactor_set_is_derived_and_seed_is_a_fallback(monkeypatch):
     m._cofactor_stids_cache = None
 
 
-def test_the_six_bad_ids_are_not_in_the_seed():
-    """Verified against Release97: three do not exist, three are mislabelled."""
-    for bad in ("R-ALL-217093", "R-ALL-110114", "R-ALL-29986",   # absent
-                "R-ALL-29390",   # PXLP, was commented "Pi variant"
-                "R-ALL-29438",   # GTP, was commented "PPi"
-                "R-ALL-29360"):  # NAD+, was commented "ADP variant"
-        assert bad not in m._COFACTOR_STIDS_SEED, bad
+def test_seed_drops_only_the_genuinely_wrong_entries():
+    """A wrong COMMENT is not a wrong ENTRY, and conflating the two regressed
+    this seed once already: GTP and NAD+ were dropped because their labels were
+    wrong, which made the offline path exclude FEWER real cofactors than the
+    list it replaced."""
+    for absent in ("R-ALL-217093", "R-ALL-110114", "R-ALL-29986"):
+        assert absent not in m._COFACTOR_STIDS_SEED, absent
+    # PXLP is the one true false positive: not a cofactor at all.
+    assert "R-ALL-29390" not in m._COFACTOR_STIDS_SEED
+    # Mis-commented but genuine — both are in _COFACTOR_CHEBI.
+    assert "R-ALL-29438" in m._COFACTOR_STIDS_SEED, "GTP is a cofactor"
+    assert "R-ALL-29360" in m._COFACTOR_STIDS_SEED, "NAD+ is a cofactor"
+
+
+def test_a_failed_derivation_is_never_cached(monkeypatch):
+    """Memoising the failure would let one transient reset on pathway 1 build
+    every later pathway with the seed, while export_cofactors queries
+    separately, succeeds, and ships a mismatched cofactors.csv."""
+    from src import neo4j_connector
+
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return [{"stable_id": "R-ALL-1"}]
+
+    monkeypatch.setattr(neo4j_connector, "get_cofactor_species", flaky)
+    assert m._cofactor_stids() == m._COFACTOR_STIDS_SEED   # first call degrades
+    assert m._cofactor_stids() == frozenset({"R-ALL-1"})   # and RETRIES
+
+
+def test_the_emitter_is_actually_wired_in(monkeypatch):
+    """Every other test here exercises the helpers directly, so deleting the
+    call in create_pathway_logic_network would leave them all green."""
+    import inspect
+    src = inspect.getsource(m.create_pathway_logic_network)
+    assert "_emit_diagram_set_member_edges(" in src
+    assert "diagram_set_member_pairs" in src
+
+    from src import pathway_generator as pg
+    gen = inspect.getsource(pg)
+    assert "LNG_DIAGRAM_SET_MEMBER" in gen
+    # off by default, and the documented kill switch still disables it
+    assert '"LNG_DIAGRAM_SET_MEMBER", "0"' in gen
+    assert "LNG_DIAGRAM_SET_MEMBER" in pg._FINGERPRINTED_ENV

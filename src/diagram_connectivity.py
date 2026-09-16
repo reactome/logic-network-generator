@@ -168,6 +168,23 @@ def diagram_set_member_pairs(pathway_id: str) -> Set[Tuple[str, str]]:
     dbid_to_stid = {n["dbId"]: n["stId"]
                     for n in graph.get("nodes", []) if n.get("stId")}
 
+    # A pathway with no diagram of its own borrows an ancestor's, which also
+    # carries its SIBLINGS' links. `diagram_shared_product_pairs` filters those
+    # out by reaction; do the equivalent here by entity, so a sub-pathway does
+    # not import a realisation drawn in another sub-pathway's context.
+    own_entities: Set[str] = set()
+    if diagram_stid != pathway_id:
+        try:
+            from src.neo4j_connector import get_pathway_participating_entities
+            own_entities = set(get_pathway_participating_entities(pathway_id))
+        except Exception:
+            logger.warning(
+                f"{pathway_id}: borrowing diagram {diagram_stid} but could not "
+                "scope its links to this pathway; skipping them rather than "
+                "importing a sibling's."
+            )
+            return set()
+
     pairs: Set[Tuple[str, str]] = set()
     for link in layout.get("links", []) or []:
         if link.get("renderableClass") != "EntitySetAndMemberLink":
@@ -178,8 +195,12 @@ def diagram_set_member_pairs(pathway_id: str) -> Set[Tuple[str, str]]:
                 for x in (link.get("outputs") or [])}
         for member in filter(None, members):
             for parent in filter(None, sets):
-                if member != parent:
-                    pairs.add((member, parent))
+                if member == parent:
+                    continue
+                if own_entities and (member not in own_entities
+                                     and parent not in own_entities):
+                    continue
+                pairs.add((member, parent))
     return pairs
 
 

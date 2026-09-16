@@ -35,6 +35,7 @@ _FINGERPRINTED_ENV = (
     "LNG_HANDOFF_EDGES",
     "LNG_HANDOFF_HUB_MAX",
     "LNG_SET_MEMBERS_OR",
+    "LNG_DIAGRAM_SET_MEMBER",
     # Determinism controls: node ids are uuid4 and several selections iterate
     # sets, so hash seeding changes emitted content (~5.8% of TP53 edges per
     # bin/create-pathways.py). A cache built unseeded is not comparable to a
@@ -340,8 +341,9 @@ def generate_pathway_file(
         # Generate logic network
         logger.info("Creating pathway logic network...")
         # Realisation links the diagram draws between a specific complex and
-        # the generic one it instantiates. Gated on the same flag as the other
-        # diagram-derived connectivity.
+        # the generic one it instantiates. Has its own flag AND honours
+        # LNG_DIAGRAM_CONNECTIVITY=0, so the documented "disable diagram
+        # connectivity entirely" kill switch above stays true.
         # DEFAULT OFF. The edge is correct in principle and inert in practice:
         # the target complex already carries `and` assembly edges to every
         # constituent protein, and DeltaSignal combines an AND cluster with an
@@ -355,7 +357,8 @@ def generate_pathway_file(
         # catalog produced mixed and/or clusters. This produces them. The two
         # therefore have to be enabled and measured TOGETHER, and neither alone.
         set_member_pairs = None
-        if os.environ.get("LNG_DIAGRAM_SET_MEMBER", "0") == "1":
+        if (os.environ.get("LNG_DIAGRAM_SET_MEMBER", "0") == "1"
+                and os.environ.get("LNG_DIAGRAM_CONNECTIVITY", "1") != "0"):
             try:
                 set_member_pairs = diagram_set_member_pairs(pathway_id)
             except Exception:
