@@ -936,21 +936,58 @@ def _expand_complex_variants(complex_id: str) -> List[tuple]:
     return variants if variants else [(complex_id, 1)]
 
 
-_COFACTOR_STIDS: frozenset = frozenset({
-    "R-ALL-113592",  # ATP
-    "R-ALL-29358",   # ATP variant
-    "R-ALL-113582",  # ADP
-    "R-ALL-29370",   # ADP variant
-    "R-ALL-29360",   # ADP variant
-    "R-ALL-29356",   # H2O
-    "R-ALL-29372",   # Pi
-    "R-ALL-29390",   # Pi variant
-    "R-ALL-29438",   # PPi
-    "R-ALL-217093",  # NADP+
-    "R-ALL-110114",  # NADPH
-    "R-ALL-29986",   # NAD+
-    "R-ALL-73473",   # NADH
+# Offline seed for the cofactor set. Every id here was verified against
+# Release97; the list this replaced had SIX of thirteen wrong, which is why
+# the live set is now derived rather than typed:
+#
+#   R-ALL-29438 was commented "PPi" and is GTP
+#   R-ALL-29390 was commented "Pi variant" and is PXLP (pyridoxal 5'-phosphate)
+#   R-ALL-29360 was commented "ADP variant" and is NAD+
+#   R-ALL-217093 / R-ALL-110114 / R-ALL-29986 do not exist in Release97 at all
+#
+# The effect of those errors was not cosmetic: PPi, several NAD(P)(H) forms and
+# a Pi variant were never excluded from depletion edges, handoff leaves or
+# diagram bridges, while PXLP was excluded and should not have been.
+#
+# Used only when Neo4j is unreachable. `get_cofactor_species()` derives the
+# real set by ChEBI identity against the connected release — 253 species at
+# Release97, every compartment variant included.
+_COFACTOR_STIDS_SEED: frozenset = frozenset({
+    "R-ALL-113592",  # ATP [cytosol]
+    "R-ALL-29358",   # ATP [nucleoplasm]
+    "R-ALL-113582",  # ADP [nucleoplasm]
+    "R-ALL-29370",   # ADP [cytosol]
+    "R-ALL-29356",   # H2O [cytosol]
+    "R-ALL-29372",   # Pi [cytosol]
+    "R-ALL-73473",   # NADH [cytosol]
 })
+
+_cofactor_stids_cache: Optional[frozenset] = None
+
+
+def _cofactor_stids() -> frozenset:
+    """Stable ids treated as metabolic cofactors, derived from the release.
+
+    A cofactor is too shared for a depletion edge, a handoff leaf match or a
+    diagram bridge to mean anything — every reaction in a pathway touches ATP.
+    Deriving the set keeps it honest across releases; the hardcoded seed is
+    only a fallback for when Neo4j is unavailable, and it is deliberately
+    minimal rather than a stale snapshot.
+    """
+    global _cofactor_stids_cache
+    if _cofactor_stids_cache is None:
+        try:
+            from src.neo4j_connector import get_cofactor_species
+            derived = frozenset(e["stable_id"] for e in get_cofactor_species())
+            _cofactor_stids_cache = derived or _COFACTOR_STIDS_SEED
+        except Exception:
+            logger.warning(
+                "Could not derive the cofactor set from Neo4j; falling back to "
+                "the offline seed. Depletion edges, handoff leaves and diagram "
+                "bridges will treat fewer species as cofactors than they should."
+            )
+            _cofactor_stids_cache = _COFACTOR_STIDS_SEED
+    return _cofactor_stids_cache
 
 # Ubiquitin entity stIds (human + cross-species variants). A reaction that
 # takes one of these as INPUT is a ubiquitination reaction (Ub is consumed
@@ -971,7 +1008,14 @@ _UBIQUITIN_STIDS: frozenset = frozenset({
 # caller excluded cofactor hubs, but nothing did. Curators sometimes draw a
 # single shared Ub glyph, which is how two glyphs became 134 of S Phase's 158
 # bridges. See issue #61.
-_BRIDGE_EXCLUDED_STIDS: frozenset = _COFACTOR_STIDS | _UBIQUITIN_STIDS
+def _bridge_excluded_stids() -> frozenset:
+    """Species a diagram bridge must never be drawn across.
+
+    A function rather than a module constant because the cofactor half is
+    derived from the connected release; binding it at import time would freeze
+    whatever the seed happened to be.
+    """
+    return _cofactor_stids() | _UBIQUITIN_STIDS
 
 
 def _emit_substrate_depletion_edges(
@@ -1151,7 +1195,7 @@ def _emit_substrate_depletion_edges(
                 inp_stid = reactome_id_to_uuid.get(inp_uuid, "")
                 if inp_stid == cat_stid and inp_stid:
                     continue  # same biological entity at different positions
-                if inp_stid in _COFACTOR_STIDS:
+                if inp_stid in _cofactor_stids():
                     continue
                 key = (cat_uuid, inp_uuid)
                 if key in seen_edges:
@@ -1183,7 +1227,7 @@ def _emit_substrate_depletion_edges(
             cat_stid = reactome_id_to_uuid.get(cat_uuid, "")
             for subst_stid in subst_stids:
                 if subst_stid == cat_stid: continue
-                if subst_stid in _COFACTOR_STIDS: continue
+                if subst_stid in _cofactor_stids(): continue
                 target_uuids = stid_to_uuids_in_net.get(subst_stid, [])
                 for tgt_uuid in target_uuids:
                     if tgt_uuid == cat_uuid: continue
@@ -1227,7 +1271,7 @@ def _node_leaves(node_id: str) -> frozenset:
             s = set(get_terminal_components(node_id)) if "Complex" in get_labels(node_id) else {node_id}
         except Exception:
             s = {node_id}
-    leaves = frozenset(s - _COFACTOR_STIDS - _UBIQUITIN_STIDS)
+    leaves = frozenset(s - _cofactor_stids() - _UBIQUITIN_STIDS)
     _handoff_leaf_cache[node_id] = leaves
     return leaves
 
@@ -1327,6 +1371,69 @@ def _emit_precedingevent_handoff_edges(
         f"Emitted {n} precedingEvent hand-off edges "
         f"(one bridge per otherwise-disconnected precedingEvent gap)"
     )
+
+
+def _emit_diagram_set_member_edges(
+    pathway_logic_network_data: List[Dict[str, Any]],
+    reactome_id_to_uuid: Dict[str, str],
+    set_member_pairs: Optional[Set[Tuple[str, str]]],
+) -> int:
+    """Connect a specific complex to the generic one the DIAGRAM says it realises.
+
+    Curators sometimes draw a realisation relationship between two entities
+    that Reactome stores with no containment between them — a generic complex
+    holding a DefinedSet component, and the specific complexes that instantiate
+    it. `SMAD7:SMURF2` -> `SMAD7:SMURF/NEDD4L` is the worked example. Without
+    this the two are unconnected nodes and a perturbation of the specific form
+    never reaches the generic one.
+
+    Direction is member -> set: more of the specific means more of the generic
+    pool. `or` because any member realises it, so the edge never imposes
+    AND-completeness on the target.
+
+    Both endpoints must already be nodes. A link whose other end is absent
+    means the entity participates in no curated reaction here, and inventing a
+    node for it is a much larger change (issue #41).
+    """
+    if not set_member_pairs:
+        return 0
+    by_stid: Dict[str, List[str]] = {}
+    for node_uuid, stid in reactome_id_to_uuid.items():
+        by_stid.setdefault(str(stid), []).append(str(node_uuid))
+    seen = {(e["source_id"], e["target_id"]) for e in pathway_logic_network_data}
+
+    # ONE edge per stable-id pair, not the cartesian product of occurrences.
+    # Positional decomposition gives an entity many uuids, so all-pairs turns
+    # two curated relationships into 48 edges in EPH-Ephrin alone — the same
+    # blow-up that made the all-pairs silo bridge unusable. Connect the
+    # best-connected occurrence on each side, which is where follow-on signal
+    # has somewhere to go.
+    degree: Dict[str, int] = {}
+    for e in pathway_logic_network_data:
+        degree[e["source_id"]] = degree.get(e["source_id"], 0) + 1
+        degree[e["target_id"]] = degree.get(e["target_id"], 0) + 1
+
+    emitted = 0
+    for member_stid, set_stid in sorted(set_member_pairs):
+        srcs = by_stid.get(member_stid, [])
+        tgts = by_stid.get(set_stid, [])
+        if not srcs or not tgts:
+            continue
+        src = max(srcs, key=lambda u: (degree.get(u, 0), u))
+        tgt = max(tgts, key=lambda u: (degree.get(u, 0), u))
+        if src == tgt or (src, tgt) in seen:
+            continue
+        seen.add((src, tgt))
+        pathway_logic_network_data.append({
+            "source_id": src,
+            "target_id": tgt,
+            "pos_neg": "pos",
+            "and_or": "or",
+            "edge_type": "diagram_set_member",
+            "stoichiometry": 1,
+        })
+        emitted += 1
+    return emitted
 
 
 def _emit_boundary_decomposition_edges(
@@ -1638,6 +1745,7 @@ def create_pathway_logic_network(
     reaction_connections: pd.DataFrame,
     best_matches: Any,
     diagram_bridge_pairs: Optional[Set[Tuple[str, str]]] = None,
+    diagram_set_member_pairs: Optional[Set[Tuple[str, str]]] = None,
 ) -> PathwayResult:
     """Create a pathway logic network from decomposed UID mappings and reaction connections.
 
@@ -1875,7 +1983,7 @@ def create_pathway_logic_network(
                 p_outputs = set(vr_entities.get(p_vr, ([], [], {}, {}))[1])
                 for f_vr in reactome_to_vr.get(b_rid, []):
                     f_inputs = set(vr_entities.get(f_vr, ([], [], {}, {}))[0])
-                    for eid in (p_outputs & f_inputs) - _BRIDGE_EXCLUDED_STIDS:
+                    for eid in (p_outputs & f_inputs) - _bridge_excluded_stids():
                         src = entity_uuid_registry.get((eid, p_vr, "output"))
                         tgt = entity_uuid_registry.get((eid, f_vr, "input"))
                         # Skip if missing or already the same node (already
@@ -1950,6 +2058,17 @@ def create_pathway_logic_network(
         pathway_logic_network_data=pathway_logic_network_data,
         reactome_id_to_uuid=reactome_id_to_uuid,
     )
+
+    # Realisation links the DIAGRAM draws between a specific complex and the
+    # generic one it instantiates, where Reactome stores no containment. See
+    # _emit_diagram_set_member_edges.
+    n_set_member = _emit_diagram_set_member_edges(
+        pathway_logic_network_data=pathway_logic_network_data,
+        reactome_id_to_uuid=reactome_id_to_uuid,
+        set_member_pairs=diagram_set_member_pairs,
+    )
+    if n_set_member:
+        logger.info(f"Diagram set-member links: +{n_set_member} edges")
 
     # Restore curator-intended connectivity that complex-bundling drops: two
     # precedingEvent-linked reactions that hand off a shared COMPONENT (bound in

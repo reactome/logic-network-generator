@@ -327,6 +327,7 @@ def generate_pathway_file(
         # LNG_DIAGRAM_CONNECTIVITY=0 to disable diagram connectivity entirely.
         from src.diagram_connectivity import (
             augment_reaction_connections,
+            diagram_set_member_pairs,
             diagram_shared_product_pairs,
         )
         diagram_bridge_pairs = None
@@ -338,9 +339,21 @@ def generate_pathway_file(
 
         # Generate logic network
         logger.info("Creating pathway logic network...")
+        # Realisation links the diagram draws between a specific complex and
+        # the generic one it instantiates. Gated on the same flag as the other
+        # diagram-derived connectivity.
+        set_member_pairs = None
+        if os.environ.get("LNG_DIAGRAM_SET_MEMBER", "1") == "1":
+            try:
+                set_member_pairs = diagram_set_member_pairs(pathway_id)
+            except Exception:
+                logger.warning("Could not read diagram set-member links",
+                               exc_info=True)
+
         result = create_pathway_logic_network(
             decomposed_uid_mapping, connectivity, best_matches,
             diagram_bridge_pairs=diagram_bridge_pairs,
+            diagram_set_member_pairs=set_member_pairs,
         )
 
         # Save logic network (main output file users need)
