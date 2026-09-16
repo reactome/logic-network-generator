@@ -129,6 +129,81 @@ def diagram_shared_product_pairs(pathway_id: str) -> Set[Tuple[str, str]]:
     return pairs
 
 
+def diagram_set_member_pairs(pathway_id: str) -> Set[Tuple[str, str]]:
+    """(member_stId, set_stId) pairs the DIAGRAM draws and Neo4j does not have.
+
+    A diagram layout carries a `links` array alongside its `edges`, and nothing
+    in this pipeline read it. Most of those links restate set membership that
+    Neo4j already holds as hasMember, so they are redundant — but not all.
+
+    Worked example, verified against Release97. `SMAD7:SMURF/NEDD4L`
+    (R-HSA-2169026) and `SMAD7:SMURF2` (R-HSA-2167883) are both curated as
+    COMPLEXES with no containment relation between them; the generic one holds
+    a `SMURF/NEDD4L` DefinedSet where the specific holds SMURF2. Semantically
+    the specific realises the generic, the diagram says so with an
+    EntitySetAndMemberLink, and the generated network had them as two
+    unconnected nodes. Same shape for the EPH-ephrin oligomer complexes.
+
+    Only `EntitySetAndMemberLink` is returned. `EntitySetAndEntitySetLink` is a
+    set-to-set overlap rather than a realisation, and `Interaction` / `FlowLine`
+    point at entities that usually have no node at all — consuming those means
+    ADDING nodes, which is a different and much larger change (issue #41).
+
+    The link's `inputs` are the member glyph and its `outputs` the set glyph,
+    so the pair is returned member-first: the member realises the set.
+    """
+    ddir = _diagram_dir()
+    diagram_stid = _covering_diagram_stid(pathway_id)
+    if not diagram_stid:
+        return set()
+    try:
+        layout = json.loads((ddir / f"{diagram_stid}.json").read_text())
+        graph = json.loads((ddir / f"{diagram_stid}.graph.json").read_text())
+    except Exception:
+        logger.warning(f"{pathway_id}: could not read diagram links")
+        return set()
+
+    glyph_to_dbid = {n["id"]: n.get("reactomeId")
+                     for n in layout.get("nodes", []) if n.get("reactomeId")}
+    dbid_to_stid = {n["dbId"]: n["stId"]
+                    for n in graph.get("nodes", []) if n.get("stId")}
+
+    # A pathway with no diagram of its own borrows an ancestor's, which also
+    # carries its SIBLINGS' links. `diagram_shared_product_pairs` filters those
+    # out by reaction; do the equivalent here by entity, so a sub-pathway does
+    # not import a realisation drawn in another sub-pathway's context.
+    own_entities: Set[str] = set()
+    if diagram_stid != pathway_id:
+        try:
+            from src.neo4j_connector import get_pathway_participating_entities
+            own_entities = set(get_pathway_participating_entities(pathway_id))
+        except Exception:
+            logger.warning(
+                f"{pathway_id}: borrowing diagram {diagram_stid} but could not "
+                "scope its links to this pathway; skipping them rather than "
+                "importing a sibling's."
+            )
+            return set()
+
+    pairs: Set[Tuple[str, str]] = set()
+    for link in layout.get("links", []) or []:
+        if link.get("renderableClass") != "EntitySetAndMemberLink":
+            continue
+        members = {dbid_to_stid.get(glyph_to_dbid.get(x.get("id")))
+                   for x in (link.get("inputs") or [])}
+        sets = {dbid_to_stid.get(glyph_to_dbid.get(x.get("id")))
+                for x in (link.get("outputs") or [])}
+        for member in filter(None, members):
+            for parent in filter(None, sets):
+                if member == parent:
+                    continue
+                if own_entities and (member not in own_entities
+                                     and parent not in own_entities):
+                    continue
+                pairs.add((member, parent))
+    return pairs
+
+
 def augment_reaction_connections(pathway_id: str,
                                  reaction_connections: pd.DataFrame) -> pd.DataFrame:
     """Union diagram-drawn product->substrate pairs into reaction_connections.
