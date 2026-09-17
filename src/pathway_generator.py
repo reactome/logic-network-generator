@@ -319,22 +319,42 @@ def generate_pathway_file(
         # Add curator-drawn diagram connectivity (product->substrate pairs the
         # diagram links but precedingEvent may omit). See reactome/logic-network-generator#39.
         #
-        # DEFAULT = additive-bridge mode (LNG_DIAGRAM_BRIDGE=1): the diagram-drawn
-        # shared-entity connections are added as NEW bridge edges (producer's
-        # output-copy -> consumer's input-copy) — nothing is merged or lost. Raw
-        # precedingEvent connectivity still merges its shared entities (the core
-        # mechanism), but the diagram json NEVER drives a merge. Benchmark-neutral
-        # vs the legacy merge (curator 83.2%, experimental 73.6%; TP53 +2) while
-        # preserving every node and edge. Set LNG_DIAGRAM_BRIDGE=0 to fall back to
-        # the legacy merge-based augmentation; set both LNG_DIAGRAM_BRIDGE=0 and
-        # LNG_DIAGRAM_CONNECTIVITY=0 to disable diagram connectivity entirely.
+        # DEFAULT = MERGE (LNG_DIAGRAM_BRIDGE=0): a diagram-drawn connection is
+        # made the same way an annotated one is — by merging the shared product
+        # into a single node, so A -> product -> B. One drawn connection becomes
+        # one connection.
+        #
+        # This is needed and it is not optional. Of 650 human pathways that have
+        # their own diagram with reaction glyphs, 89 (13.7%) have under half
+        # their reactions carrying a precedingEvent. Without diagram
+        # connectivity those come out as disconnected node piles.
+        #
+        # It used to default to ADDITIVE bridges, which connected the producer's
+        # output-copy to the consumer's input-copy as new edges. That is a
+        # cartesian product over variant instances: |variants of A| x |variants
+        # of B| x |shared entities|. Measured, it averaged ~35 edges per drawn
+        # connection and 577 per connection that actually needed bridging, which
+        # is how diagram_bridge grew to 14.3% of every edge in the catalog. On
+        # the wide curator set, held out from tuning, removing those edges was
+        # worth +107 cases; merging instead is +1, i.e. free.
+        #
+        # Deliberately NOT gated on whether the consumer reaction already has a
+        # precedingEvent. Curators annotate incrementally, so a reaction with
+        # one annotated predecessor may still be missing others — presence of
+        # annotation does not mean completeness. And absence does not mean a
+        # gap: of six pathways with 0% coverage, four have no chainable reaction
+        # pairs at all, so their emptiness is correct. Neither signal is
+        # reliable, so we do not guess: every drawn connection is made, once.
+        #
+        # Set LNG_DIAGRAM_BRIDGE=1 for the legacy additive bridges;
+        # set LNG_DIAGRAM_CONNECTIVITY=0 to disable diagram connectivity entirely.
         from src.diagram_connectivity import (
             augment_reaction_connections,
             diagram_set_member_pairs,
             diagram_shared_product_pairs,
         )
         diagram_bridge_pairs = None
-        if os.environ.get("LNG_DIAGRAM_BRIDGE", "1") == "1":
+        if os.environ.get("LNG_DIAGRAM_BRIDGE", "0") == "1":
             connectivity = reaction_connections
             diagram_bridge_pairs = diagram_shared_product_pairs(pathway_id)
         else:
