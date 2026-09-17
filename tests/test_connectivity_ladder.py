@@ -65,6 +65,29 @@ needs_bundle = pytest.mark.skipif(
 )
 
 
+def severed_molecules(network: pd.DataFrame,
+                      uuid_to_stid: dict[str, str]) -> tuple[set[str], set[str]]:
+    """Molecules on both sides of the boundary bridge, and those with no shared uuid.
+
+    A complex is taken apart by `dissociation` edges and rebuilt by `assembly`
+    edges. Where the same molecule appears on both sides, the two sides must
+    share at least one uuid, or signal entering through the dissociation side
+    can never leave through the assembly side.
+
+    Returns (both_sides, severed). Shared by the invariant test below and by
+    the synthetic fixtures that check this function can tell the two cases
+    apart -- an invariant that cannot fail is worth nothing.
+    """
+    diss: dict[str, set[str]] = {}
+    asm: dict[str, set[str]] = {}
+    for u in network[network["edge_type"] == "dissociation"]["target_id"]:
+        diss.setdefault(uuid_to_stid.get(u, u), set()).add(u)
+    for u in network[network["edge_type"] == "assembly"]["source_id"]:
+        asm.setdefault(uuid_to_stid.get(u, u), set()).add(u)
+    both = set(diss) & set(asm)
+    return both, {s for s in both if not (diss[s] & asm[s])}
+
+
 def _stid_to_uuids(bundle: Path) -> dict[str, set[str]]:
     """stable id -> the uuids standing for it in this network.
 
@@ -138,9 +161,18 @@ class TestReactomeSourceFacts:
 
 # --- Tier 2: what containment.csv exports about it --------------------------
 
+# containment.csv is a newer artifact; a bundle generated before it shipped
+# must skip this tier, not error out with FileNotFoundError.
+needs_containment = pytest.mark.skipif(
+    BUNDLE is None or not (BUNDLE / "containment.csv").exists(),
+    reason="bundle predates containment.csv",
+)
+
+
 @pytest.mark.database
 @pytest.mark.integration
 @needs_bundle
+@needs_containment
 class TestContainmentCompleteness:
 
     @pytest.fixture(scope="class")
@@ -202,21 +234,11 @@ class TestBoundaryBridgeCoherence:
         dissociation side can never leave through the assembly side.
         """
         uuid_to_stid = {u: s for s, us in uuids.items() for u in us}
-        diss = network[network["edge_type"] == "dissociation"]["target_id"]
-        asm = network[network["edge_type"] == "assembly"]["source_id"]
-        diss_by_stid: dict[str, set[str]] = {}
-        asm_by_stid: dict[str, set[str]] = {}
-        for u in diss:
-            diss_by_stid.setdefault(uuid_to_stid.get(u, u), set()).add(u)
-        for u in asm:
-            asm_by_stid.setdefault(uuid_to_stid.get(u, u), set()).add(u)
-
-        shared_both_sides = set(diss_by_stid) & set(asm_by_stid)
-        assert shared_both_sides, "no stable id on both sides — nothing to check"
-        broken = {s for s in shared_both_sides if not (diss_by_stid[s] & asm_by_stid[s])}
+        both, broken = severed_molecules(network, uuid_to_stid)
+        assert both, "no stable id on both sides — nothing to check"
         assert not broken, (
-            f"{len(broken)} of {len(shared_both_sides)} molecules appear on both "
-            f"sides of the boundary bridge with no shared uuid: {sorted(broken)[:5]}"
+            f"{len(broken)} of {len(both)} molecules appear on both sides of the "
+            f"boundary bridge with no shared uuid: {sorted(broken)[:5]}"
         )
 
 
@@ -276,3 +298,70 @@ class TestNuclearImportReachability:
     )
     def test_cytosolic_isgf3_reaches_the_readout(self, forward, uuids):
         assert self._reaches(forward, uuids[ISGF3_CYTOSOL], uuids[EXPRESSION])
+
+
+# --- the invariant itself, on synthetic fixtures ----------------------------
+# Deliberately UNMARKED. Every tier above is marked `database` or `integration`
+# and CI runs `-m "not database and not integration"`, so none of them execute
+# there -- they are a local diagnostic. These do run in CI, so the check itself
+# is guarded against being quietly broken.
+
+class TestSeveredMoleculesDetector:
+    """An invariant that cannot fail is worth nothing.
+
+    These fixtures prove `severed_molecules` distinguishes a bridge that joins
+    up from one that does not, so a green run of the tier above means the check
+    looked and found nothing -- not that the check stopped working.
+    """
+
+    @staticmethod
+    def _net(rows):
+        return pd.DataFrame(rows, columns=["source_id", "target_id", "edge_type"])
+
+    def test_detects_a_severed_bridge(self):
+        """Same molecule both sides, different uuids — the real-world case."""
+        net = self._net([
+            ("complex_a", "irf9_copy1", "dissociation"),
+            ("irf9_copy2", "complex_b", "assembly"),
+        ])
+        both, severed = severed_molecules(
+            net, {"irf9_copy1": "IRF9", "irf9_copy2": "IRF9"})
+        assert both == {"IRF9"}
+        assert severed == {"IRF9"}
+
+    def test_accepts_a_bridge_that_joins_up(self):
+        """Same molecule both sides, SAME uuid — signal can cross."""
+        net = self._net([
+            ("complex_a", "irf9", "dissociation"),
+            ("irf9", "complex_b", "assembly"),
+        ])
+        both, severed = severed_molecules(net, {"irf9": "IRF9"})
+        assert both == {"IRF9"}
+        assert severed == set()
+
+    def test_one_shared_uuid_is_enough(self):
+        """Extra unshared copies do not sever a bridge that already joins."""
+        net = self._net([
+            ("complex_a", "irf9", "dissociation"),
+            ("complex_a", "irf9_extra", "dissociation"),
+            ("irf9", "complex_b", "assembly"),
+        ])
+        _, severed = severed_molecules(
+            net, {"irf9": "IRF9", "irf9_extra": "IRF9"})
+        assert severed == set()
+
+    def test_a_molecule_on_only_one_side_is_not_reported(self):
+        net = self._net([("complex_a", "irf9", "dissociation")])
+        both, severed = severed_molecules(net, {"irf9": "IRF9"})
+        assert both == set()
+        assert severed == set()
+
+    def test_other_edge_types_are_ignored(self):
+        """Only assembly/dissociation form the bridge."""
+        net = self._net([
+            ("complex_a", "irf9_copy1", "input"),
+            ("irf9_copy2", "complex_b", "output"),
+        ])
+        both, _ = severed_molecules(
+            net, {"irf9_copy1": "IRF9", "irf9_copy2": "IRF9"})
+        assert both == set()
