@@ -1569,9 +1569,23 @@ def _emit_boundary_decomposition_edges(
         except IndexError:
             return False
 
+    # Boundary expansion emits SYNTHETIC causal edges from a structural fact:
+    # assembly (leaf -> root complex, so a subunit can be perturbed) and
+    # dissociation (terminal complex -> a freshly minted readout sink, so a
+    # subunit can be read). Together they are 23.3% of every edge in the
+    # catalog, and dropping them at solve time measured +205 cases on the
+    # held-out curator split.
+    #
+    # A consumer does not need them to reach a subunit: nodes.csv carries
+    # member_leaves, so a gene already resolves to every node containing it,
+    # and containment.csv ships the same fact keyed by stable id. The edges are
+    # a second, causal encoding of something already available structurally.
+    #
+    # Default ON pending the measurement that decides it.
+    boundary_expansion = os.environ.get("LNG_BOUNDARY_EXPANSION", "1") == "1"
     seen_edges: Set[tuple] = set()
     assembly_count = 0
-    for complex_uuid in root_uuids:
+    for complex_uuid in (root_uuids if boundary_expansion else ()):
         stid = reactome_id_to_uuid.get(complex_uuid) or ""
         if not stid or not _is_complex(stid):
             continue
@@ -1594,7 +1608,7 @@ def _emit_boundary_decomposition_edges(
             assembly_count += 1
 
     dissociation_count = 0
-    for complex_uuid in terminal_uuids:
+    for complex_uuid in (terminal_uuids if boundary_expansion else ()):
         stid = reactome_id_to_uuid.get(complex_uuid) or ""
         if not stid or not _is_complex(stid):
             continue
@@ -2680,10 +2694,11 @@ def export_containment(reactome_id_to_uuid: Dict[str, str],
     from src.reaction_generator import get_terminal_components
     from src.neo4j_connector import get_reactome_release
 
+    release: Optional[int]
     try:
         release = get_reactome_release()
     except Exception:  # noqa: BLE001 - the file is still useful without it
-        release = ""
+        release = None
 
     # One Neo4j walk per distinct stable id, not per uuid: a stable id with 40
     # positional copies would otherwise pay 40 times for the same answer.
