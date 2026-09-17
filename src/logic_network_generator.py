@@ -1512,10 +1512,28 @@ def _emit_boundary_decomposition_edges(
     """
     from src.neo4j_connector import get_labels
 
-    # Positional roots / terminals from the current edge list.
+    # Positional roots / terminals from the current edge list, IGNORING
+    # depletion edges.
+    #
+    # A root is "produced by no reaction in this pathway", which is what makes
+    # it a boundary complex worth decomposing into subunits. A depletion edge is
+    # not production: it is our own modelling inference, catalyst -> consumed
+    # input, emitted earlier in this same function. Counting it as an incoming
+    # edge makes a boundary complex look produced, so it silently loses its
+    # assembly decomposition and a knockout of one of its subunits stops
+    # reaching it.
+    #
+    # Found by extending phosphatase detection to non-cytosolic compartments:
+    # three MAPK dimers in R-HSA-450294 (p-MAPK1/3/7 -> dimer) lost their
+    # assembly edges purely because a new depletion edge landed on them. The
+    # same thing already happens wherever a cytosolic depletion edge lands on a
+    # boundary complex, so this is a pre-existing bug, not one the compartment
+    # change introduced.
     sources: Set[str] = set()
     targets: Set[str] = set()
     for edge in pathway_logic_network_data:
+        if edge.get("edge_type") == "depletion":
+            continue
         sources.add(edge["source_id"])
         targets.add(edge["target_id"])
     root_uuids = sources - targets       # produced by no reaction in this pathway
