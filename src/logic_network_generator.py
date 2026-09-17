@@ -969,6 +969,41 @@ _COFACTOR_STIDS_SEED: frozenset = frozenset({
 _cofactor_stids_cache: Optional[frozenset] = None
 
 
+_PI_STIDS_SEED: frozenset = frozenset({"R-ALL-29372"})  # Pi [cytosol]
+_pi_stid_cache: Optional[frozenset] = None
+
+
+def _pi_stids() -> frozenset:
+    """Every inorganic-phosphate species, in every compartment.
+
+    Derived by ChEBI from the release, like the cofactor list and for the same
+    reason: a hard-coded stable id means one compartment. The previous single
+    id covered Pi [cytosol] only, so phosphatase reactions in the nucleoplasm
+    (475), mitochondrial matrix (343) and elsewhere were invisible to a rule
+    whose stated criterion is "the outputs include Pi".
+
+    Only SUCCESS is cached. A transient Neo4j failure must not pin the seed for
+    the rest of the process and silently generate every later pathway with the
+    narrow rule.
+    """
+    global _pi_stid_cache
+    if _pi_stid_cache is not None:
+        return _pi_stid_cache
+    try:
+        from src.neo4j_connector import get_cofactor_species
+
+        derived = frozenset(
+            e["stable_id"] for e in get_cofactor_species() if e.get("molecule") == "Pi"
+        )
+        if derived:
+            _pi_stid_cache = derived
+            return derived
+        logger.warning("No Pi species derived; falling back to the seed")
+    except Exception:  # noqa: BLE001 - offline generation must still work
+        logger.warning("Could not derive Pi species from Neo4j; using the seed")
+    return _PI_STIDS_SEED
+
+
 def _cofactor_stids() -> frozenset:
     """Stable ids treated as metabolic cofactors, derived from the release.
 
@@ -1070,7 +1105,7 @@ def _emit_substrate_depletion_edges(
     by_target_inputs: Dict[str, List[str]] = {}
     by_target_catalysts: Dict[str, List[str]] = {}
     by_source_outputs: Dict[str, List[str]] = {}  # reaction_uuid → output stids
-    PI_STID = "R-ALL-29372"  # inorganic phosphate
+    pi_stids = _pi_stids()
     for edge in pathway_logic_network_data:
         if edge.get("pos_neg") != "pos":
             continue
@@ -1083,11 +1118,16 @@ def _emit_substrate_depletion_edges(
             # source is the reaction, target is the output entity
             by_source_outputs.setdefault(edge["source_id"], []).append(edge["target_id"])
 
-    # Identify phosphatase reactions: those whose outputs include Pi (R-ALL-29372).
+    # Identify phosphatase reactions: those whose outputs include Pi, in ANY
+    # compartment. This used to test one hard-coded stable id, R-ALL-29372,
+    # which is Pi [cytosol] alone -- so a nucleoplasmic or mitochondrial
+    # phosphatase produced Pi the rule could not see. That silently excluded
+    # ~1,150 reactions the criterion is written to include, among them the
+    # nuclear phosphatases that act in transcriptional regulation.
     phosphatase_rxn_uuids = set()
     for rxn_uuid, output_uuids in by_source_outputs.items():
         output_stids = {reactome_id_to_uuid.get(u, "") for u in output_uuids}
-        if PI_STID in output_stids:
+        if output_stids & pi_stids:
             phosphatase_rxn_uuids.add(rxn_uuid)
 
     # Identify ubiquitin-ligase reactions TOPOLOGICALLY: those that take
