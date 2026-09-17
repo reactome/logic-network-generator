@@ -2668,12 +2668,14 @@ def export_containment(reactome_id_to_uuid: Dict[str, str],
     silently goes stale.
 
     Output CSV columns:
-        - uuid: a node in this network
-        - stable_id: that node's own Reactome stable ID
+        - stable_id: a Reactome entity appearing in this network
         - contains_stable_id: an entity inside it (a complex's components, a
-          set's members, recursively to the leaves). Every node contains
-          ITSELF, so "which nodes contain X" is one query with no special case.
+          set's members, recursively to the leaves). Every entity contains
+          ITSELF, so "which entities contain X" needs no special case.
         - reactome_release: the release this was derived from
+
+    To reach nodes: join contains_stable_id -> stable_id -> uuid through
+    stid_to_uuid_mapping.csv, which ships beside this file.
     """
     from src.reaction_generator import get_terminal_components
     from src.neo4j_connector import get_reactome_release
@@ -2693,16 +2695,18 @@ def export_containment(reactome_id_to_uuid: Dict[str, str],
             leaves = set()
         leaves_by_stid[stid] = {str(x) for x in leaves} | {stid}
 
+    # Keyed by STABLE ID, not uuid. Containment is a property of the entity, not
+    # of where it happens to sit in this pathway, and a stable id with 40
+    # positional copies would otherwise repeat the same fact 40 times — the
+    # uuid-keyed version of this file was 3.3x the size of the network itself.
+    # Consumers join through stid_to_uuid_mapping.csv, which already ships, the
+    # same way cofactors.csv is consumed.
     rows = []
-    for uuid_, stid in reactome_id_to_uuid.items():
-        stid = str(stid) if stid else ""
-        if not stid:
-            continue
-        for contained in sorted(leaves_by_stid.get(stid, {stid})):
-            rows.append({"uuid": uuid_, "stable_id": stid,
-                         "contains_stable_id": contained,
+    for stid in sorted(leaves_by_stid):
+        for contained in sorted(leaves_by_stid[stid]):
+            rows.append({"stable_id": stid, "contains_stable_id": contained,
                          "reactome_release": release})
-    pd.DataFrame(rows, columns=["uuid", "stable_id", "contains_stable_id",
+    pd.DataFrame(rows, columns=["stable_id", "contains_stable_id",
                                 "reactome_release"]).to_csv(output_file, index=False)
     composite = sum(1 for v in leaves_by_stid.values() if len(v) > 1)
     logger.info(f"Containment: {len(rows)} rows, {composite} composite entities "
