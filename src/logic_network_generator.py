@@ -2028,12 +2028,38 @@ def create_pathway_logic_network(
     # only (cofactor hubs already excluded by the caller). See #39.
     if diagram_bridge_pairs:
         n_bridges = 0
+        # Emit bridges ONLY where the curator left no precedingEvent.
+        #
+        # A pair the curator DID annotate is already connected, in Phase 2, by
+        # merging the shared product into one node. Bridging it as well adds
+        # every CROSS-variant pairing on top of a connection that already
+        # exists: the `src == tgt` guard below only skips the single
+        # combination the merge happened to collapse, so an annotated pair with
+        # n and m variant instances still emits up to n*m-1 spurious edges.
+        #
+        # This is not a corner case. 61.7% of diagram pairs are already
+        # annotated, and the cartesian emission averages ~35 edges per pair
+        # (174 in the worst pathway), which is how diagram_bridge grew to 14.3%
+        # of every edge in the catalog while being, by design, a fallback for
+        # under-annotated pathways only.
+        annotated_pairs: Set[Tuple[str, str]] = set()
+        if reaction_connections is not None and not reaction_connections.empty:
+            for _, rc in reaction_connections.iterrows():
+                if str(rc.get("event_status", "")) != "Has Preceding Event":
+                    continue
+                pre, post = rc.get("preceding_reaction_id"), rc.get("following_reaction_id")
+                if pre and post and str(post) != "nan":
+                    annotated_pairs.add((str(pre), str(post)))
+        n_skipped = 0
         # Hoisted: this was a module constant before the set became
         # derived, and rebuilding a ~256-element union per
         # (pair x producer_vr x consumer_vr) triple is 10^5-10^6
         # allocations on a variant-expanded pathway.
         bridge_excluded = _bridge_excluded_stids()
         for a_rid, b_rid in diagram_bridge_pairs:
+            if (a_rid, b_rid) in annotated_pairs:
+                n_skipped += 1
+                continue
             for p_vr in reactome_to_vr.get(a_rid, []):
                 p_outputs = set(vr_entities.get(p_vr, ([], [], {}, {}))[1])
                 for f_vr in reactome_to_vr.get(b_rid, []):
@@ -2055,7 +2081,10 @@ def create_pathway_logic_network(
                             "edge_reaction_id": None,
                         })
                         n_bridges += 1
-        logger.info(f"Diagram bridges: +{n_bridges} additive edges (no merge)")
+        logger.info(
+            f"Diagram bridges: +{n_bridges} additive edges from "
+            f"{len(diagram_bridge_pairs) - n_skipped} unannotated pairs "
+            f"({n_skipped} pairs skipped - already connected by precedingEvent)")
 
     # Log UUID registry statistics
     unique_uuids = set(entity_uuid_registry.values())
@@ -2614,6 +2643,74 @@ def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],
     cols = ["context_node", "reaction_id", "role"]
     pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
     logger.info(f"Exported {len(rows)} node-reaction-context rows: {output_file}")
+
+
+def export_containment(reactome_id_to_uuid: Dict[str, str],
+                       output_file: str) -> None:
+    """Write containment.csv — which entities each node contains.
+
+    A consumer perturbing a gene needs to reach every node that gene is part
+    of, and a consumer reading a protein needs every node that protein is part
+    of. Today the generator answers that by INVENTING GRAPH: boundary complexes
+    get synthetic `assembly` edges so a subunit can be perturbed through one,
+    and `dissociation` edges to a freshly minted per-occurrence "readout sink"
+    node so a subunit can be read out of one. That sink has no referent in
+    Reactome — it is not the protein, it is a stub standing in for it — and the
+    pair together are 23.3% of every edge in the catalog.
+
+    Containment is a FACT, not an edge. Reactome records that complex AB has
+    component A; it does not assert that A causally drives AB. Shipping the
+    fact lets a consumer select nodes by what they contain, and lets the
+    generator stop manufacturing causal edges out of structural ones.
+
+    This follows the cofactors.csv precedent exactly: the knowledge travels with
+    the bundle, pinned to the release, so nothing downstream keeps a copy that
+    silently goes stale.
+
+    Output CSV columns:
+        - stable_id: a Reactome entity appearing in this network
+        - contains_stable_id: an entity inside it (a complex's components, a
+          set's members, recursively to the leaves). Every entity contains
+          ITSELF, so "which entities contain X" needs no special case.
+        - reactome_release: the release this was derived from
+
+    To reach nodes: join contains_stable_id -> stable_id -> uuid through
+    stid_to_uuid_mapping.csv, which ships beside this file.
+    """
+    from src.reaction_generator import get_terminal_components
+    from src.neo4j_connector import get_reactome_release
+
+    try:
+        release = get_reactome_release()
+    except Exception:  # noqa: BLE001 - the file is still useful without it
+        release = ""
+
+    # One Neo4j walk per distinct stable id, not per uuid: a stable id with 40
+    # positional copies would otherwise pay 40 times for the same answer.
+    leaves_by_stid: Dict[str, Set[str]] = {}
+    for stid in {str(v) for v in reactome_id_to_uuid.values() if v}:
+        try:
+            leaves = get_terminal_components(stid)
+        except Exception:  # noqa: BLE001 - a missing entity must not fail the pathway
+            leaves = set()
+        leaves_by_stid[stid] = {str(x) for x in leaves} | {stid}
+
+    # Keyed by STABLE ID, not uuid. Containment is a property of the entity, not
+    # of where it happens to sit in this pathway, and a stable id with 40
+    # positional copies would otherwise repeat the same fact 40 times — the
+    # uuid-keyed version of this file was 3.3x the size of the network itself.
+    # Consumers join through stid_to_uuid_mapping.csv, which already ships, the
+    # same way cofactors.csv is consumed.
+    rows = []
+    for stid in sorted(leaves_by_stid):
+        for contained in sorted(leaves_by_stid[stid]):
+            rows.append({"stable_id": stid, "contains_stable_id": contained,
+                         "reactome_release": release})
+    pd.DataFrame(rows, columns=["stable_id", "contains_stable_id",
+                                "reactome_release"]).to_csv(output_file, index=False)
+    composite = sum(1 for v in leaves_by_stid.values() if len(v) > 1)
+    logger.info(f"Containment: {len(rows)} rows, {composite} composite entities "
+                f"of {len(leaves_by_stid)} distinct")
 
 
 def export_cofactors(pathway_logic_network: pd.DataFrame,

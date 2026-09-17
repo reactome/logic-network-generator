@@ -11,6 +11,7 @@ from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.logic_network_generator import (
     create_pathway_logic_network,
     export_cofactors,
+    export_containment,
     export_entity_reaction_proxy_mapping,
     export_node_reaction_context,
     export_node_resolution,
@@ -468,6 +469,13 @@ def generate_pathway_file(
                 result.logic_network,
                 result.uuid_mapping,
                 str(pathway_output_dir / "cofactors.csv"),
+            )
+
+            # What each node CONTAINS, so a consumer can select nodes by
+            # containment instead of us inventing assembly/dissociation edges.
+            export_containment(
+                result.uuid_mapping,
+                str(pathway_output_dir / "containment.csv"),
             )
         except Exception as e:
             logger.error(f"Failed to write node provenance files: {e}", exc_info=True)
