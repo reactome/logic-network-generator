@@ -26,6 +26,19 @@ from src.pathway_generator import generate_pathway_file
 from src.neo4j_connector import get_top_level_pathways, get_pathway_name
 
 
+def canonical_pathway_id(raw: str) -> str:
+    """Accept 69620 or R-HSA-69620; return the stable id the queries need.
+
+    The checked-in pathways.tsv carried bare numerics, and every one of them
+    failed with "No reactions found ... Verify the pathway exists in Reactome
+    database and Neo4j is running" -- a message that sends you to look at Neo4j
+    when the id was simply the wrong shape. Normalising here makes that class of
+    failure impossible rather than fixing one file.
+    """
+    pid = str(raw).strip()
+    return f"R-HSA-{pid}" if pid.isdigit() else pid
+
+
 def main() -> None:
     dotenv_path = os.path.join(os.path.dirname(__file__), "..", ".env")
     # load_dotenv populates os.environ (without clobbering already-set vars) so
@@ -88,7 +101,9 @@ def main() -> None:
     elif pathway_list_file:
         try:
             pathways_df: pd.DataFrame = pd.read_csv(pathway_list_file, sep="\t")
-            pathway_list = list(zip(pathways_df["id"].astype(str), pathways_df["pathway_name"]))
+            pathway_list = [(canonical_pathway_id(i), n)
+                            for i, n in zip(pathways_df["id"].astype(str),
+                                            pathways_df["pathway_name"])]
         except Exception as e:
             logger.error(f"Error reading pathway list file: {e}")
             return

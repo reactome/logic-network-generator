@@ -242,8 +242,20 @@ def generate_pathway_file(
     base_output_dir = Path(output_dir)
     base_output_dir.mkdir(exist_ok=True)
 
-    # Create pathway folder with sanitized name
-    folder_name = f"{sanitize_filename(pathway_name)}_{pathway_id}" if pathway_name else f"pathway_{pathway_id}"
+    # Folder name is the stable ID and nothing else.
+    #
+    # It used to be "{sanitized_pathway_name}_{pathway_id}", which put a NAME in
+    # an identifier. Names are data: they gain commas, lose trailing
+    # underscores, and get recurated. On Release97 three differ between the
+    # curator files and these directories -- "Interleukin-3,_Interleukin-5...",
+    # "Signaling_by_..._IGF1R_", "Mitotic_G1-G1_S_phases" -- and matching on
+    # name silently misfiled 438 of 1,484 cases in an analysis whose cases all
+    # came from this catalog.
+    #
+    # The pathway name is still recoverable: it is in the Reactome database
+    # under this id, and consumers that want it should look it up rather than
+    # parse it out of a path. Downstream lookups already key on the id suffix.
+    folder_name = str(pathway_id)
     pathway_output_dir = base_output_dir / folder_name
     pathway_output_dir.mkdir(exist_ok=True)
 
