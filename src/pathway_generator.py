@@ -1,7 +1,6 @@
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -192,26 +191,6 @@ def _write_cache_fingerprint(
         logger.warning("Could not write cache fingerprint: %s", exc)
 
 
-def sanitize_filename(name: str) -> str:
-    """Sanitize a pathway name for use as a filename/directory name.
-
-    Args:
-        name: The pathway name to sanitize
-
-    Returns:
-        A sanitized version safe for filesystem use
-    """
-    # Replace spaces and special characters with underscores
-    sanitized = re.sub(r'[^\w\-]', '_', name)
-    # Replace multiple underscores with single
-    sanitized = re.sub(r'_+', '_', sanitized)
-    # Remove leading/trailing underscores
-    sanitized = sanitized.strip('_')
-    # Limit length to avoid filesystem issues
-    if len(sanitized) > 100:
-        sanitized = sanitized[:100]
-    return sanitized
-
 
 def generate_pathway_file(
     pathway_id: str,
@@ -242,8 +221,31 @@ def generate_pathway_file(
     base_output_dir = Path(output_dir)
     base_output_dir.mkdir(exist_ok=True)
 
-    # Create pathway folder with sanitized name
-    folder_name = f"{sanitize_filename(pathway_name)}_{pathway_id}" if pathway_name else f"pathway_{pathway_id}"
+    # Folder name is the stable ID and nothing else.
+    #
+    # It used to be "{sanitized_pathway_name}_{pathway_id}", which put a NAME in
+    # an identifier. Names are data: they gain commas, lose trailing
+    # underscores, and get recurated. On Release97 three differ between the
+    # curator files and these directories -- "Interleukin-3,_Interleukin-5...",
+    # "Signaling_by_..._IGF1R_", "Mitotic_G1-G1_S_phases" -- and matching on
+    # name silently misfiled 438 of 1,484 cases in an analysis whose cases all
+    # came from this catalog.
+    #
+    # The pathway name is still recoverable: it is in the Reactome database
+    # under this id, and consumers that want it should look it up rather than
+    # parse it out of a path. Downstream lookups already key on the id suffix.
+    # Guard before the id becomes a path. Path("out") / "" is "out", so an empty
+    # id would make the pathway directory the CATALOG ROOT and write
+    # logic_network.csv, cache/ and the rest straight into it, colliding with
+    # every other pathway. The old "{name}_{id}" spelling hid this because the
+    # name kept the directory distinct; naming by id alone makes it reachable.
+    folder_name = str(pathway_id).strip()
+    if not folder_name or folder_name in {".", "..", "None"} or "/" in folder_name:
+        raise ValueError(
+            f"Refusing to generate with an unusable pathway id {pathway_id!r}: "
+            "the directory is named by the id, so this would write into the "
+            "catalog root."
+        )
     pathway_output_dir = base_output_dir / folder_name
     pathway_output_dir.mkdir(exist_ok=True)
 
