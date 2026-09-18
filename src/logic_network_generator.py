@@ -1997,8 +1997,40 @@ def create_pathway_logic_network(
         zip(reaction_id_map["uid"].astype(str), reaction_id_map["reactome_id"].astype(str))
     )
 
+    # A reaction was skipped unless it had BOTH inputs and outputs. That guard
+    # is right for a genuinely empty reaction and wrong for two real classes,
+    # and it silently removed every one of them from every network:
+    #
+    #   degradation  — input, NO output. "Degradation of ubiquitinated SMAD2",
+    #                  "PRICKLE1 is degraded by the proteasome", "26S Proteasome
+    #                  degrades polyubiquitinated BRCA1". Producing nothing IS
+    #                  the point; it is how a pathway turns a signal off.
+    #   expression   — NO input, output. "Expression of HSP90B1", driven by its
+    #                  regulator rather than by a consumed substrate.
+    #
+    # Measured on the 81 scored pathways at Release97: 16 reactions absent from
+    # the catalog, ALL of them BlackBoxEvents (2.1% of the 770), against 0 of
+    # 3,139 plain Reactions — because only BlackBoxEvents have a one-sided
+    # shape. 14 were degradation, 1 expression. The expression one cost 18
+    # benchmark cases directly: HSP90B1 is a curator readout and had no node at
+    # all. This is issue #59.
+    #
+    # Emitting them is faithful rather than inventive: each gets exactly the
+    # edges it has, and the loops below already emit nothing for an empty side.
+    #
+    # NOTE what this does and does not do. An expression reaction gains
+    # reaction->output, so its product becomes addressable and its regulators
+    # reach it. A degradation reaction gains input->reaction and is then a
+    # SINK: it appears in the network and can be regulated, but it does not
+    # consume its substrate, so on its own it changes no prediction. Modelling
+    # the consumption needs a depletion edge back onto the input, and depletion
+    # is currently emitted for phosphatase reactions only. That is a separate
+    # decision and is deliberately not bundled here.
+    emit_one_sided = os.environ.get("LNG_EMIT_ONE_SIDED", "1") == "1"
     for vr_uid, (input_ids, output_ids, input_stoich, output_stoich) in vr_entities.items():
-        if not input_ids or not output_ids:
+        if not input_ids and not output_ids:
+            continue  # genuinely empty: nothing to say about it
+        if (not input_ids or not output_ids) and not emit_one_sided:
             continue
         reaction_stid = vr_to_reaction.get(str(vr_uid))
 

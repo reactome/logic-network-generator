@@ -665,6 +665,7 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
     # multiple reactome_ids in decomposed_uid_mapping (hashes are computed
     # from sorted components, not reactions).
     all_best_matches: List[tuple] = []
+    emit_one_sided = os.environ.get("LNG_EMIT_ONE_SIDED", "1") == "1"
     for reaction_id in reaction_ids:
         input_ids = get_reaction_input_output_ids(reaction_id, "input")
         broken_apart_input_id = [break_apart_entity(input_id) for input_id in input_ids]
@@ -680,9 +681,46 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
             broken_apart_output_id, str(reaction_id)
         )
 
-        # Skip reactions with empty input or output combinations
-        # This can happen when a reaction has no defined inputs or outputs in the database
+        # A reaction with one empty side is not malformed data. Two real
+        # classes look exactly like this, and skipping them removed every one
+        # of them from every network:
+        #
+        #   degradation — input, NO output. "Degradation of ubiquitinated
+        #                 SMAD2", "PRICKLE1 is degraded by the proteasome",
+        #                 "26S Proteasome degrades polyubiquitinated BRCA1".
+        #                 Producing nothing IS the point: it is how a pathway
+        #                 turns a signal off.
+        #   expression  — NO input, output. "Expression of HSP90B1", driven by
+        #                 its regulator rather than by a consumed substrate.
+        #
+        # Measured at Release97 across the 81 scored pathways: 16 reactions
+        # absent from the catalog, ALL BlackBoxEvents (2.1% of 770) against 0
+        # of 3,139 plain Reactions — because only BlackBoxEvents are ever
+        # one-sided. 14 degradation, 1 expression. The expression one cost 18
+        # benchmark cases directly: HSP90B1 is a curator readout with no node
+        # at all. Issue #59.
+        #
+        # The matcher pairs input combinations with output combinations, so a
+        # one-sided reaction has nothing to pair and produced no row. Emit each
+        # existing combination against an EMPTY counterpart hash instead;
+        # `_resolve_to_terminal_reactome_ids` returns {} for an unknown hash,
+        # so the absent side resolves to no entities and the reaction keeps
+        # exactly the edges it really has.
         if not input_combinations or not output_combinations:
+            if emit_one_sided and (input_combinations or output_combinations):
+                if input_combinations:
+                    all_best_matches.extend(
+                        (c, "", str(reaction_id)) for c in input_combinations
+                    )
+                else:
+                    all_best_matches.extend(
+                        ("", c, str(reaction_id)) for c in output_combinations
+                    )
+                logger.debug(
+                    f"Reaction {reaction_id} is one-sided "
+                    f"({'no output' if not output_combinations else 'no input'}); emitted"
+                )
+                continue
             logger.warning(
                 f"Reaction {reaction_id} has empty {'inputs' if not input_combinations else 'outputs'}, skipping"
             )
