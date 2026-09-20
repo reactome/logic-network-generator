@@ -1700,10 +1700,29 @@ def _emit_boundary_decomposition_edges(
 
     # stId → existing UUID, so a member reuses the node it already has elsewhere
     # (free protein, regulator, catalyst) rather than becoming a disconnected dup.
+    # A root complex's subunit leaf is a boundary INPUT. Reusing an existing
+    # node for it is right only when that node is itself unproduced (a free
+    # protein that is a root, a catalyst, a regulator). Reusing a node that some
+    # reaction PRODUCES welds a cycle that Neo4j never had: root complex ->
+    # reactions -> ... -> produced protein -> (assembly) -> root complex.
+    # Measured on the v97 catalog: 1,994 of the 2,077 cycle-carrying assembly
+    # edges are exactly this shape; removing them takes TP53's strongly
+    # connected component from 836 nodes to 56 and DSB's from 1,127 to ~290,
+    # and MP-BioPath's hand-curated networks carry none of them (deltasignal
+    # specs/018). LNG_BOUNDARY_LEAF_REUSE=any restores the old behaviour.
+    produced_uuids: Set[str] = {
+        str(e.get("target_id")) for e in pathway_logic_network_data if e.get("edge_type") == "output"
+    }
+    reuse_mode = os.environ.get("LNG_BOUNDARY_LEAF_REUSE", "unproduced")
+    if reuse_mode not in ("unproduced", "any"):
+        raise ValueError(f"LNG_BOUNDARY_LEAF_REUSE={reuse_mode!r}: expected 'unproduced' or 'any'")
     stid_to_existing_uuid: Dict[str, str] = {}
     for existing_uuid, stid in reactome_id_to_uuid.items():
-        if stid not in stid_to_existing_uuid:
-            stid_to_existing_uuid[stid] = existing_uuid
+        if stid in stid_to_existing_uuid:
+            continue
+        if reuse_mode == "unproduced" and str(existing_uuid) in produced_uuids:
+            continue
+        stid_to_existing_uuid[stid] = existing_uuid
 
     leaf_uuid_registry: Dict[str, str] = {}
 
