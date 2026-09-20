@@ -1681,7 +1681,11 @@ def _emit_sink_bridge_edges(
                         seen.add(v); stack.append(v)
             reach_cache[u] = seen
         return reach_cache[u]
-    added = 0; skipped = 0; fan: List[int] = []
+    # LNG_SINK_BRIDGE_MAX_FANOUT: skip a sink whose acyclic consumer set is larger
+    # than this (a broadcast); 0 = unlimited. The catalog-wide simulation gave a
+    # median of 1, p90 of 8, max 160 consumers per sink.
+    max_fan = int(os.environ.get("LNG_SINK_BRIDGE_MAX_FANOUT", "0") or 0)
+    added = 0; skipped = 0; capped = 0; fan: List[int] = []
     for sink in sorted(sinks):
         stid = reactome_id_to_uuid.get(sink)
         if stid is None:
@@ -1690,6 +1694,9 @@ def _emit_sink_bridge_edges(
         # a consuming copy that can reach the sink is upstream of it: bridging would close a cycle
         ok = [c for c in cands if sink not in _reach(c)]
         skipped += len(cands) - len(ok)
+        if max_fan and len(ok) > max_fan:
+            capped += 1
+            continue
         if ok:
             fan.append(len(ok))
         for c in ok:
@@ -1701,8 +1708,9 @@ def _emit_sink_bridge_edges(
             reach_cache.clear()           # reachability changed
             added += 1
     fan.sort()
-    logger.info(f"Sink bridges: {added} edges from {len(fan)} sinks (cycle-closing skipped {skipped}); "
-                f"consumer fan-out median {fan[len(fan)//2] if fan else 0}, max {fan[-1] if fan else 0}")
+    logger.info(f"Sink bridges: {added} edges from {len(fan)} sinks (cycle-closing skipped {skipped}, "
+                f"fan-out-capped sinks {capped}); consumer fan-out median {fan[len(fan)//2] if fan else 0}, "
+                f"max {fan[-1] if fan else 0}")
     return added
 
 def _emit_boundary_decomposition_edges(

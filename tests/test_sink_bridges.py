@@ -62,3 +62,21 @@ def test_idempotent_and_order_free():
     d1, r1 = net(); _emit_sink_bridge_edges(d1, r1)
     d2, r2 = net(); d2.reverse(); _emit_sink_bridge_edges(d2, r2)
     assert sorted(bridges(d1)) == sorted(bridges(d2))
+
+
+def test_fanout_cap_skips_broadcast_sinks(monkeypatch):
+    data, r2u = net()
+    # give P three more acyclic consuming copies -> fan-out 4
+    for i in range(3):
+        data.append({"source_id": f"u_Pin{i}", "target_id": f"r2{i}", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1})
+        data.append({"source_id": f"r2{i}", "target_id": f"u_X{i}", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1})
+        r2u[f"u_Pin{i}"] = P; r2u[f"u_X{i}"] = f"R-HSA-50{i}"
+    monkeypatch.setenv("LNG_SINK_BRIDGE_MAX_FANOUT", "3")
+    assert _emit_sink_bridge_edges(data, r2u) == 0
+    monkeypatch.setenv("LNG_SINK_BRIDGE_MAX_FANOUT", "4")
+    data, r2u = net()
+    for i in range(3):
+        data.append({"source_id": f"u_Pin{i}", "target_id": f"r2{i}", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1})
+        data.append({"source_id": f"r2{i}", "target_id": f"u_X{i}", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1})
+        r2u[f"u_Pin{i}"] = P; r2u[f"u_X{i}"] = f"R-HSA-50{i}"
+    assert _emit_sink_bridge_edges(data, r2u) == 4
