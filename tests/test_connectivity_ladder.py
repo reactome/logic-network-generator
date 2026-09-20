@@ -260,6 +260,10 @@ class TestNuclearImportReachability:
     def uuids(self):
         return _stid_to_uuids(BUNDLE)
 
+    @pytest.fixture(scope="class")
+    def network(self):
+        return pd.read_csv(BUNDLE / "logic_network.csv", dtype=str)
+
     def test_every_entity_in_the_chain_is_a_node_here(self, uuids):
         """Guards the xfail below.
 
@@ -290,14 +294,34 @@ class TestNuclearImportReachability:
             "the break has moved downstream of nuclear import."
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="The cytosolic half is severed at the boundary bridge, so no "
-               "perturbation upstream of ISGF3 reaches the readout. This is the "
-               "end-to-end symptom of the Tier 2 and Tier 3 failures.",
-    )
-    def test_cytosolic_isgf3_reaches_the_readout(self, forward, uuids):
-        assert self._reaches(forward, uuids[ISGF3_CYTOSOL], uuids[EXPRESSION])
+    def test_cytosolic_isgf3_reaches_the_readout(self, forward, uuids, network):
+        """The end-to-end symptom, and the fix that clears it.
+
+        With a reaction-only network the cytosolic half is severed at the
+        boundary bridge and no perturbation upstream of ISGF3 reaches the
+        readout. `LNG_COMPOSITION_EDGES=1` emits complex -> containing-complex
+        edges along Reactome's hasComponent hierarchy (ISGF3 -> ISGF3:KPNA1 ->
+        ISGF3:KPNA1:KPNB1); 15 such edges reconnect this branch, and the oracle
+        in deltasignal specs/016 measured severed curator routes 392 -> 52.
+
+        So the expectation depends on how the bundle was built: a bundle with
+        no composition edges is EXPECTED to fail here (that is the defect);
+        one with them must pass. Tiers 2-3 stay xfail -- they describe the
+        leaf-subunit bridge, which is the repair measured to broadcast and is
+        deliberately not made.
+        """
+        has_composition = (network["edge_type"] == "composition").any()
+        reaches = self._reaches(forward, uuids[ISGF3_CYTOSOL], uuids[EXPRESSION])
+        if not has_composition:
+            assert not reaches, (
+                "A bundle WITHOUT composition edges reached the readout: either "
+                "the severing was repaired some other way (record how) or the "
+                "detector is wrong."
+            )
+            pytest.xfail("no composition edges in this bundle; regenerate with "
+                         "LNG_COMPOSITION_EDGES=1 to exercise the repair")
+        assert reaches, ("composition edges are present but cytosolic ISGF3 still does "
+                         "not reach the readout -- the repair did not join the chain")
 
 
 # --- the invariant itself, on synthetic fixtures ----------------------------

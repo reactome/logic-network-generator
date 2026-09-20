@@ -481,6 +481,78 @@ def _register_entity_uuid(
     return entity_uuid_registry[key]
 
 
+def _register_phase1(
+    vr_entities: Dict[str, tuple],
+    entity_uuid_registry: Dict[tuple, str],
+    root_input_eids: Set[str],
+    root_input_uuid_cache: Dict[str, str],
+    terminal_output_eids: Set[str],
+    terminal_output_uuid_cache: Dict[str, str],
+    vr_to_reaction: Optional[Dict[str, str]] = None,
+    share_variants: bool = False,
+) -> Dict[str, int]:
+    """Phase 1 of UUID assignment: one key per (entity, virtual reaction, role).
+
+    A Reactome reaction with EntitySet participants becomes several VIRTUAL
+    reactions, one per member combination, and every one of them registers its
+    own UUID for every participant. An entity common to all variants -- BCDX2 in
+    HDR's strand-invasion reactions -- therefore exists as one node PER VARIANT:
+    33 copies from 5 reactions, each a full copy with the same downstream edges.
+    Nothing downstream can tell them apart, and any solver rule over the copies
+    is wrong in one direction or the other: min over copies caps the container
+    by whichever copy a perturbation missed (missed change); max lets one
+    elevated copy lift it (false change). Both were measured (deltasignal
+    specs/016): -83 and -117 held-out.
+
+    `share_variants` collapses exactly that: the SAME entity in the SAME role
+    across the variants of ONE Reactome reaction shares one UUID. Variants that
+    differ in WHICH set member they use have different entity ids and are not
+    conflated. Copies across DIFFERENT reactions stay positional, as designed
+    (bridging those was measured harmful four times). Boundary entities already
+    share per stId through their caches and are left to them.
+
+    Returns a small stats dict for the log.
+    """
+    vr_to_reaction = vr_to_reaction or {}
+    variant_cache: Dict[tuple, str] = {}
+    shared = 0
+    unmapped = 0
+    for vr_uid, (input_ids, output_ids, *_) in vr_entities.items():
+        rxn = vr_to_reaction.get(str(vr_uid))
+        if share_variants and rxn in (None, "", "nan", "None"):
+            # `reactome_id` read back from a cached CSV with no dtype turns a
+            # missing id into the STRING "nan"; treated as a real key it would
+            # collapse every such variant across reactions onto one uuid.
+            unmapped += 1
+        for role, ids, boundary_eids, boundary_cache in (
+            ("input", input_ids, root_input_eids, root_input_uuid_cache),
+            ("output", output_ids, terminal_output_eids, terminal_output_uuid_cache),
+        ):
+            for eid in ids:
+                key = (eid, vr_uid, role)
+                if (share_variants and rxn not in (None, "", "nan", "None")
+                        and eid not in boundary_eids
+                        and key not in entity_uuid_registry):
+                    vkey = (eid, rxn, role)
+                    if vkey in variant_cache:
+                        entity_uuid_registry[key] = variant_cache[vkey]
+                        shared += 1
+                        continue
+                    u = _register_entity_uuid(eid, vr_uid, role, entity_uuid_registry,
+                                              boundary_eids, boundary_cache)
+                    variant_cache[vkey] = u
+                    continue
+                _register_entity_uuid(eid, vr_uid, role, entity_uuid_registry,
+                                      boundary_eids, boundary_cache)
+    if share_variants:
+        logger.info(f"Variant-node sharing: {shared} (entity, reaction, role) registrations "
+                    f"reused a sibling variant's UUID ({len(variant_cache)} distinct)")
+        if unmapped:
+            logger.warning(f"Variant-node sharing: {unmapped} virtual reactions have no Reactome "
+                           f"reaction id and were registered per-variant (sharing is inconsistent for them)")
+    return {"shared": shared, "distinct": len(variant_cache), "unmapped": unmapped}
+
+
 def _build_entity_producer_count(vr_entities: Dict[str, tuple]) -> Dict[str, int]:
     """Count how many VRs produce each entity as output.
 
@@ -1468,6 +1540,93 @@ def _emit_diagram_set_member_edges(
     return emitted
 
 
+def _emit_composition_edges(
+    pathway_logic_network_data: List[Dict[str, Any]],
+    reactome_id_to_uuid: Dict[str, str],
+) -> None:
+    """Emit ``composition`` edges: complex node -> node of a complex that CONTAINS it.
+
+    Reactome joins some entities by composition alone. Cytosolic ISGF3 is
+    consumed by no reaction; it is a component of ISGF3:KPNA1, which is a
+    component of ISGF3:KPNA1:KPNB1, and only then does translocation appear. A
+    curator crosses that in their head. A reaction-only network cannot, and the
+    result on Interferon alpha/beta is that the live ISGF3 node's only outgoing
+    edges are four dissociation sinks: the entire nuclear branch is severed at
+    one node, and IFNAR2 or JAK1 knockouts reach none of the ISGF3 targets.
+
+    This is NOT the leaf-subunit bridge that lost four times (-15pp; silo
+    bridges -73/-77). Those reconnected a released SUBUNIT to its functional
+    node, whose fan-out is ~112: a broadcast. This connects a COMPLEX to the
+    complexes it sits inside, and a complex sits inside few complexes
+    (measured median 1, max 2). Two hops, because an intermediate complex may
+    exist only as a set member and have no node (ISGF3:KPNA1 has none).
+
+    Simulated at uuid level before this was written: severed curator routes
+    392 -> 43 in Interferon, 462 -> 165 in Mitotic G1 (specs/016 in
+    deltasignal). Reachability is necessary, not sufficient -- the held-out A/B
+    decides it, on ONE catalog via DS_SKIP_EDGE_TYPES=composition.
+
+    Off by default (LNG_COMPOSITION_EDGES=1 enables). Dissociation sinks are
+    never sources: they are readout handles, not species that flow.
+    """
+    from collections import defaultdict
+    from src.neo4j_connector import get_labels, get_containing_complexes
+
+    sink_uuids: Set[str] = set()
+    existing: Set[tuple] = set()
+    for e in pathway_logic_network_data:
+        s_, t_ = str(e.get("source_id")), str(e.get("target_id"))
+        existing.add((s_, t_))
+        if e.get("edge_type") == "dissociation":
+            sink_uuids.add(t_)
+
+    base_to_uuids: Dict[str, List[str]] = defaultdict(list)
+    for u, stid in reactome_id_to_uuid.items():
+        if u in sink_uuids or not str(stid).startswith("R-"):
+            continue
+        base_to_uuids[str(stid).split("::variant::")[0]].append(str(u))
+
+    n_edges = 0
+    fan: List[int] = []
+    for base, uuids in base_to_uuids.items():
+        try:
+            labels = get_labels(base)
+        except (IndexError, KeyError):
+            # unknown stId (get_labels does .data()[0]); a connection error must
+            # NOT be swallowed here -- it would silently drop this complex's
+            # edges while the next lookup aborts the pathway anyway.
+            labels = []
+        if "Complex" not in labels:
+            continue
+        containers = get_containing_complexes(base, 2)
+        targets = [(y, uy) for y in containers for uy in base_to_uuids.get(y, [])]
+        if not targets:
+            continue
+        fan.append(len({y for y, _ in targets}))
+        for ux in uuids:
+            for _y, uy in targets:
+                if ux == uy or (ux, uy) in existing:
+                    continue
+                existing.add((ux, uy))
+                pathway_logic_network_data.append({
+                    "source_id": ux,
+                    "target_id": uy,
+                    "pos_neg": "pos",
+                    "and_or": "and",
+                    "edge_type": "composition",
+                    "stoichiometry": 1,
+                })
+                n_edges += 1
+    if fan:
+        fan_sorted = sorted(fan)
+        logger.info(
+            f"Composition edges: {n_edges} edges from {len(fan)} complexes; "
+            f"containing-complex fan-out median {fan_sorted[len(fan_sorted)//2]}, max {fan_sorted[-1]}"
+        )
+    else:
+        logger.info("Composition edges: none (no complex node sits inside another complex node here)")
+
+
 def _emit_boundary_decomposition_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -1541,16 +1700,53 @@ def _emit_boundary_decomposition_edges(
 
     # stId → existing UUID, so a member reuses the node it already has elsewhere
     # (free protein, regulator, catalyst) rather than becoming a disconnected dup.
-    stid_to_existing_uuid: Dict[str, str] = {}
+    # A root complex's subunit leaf is a boundary INPUT. Reusing an existing
+    # node for it is right whenever that node is NOT downstream of the root
+    # complex: a free protein that is itself a root, a catalyst, a regulator,
+    # or a copy produced by an unrelated reaction (that last case is a real
+    # feed-forward link Reactome joins only by hasComponent -- severing it cost
+    # Mitotic G1 28 cases). Reusing a node the root complex can REACH welds a
+    # cycle Neo4j never had: root complex -> reactions -> ... -> produced
+    # protein -> (assembly) -> root complex. On the v97 catalog 1,994 of the
+    # 2,077 cycle-carrying assembly edges were exactly that shape; removing them
+    # takes TP53's strongly connected component from 836 nodes to 56 and DSB's
+    # from 1,127 to ~290 (deltasignal specs/018). Reachability is computed over
+    # every edge emitted so far (bridges and depletion edges included).
+    # LNG_BOUNDARY_LEAF_REUSE=any restores the old behaviour.
+    from collections import defaultdict
+    reuse_mode = os.environ.get("LNG_BOUNDARY_LEAF_REUSE", "downstream_free")
+    if reuse_mode not in ("downstream_free", "any"):
+        raise ValueError(f"LNG_BOUNDARY_LEAF_REUSE={reuse_mode!r}: expected 'downstream_free' or 'any'")
+    _succ: Dict[str, List[str]] = defaultdict(list)
+    for e in pathway_logic_network_data:
+        _succ[str(e.get("source_id"))].append(str(e.get("target_id")))
+    _reach_cache: Dict[str, Set[str]] = {}
+    def _downstream_of(root_uuid: str) -> Set[str]:
+        if root_uuid not in _reach_cache:
+            seen: Set[str] = set(); stack = [root_uuid]
+            while stack:
+                u = stack.pop()
+                for v in _succ.get(u, ()):
+                    if v not in seen:
+                        seen.add(v); stack.append(v)
+            _reach_cache[root_uuid] = seen
+        return _reach_cache[root_uuid]
+    # stId -> every existing node carrying it, in registry order (deterministic)
+    stid_to_existing_uuids: Dict[str, List[str]] = defaultdict(list)
     for existing_uuid, stid in reactome_id_to_uuid.items():
-        if stid not in stid_to_existing_uuid:
-            stid_to_existing_uuid[stid] = existing_uuid
-
+        stid_to_existing_uuids[stid].append(existing_uuid)
     leaf_uuid_registry: Dict[str, str] = {}
 
-    def _leaf_uuid(leaf_stid: str) -> str:
-        if leaf_stid in stid_to_existing_uuid:
-            return stid_to_existing_uuid[leaf_stid]
+    def _leaf_uuid(leaf_stid: str, root_uuid: str) -> str:
+        candidates = stid_to_existing_uuids.get(leaf_stid, [])
+        if reuse_mode == "any":
+            if candidates:
+                return candidates[0]
+        else:
+            downstream = _downstream_of(root_uuid)
+            for cand in candidates:
+                if cand not in downstream:
+                    return cand
         if leaf_stid not in leaf_uuid_registry:
             leaf_uuid_registry[leaf_stid] = str(uuid.uuid4())
             reactome_id_to_uuid[leaf_uuid_registry[leaf_stid]] = leaf_stid
@@ -1593,7 +1789,7 @@ def _emit_boundary_decomposition_edges(
         if leaves == {str(stid)}:  # nothing below the complex to expose
             continue
         for leaf in leaves:
-            leaf_uuid = _leaf_uuid(leaf)
+            leaf_uuid = _leaf_uuid(leaf, complex_uuid)
             if (leaf_uuid, complex_uuid) in seen_edges:
                 continue
             seen_edges.add((leaf_uuid, complex_uuid))
@@ -1636,6 +1832,11 @@ def _emit_boundary_decomposition_edges(
             f"(shared member handles), {dissociation_count} dissociation edges "
             f"(separate readout sinks), {len(leaf_uuid_registry)} new assembly leaves"
         )
+
+    # Composition hierarchy (LNG_COMPOSITION_EDGES). Runs after boundary
+    # expansion so dissociation sinks are known and excluded as sources.
+    if os.environ.get("LNG_COMPOSITION_EDGES", "0") == "1":
+        _emit_composition_edges(pathway_logic_network_data, reactome_id_to_uuid)
 
 
 def append_regulators(
@@ -1946,13 +2147,16 @@ def create_pathway_logic_network(
     # Each entity gets a unique UUID per (entity, reaction, role) triple.
     # No cross-role keys are created (unlike the old self-loop approach).
     # Boundary entities (root inputs / terminal outputs) share one UUID per stId.
-    for vr_uid, (input_ids, output_ids, *_) in vr_entities.items():
-        for eid in input_ids:
-            _register_entity_uuid(eid, vr_uid, "input", entity_uuid_registry,
-                                  root_input_eids, root_input_uuid_cache)
-        for eid in output_ids:
-            _register_entity_uuid(eid, vr_uid, "output", entity_uuid_registry,
-                                  terminal_output_eids, terminal_output_uuid_cache)
+    # Under LNG_SHARE_VARIANT_NODES the same entity in the same role across the
+    # VARIANTS of one Reactome reaction shares one UUID (see _register_phase1).
+    _register_phase1(
+        vr_entities, entity_uuid_registry,
+        root_input_eids, root_input_uuid_cache,
+        terminal_output_eids, terminal_output_uuid_cache,
+        vr_to_reaction=dict(zip(reaction_id_map["uid"].astype(str),
+                                reaction_id_map["reactome_id"].astype(str))),
+        share_variants=os.environ.get("LNG_SHARE_VARIANT_NODES", "0") == "1",
+    )
 
     logger.debug(f"Phase 1 complete: {len(entity_uuid_registry)} registry entries")
 

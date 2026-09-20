@@ -588,6 +588,44 @@ def get_complex_components(entity_id: str) -> Dict[str, int]:
         raise
 
 
+_containing_cache: Dict[str, Dict[str, int]] = {}
+
+
+def get_containing_complexes(entity_id: str, max_hops: int = 2) -> Dict[str, int]:
+    """Complexes that CONTAIN `entity_id`, within `max_hops` hasComponent steps.
+
+    The upward counterpart of :func:`get_complex_components`. Returns
+    ``{containing_stId: hops}``. Used to emit ``composition`` edges from a
+    complex node to the complexes it is part of -- a route a curator follows
+    (ISGF3 -> ISGF3:KPNA1 -> ISGF3:KPNA1:KPNB1) that a reaction-only network
+    cannot. Two hops, not one, because an intermediate complex may exist only
+    as a set member and have no node of its own. Fan-out is inherently small
+    (a complex sits inside few complexes: measured median 1, max 2), which is
+    what distinguishes this from leaf-subunit bridging.
+    """
+    # `entity` carries the PhysicalEntity label so the planner can use the stId
+    # index: unlabelled, this was a full-store scan (660-800 ms per call, once
+    # per Complex per pathway -- 30-90 min across the catalog); labelled, 1-21 ms.
+    key = f"{entity_id}|{max_hops}"
+    if key in _containing_cache:
+        return _containing_cache[key]
+    try:
+        data = get_graph().run(
+            """
+            MATCH path=(container:Complex)-[:hasComponent*1..%d]->(entity:PhysicalEntity)
+            WHERE entity.stId = $entity_id AND container.stId IS NOT NULL
+            RETURN container.stId AS container_id, min(length(path)) AS hops
+            """ % max_hops,
+            entity_id=entity_id,
+        ).data()
+        result = {row["container_id"]: int(row["hops"]) for row in data}
+        _containing_cache[key] = result
+        return result
+    except Exception:
+        logger.error("Error in get_containing_complexes", **_traceback_kwargs())
+        raise
+
+
 def get_set_members(entity_id: str) -> Set[str]:
     if entity_id in _members_cache:
         return _members_cache[entity_id]
