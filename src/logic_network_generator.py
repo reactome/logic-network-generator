@@ -1627,6 +1627,84 @@ def _emit_composition_edges(
         logger.info("Composition edges: none (no complex node sits inside another complex node here)")
 
 
+
+def _emit_sink_bridge_edges(
+    pathway_logic_network_data: List[Dict[str, Any]],
+    reactome_id_to_uuid: Dict[str, str],
+) -> int:
+    """Emit ``sink_bridge`` edges: dissociation sink -> consuming copy of the same
+    entity, only where the bridge closes no cycle.
+
+    A terminal complex releases its members into freshly minted readout sinks
+    (``dissociation`` edges) so a subunit can be read; the sink has no outgoing
+    edge. The same protein usually also exists as an input copy that some
+    reaction consumes. The curators' route continues through that protein; ours
+    stops at the sink. On the v97 catalog this is the largest single class of
+    curator routes we sever (Mitotic G1: 264 of 430 severed pairs break at a
+    sink; Interferon alpha/beta: 78 of 392) and the largest class of benchmark
+    errors (``no_path``: 1,526 cases, 686 of them in those two pathways).
+
+    Bridging sinks was measured harmful twice before (2026-05 -15pp; the silo
+    bridge -73/-77 held-out) -- on catalogs whose giant components were welded
+    by our own edges, and without any cycle guard: a bridge into a copy that is
+    upstream of the sink closes a cycle, and a cycle of gain 1 rails or
+    collapses (deltasignal specs/013-018). This emitter adds a bridge ONLY when
+    the consuming copy cannot reach the sink, so the cycle census is unchanged;
+    reachability is computed over every edge emitted so far. Simulated with the
+    curator oracle on the fixed catalog before this was written: Interferon
+    alpha/beta 293 -> 631 connected of 685 with 13 bridges (fan-out median 3);
+    Mitotic G1 530 -> 705 of 960 with 234 (fan-out median 1); 23 and 152
+    cycle-closing candidates skipped. Off by default (LNG_SINK_BRIDGES=1).
+    """
+    from collections import defaultdict
+    succ: Dict[str, List[str]] = defaultdict(list)
+    out_deg: Dict[str, int] = defaultdict(int)
+    sinks: Set[str] = set()
+    for e in pathway_logic_network_data:
+        s, t = str(e.get("source_id")), str(e.get("target_id"))
+        succ[s].append(t); out_deg[s] += 1
+        if e.get("edge_type") == "dissociation":
+            sinks.add(t)
+    sinks = {s for s in sinks if out_deg[s] == 0}
+    base = lambda stid: str(stid).split("::variant::")[0]
+    by_stid: Dict[str, List[str]] = defaultdict(list)
+    for u, stid in reactome_id_to_uuid.items():
+        by_stid[base(stid)].append(str(u))
+    reach_cache: Dict[str, Set[str]] = {}
+    def _reach(u: str) -> Set[str]:
+        if u not in reach_cache:
+            seen: Set[str] = set(); stack = [u]
+            while stack:
+                x = stack.pop()
+                for v in succ.get(x, ()):
+                    if v not in seen:
+                        seen.add(v); stack.append(v)
+            reach_cache[u] = seen
+        return reach_cache[u]
+    added = 0; skipped = 0; fan: List[int] = []
+    for sink in sorted(sinks):
+        stid = reactome_id_to_uuid.get(sink)
+        if stid is None:
+            continue
+        cands = [c for c in by_stid.get(base(stid), []) if c != sink and out_deg[c] > 0]
+        # a consuming copy that can reach the sink is upstream of it: bridging would close a cycle
+        ok = [c for c in cands if sink not in _reach(c)]
+        skipped += len(cands) - len(ok)
+        if ok:
+            fan.append(len(ok))
+        for c in ok:
+            pathway_logic_network_data.append({
+                "source_id": sink, "target_id": c, "pos_neg": "pos", "and_or": "or",
+                "edge_type": "sink_bridge", "stoichiometry": 1,
+            })
+            succ[sink].append(c); out_deg[sink] += 1
+            reach_cache.clear()           # reachability changed
+            added += 1
+    fan.sort()
+    logger.info(f"Sink bridges: {added} edges from {len(fan)} sinks (cycle-closing skipped {skipped}); "
+                f"consumer fan-out median {fan[len(fan)//2] if fan else 0}, max {fan[-1] if fan else 0}")
+    return added
+
 def _emit_boundary_decomposition_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -1837,6 +1915,11 @@ def _emit_boundary_decomposition_edges(
     # expansion so dissociation sinks are known and excluded as sources.
     if os.environ.get("LNG_COMPOSITION_EDGES", "0") == "1":
         _emit_composition_edges(pathway_logic_network_data, reactome_id_to_uuid)
+    # Acyclic sink bridges (LNG_SINK_BRIDGES): a released subunit reconnects to
+    # its consuming copies where that adds no cycle. Runs last so every edge,
+    # sink and copy is known.
+    if os.environ.get("LNG_SINK_BRIDGES", "0") == "1":
+        _emit_sink_bridge_edges(pathway_logic_network_data, reactome_id_to_uuid)
 
 
 def append_regulators(
