@@ -1701,34 +1701,52 @@ def _emit_boundary_decomposition_edges(
     # stId → existing UUID, so a member reuses the node it already has elsewhere
     # (free protein, regulator, catalyst) rather than becoming a disconnected dup.
     # A root complex's subunit leaf is a boundary INPUT. Reusing an existing
-    # node for it is right only when that node is itself unproduced (a free
-    # protein that is a root, a catalyst, a regulator). Reusing a node that some
-    # reaction PRODUCES welds a cycle that Neo4j never had: root complex ->
-    # reactions -> ... -> produced protein -> (assembly) -> root complex.
-    # Measured on the v97 catalog: 1,994 of the 2,077 cycle-carrying assembly
-    # edges are exactly this shape; removing them takes TP53's strongly
-    # connected component from 836 nodes to 56 and DSB's from 1,127 to ~290,
-    # and MP-BioPath's hand-curated networks carry none of them (deltasignal
-    # specs/018). LNG_BOUNDARY_LEAF_REUSE=any restores the old behaviour.
-    produced_uuids: Set[str] = {
-        str(e.get("target_id")) for e in pathway_logic_network_data if e.get("edge_type") == "output"
-    }
-    reuse_mode = os.environ.get("LNG_BOUNDARY_LEAF_REUSE", "unproduced")
-    if reuse_mode not in ("unproduced", "any"):
-        raise ValueError(f"LNG_BOUNDARY_LEAF_REUSE={reuse_mode!r}: expected 'unproduced' or 'any'")
-    stid_to_existing_uuid: Dict[str, str] = {}
+    # node for it is right whenever that node is NOT downstream of the root
+    # complex: a free protein that is itself a root, a catalyst, a regulator,
+    # or a copy produced by an unrelated reaction (that last case is a real
+    # feed-forward link Reactome joins only by hasComponent -- severing it cost
+    # Mitotic G1 28 cases). Reusing a node the root complex can REACH welds a
+    # cycle Neo4j never had: root complex -> reactions -> ... -> produced
+    # protein -> (assembly) -> root complex. On the v97 catalog 1,994 of the
+    # 2,077 cycle-carrying assembly edges were exactly that shape; removing them
+    # takes TP53's strongly connected component from 836 nodes to 56 and DSB's
+    # from 1,127 to ~290 (deltasignal specs/018). Reachability is computed over
+    # every edge emitted so far (bridges and depletion edges included).
+    # LNG_BOUNDARY_LEAF_REUSE=any restores the old behaviour.
+    from collections import defaultdict
+    reuse_mode = os.environ.get("LNG_BOUNDARY_LEAF_REUSE", "downstream_free")
+    if reuse_mode not in ("downstream_free", "any"):
+        raise ValueError(f"LNG_BOUNDARY_LEAF_REUSE={reuse_mode!r}: expected 'downstream_free' or 'any'")
+    _succ: Dict[str, List[str]] = defaultdict(list)
+    for e in pathway_logic_network_data:
+        _succ[str(e.get("source_id"))].append(str(e.get("target_id")))
+    _reach_cache: Dict[str, Set[str]] = {}
+    def _downstream_of(root_uuid: str) -> Set[str]:
+        if root_uuid not in _reach_cache:
+            seen: Set[str] = set(); stack = [root_uuid]
+            while stack:
+                u = stack.pop()
+                for v in _succ.get(u, ()):
+                    if v not in seen:
+                        seen.add(v); stack.append(v)
+            _reach_cache[root_uuid] = seen
+        return _reach_cache[root_uuid]
+    # stId -> every existing node carrying it, in registry order (deterministic)
+    stid_to_existing_uuids: Dict[str, List[str]] = defaultdict(list)
     for existing_uuid, stid in reactome_id_to_uuid.items():
-        if stid in stid_to_existing_uuid:
-            continue
-        if reuse_mode == "unproduced" and str(existing_uuid) in produced_uuids:
-            continue
-        stid_to_existing_uuid[stid] = existing_uuid
-
+        stid_to_existing_uuids[stid].append(existing_uuid)
     leaf_uuid_registry: Dict[str, str] = {}
 
-    def _leaf_uuid(leaf_stid: str) -> str:
-        if leaf_stid in stid_to_existing_uuid:
-            return stid_to_existing_uuid[leaf_stid]
+    def _leaf_uuid(leaf_stid: str, root_uuid: str) -> str:
+        candidates = stid_to_existing_uuids.get(leaf_stid, [])
+        if reuse_mode == "any":
+            if candidates:
+                return candidates[0]
+        else:
+            downstream = _downstream_of(root_uuid)
+            for cand in candidates:
+                if cand not in downstream:
+                    return cand
         if leaf_stid not in leaf_uuid_registry:
             leaf_uuid_registry[leaf_stid] = str(uuid.uuid4())
             reactome_id_to_uuid[leaf_uuid_registry[leaf_stid]] = leaf_stid
@@ -1771,7 +1789,7 @@ def _emit_boundary_decomposition_edges(
         if leaves == {str(stid)}:  # nothing below the complex to expose
             continue
         for leaf in leaves:
-            leaf_uuid = _leaf_uuid(leaf)
+            leaf_uuid = _leaf_uuid(leaf, complex_uuid)
             if (leaf_uuid, complex_uuid) in seen_edges:
                 continue
             seen_edges.add((leaf_uuid, complex_uuid))
