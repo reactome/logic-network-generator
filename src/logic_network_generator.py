@@ -1712,11 +1712,18 @@ def _emit_boundary_decomposition_edges(
     # takes TP53's strongly connected component from 836 nodes to 56 and DSB's
     # from 1,127 to ~290 (deltasignal specs/018). Reachability is computed over
     # every edge emitted so far (bridges and depletion edges included).
-    # LNG_BOUNDARY_LEAF_REUSE=any restores the old behaviour.
+    #
+    # This is unconditional. The LNG_BOUNDARY_LEAF_REUSE escape hatch that
+    # restored the welding behaviour was removed once the question it existed
+    # to ask was answered (held-out +173, p<1e-4). Setting it is an error
+    # rather than a no-op, so a stale value in an environment or a script is
+    # not silently ignored while the run measures something else.
     from collections import defaultdict
-    reuse_mode = os.environ.get("LNG_BOUNDARY_LEAF_REUSE", "downstream_free")
-    if reuse_mode not in ("downstream_free", "any"):
-        raise ValueError(f"LNG_BOUNDARY_LEAF_REUSE={reuse_mode!r}: expected 'downstream_free' or 'any'")
+    if "LNG_BOUNDARY_LEAF_REUSE" in os.environ:
+        raise ValueError(
+            "LNG_BOUNDARY_LEAF_REUSE was removed: boundary leaves never reuse a node "
+            "the root complex can reach. See deltasignal specs/018-derived-edge-loops."
+        )
     _succ: Dict[str, List[str]] = defaultdict(list)
     for e in pathway_logic_network_data:
         _succ[str(e.get("source_id"))].append(str(e.get("target_id")))
@@ -1739,14 +1746,10 @@ def _emit_boundary_decomposition_edges(
 
     def _leaf_uuid(leaf_stid: str, root_uuid: str) -> str:
         candidates = stid_to_existing_uuids.get(leaf_stid, [])
-        if reuse_mode == "any":
-            if candidates:
-                return candidates[0]
-        else:
-            downstream = _downstream_of(root_uuid)
-            for cand in candidates:
-                if cand not in downstream:
-                    return cand
+        downstream = _downstream_of(root_uuid)
+        for cand in candidates:
+            if cand not in downstream:
+                return cand
         if leaf_stid not in leaf_uuid_registry:
             leaf_uuid_registry[leaf_stid] = str(uuid.uuid4())
             reactome_id_to_uuid[leaf_uuid_registry[leaf_stid]] = leaf_stid
