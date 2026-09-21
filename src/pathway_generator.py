@@ -36,6 +36,9 @@ _FINGERPRINTED_ENV = (
     "LNG_HANDOFF_HUB_MAX",
     "LNG_SET_MEMBERS_OR",
     "LNG_DIAGRAM_SET_MEMBER",
+    "LNG_BOUNDARY_EXPANSION",
+    "LNG_COMPOSITION_EDGES",
+    "LNG_EMIT_ONE_SIDED",
     # Determinism controls: node ids are uuid4 and several selections iterate
     # sets, so hash seeding changes emitted content (~5.8% of TP53 edges per
     # bin/create-pathways.py). A cache built unseeded is not comparable to a
