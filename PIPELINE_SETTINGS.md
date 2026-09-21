@@ -99,3 +99,16 @@ If you drive DeltaSignal over its HTTP API, two things matter:
   is an in-memory, per-process cache, so re-parse if the server restarts.
 
 Full request/response schemas: `deltasignal/docs/API.md`.
+
+## Removed flags
+
+These names are still **read**, and setting one is a hard error rather than a
+no-op. A flag is removed once the question it existed to ask has been answered:
+the spec keeps the evidence, the code does not keep a second path nobody
+measures. Rejecting the name rather than ignoring it means a stale value in a
+shell, a compose file or an unversioned benchmark script cannot quietly make a
+run measure the default while the operator believes otherwise.
+
+| flag | removed | why |
+|---|---|---|
+| `LNG_BOUNDARY_LEAF_REUSE` | 2026-09-21 | Boundary leaves never reuse a node the root complex can reach at the time the leaf is chosen. Held-out +173, p<1e-4 (deltasignal `specs/018-derived-edge-loops`). |
