@@ -1660,12 +1660,21 @@ def _emit_sink_bridge_edges(
     succ: Dict[str, List[str]] = defaultdict(list)
     out_deg: Dict[str, int] = defaultdict(int)
     sinks: Set[str] = set()
-    for e in pathway_logic_network_data:
+    first_seen: Dict[str, int] = {}
+    for i, e in enumerate(pathway_logic_network_data):
         s, t = str(e.get("source_id")), str(e.get("target_id"))
         succ[s].append(t); out_deg[s] += 1
+        first_seen.setdefault(s, i); first_seen.setdefault(t, i)
         if e.get("edge_type") == "dissociation":
             sinks.add(t)
     sinks = {s for s in sinks if out_deg[s] == 0}
+    # Consumer eligibility is decided against the PRE-EMITTER out-degree. Reading
+    # the live `out_deg` (which this function increments) let a sink that had
+    # already received a bridge qualify as a "consuming copy" for every later
+    # sink of the same entity: 69% of the first run's 36,125 edges were
+    # sink -> sink, consuming nothing, concentrated in the pathways that lost.
+    consumes = {n for n, d in out_deg.items() if d > 0}
+
     def base(stid: Any) -> str:
         return str(stid).split("::variant::")[0]
 
@@ -1673,6 +1682,7 @@ def _emit_sink_bridge_edges(
     for u, stid in reactome_id_to_uuid.items():
         by_stid[base(stid)].append(str(u))
     reach_cache: Dict[str, Set[str]] = {}
+
     def _reach(u: str) -> Set[str]:
         if u not in reach_cache:
             seen: Set[str] = set(); stack = [u]
@@ -1683,24 +1693,33 @@ def _emit_sink_bridge_edges(
                         seen.add(v); stack.append(v)
             reach_cache[u] = seen
         return reach_cache[u]
-    # LNG_SINK_BRIDGE_MAX_FANOUT: skip a sink whose acyclic consumer set is larger
-    # than this (a broadcast); 0 = unlimited. The catalog-wide simulation gave a
-    # median of 1, p90 of 8, max 160 consumers per sink.
+
+    # The guard is greedy, so which bridges survive depends on the order sinks
+    # are visited in; uuid4 order made the emitted SET a random draw per
+    # regeneration (measured: swapping two sink labels changes which edge is
+    # emitted, and ~5,400 candidates flip acyclic/cycle-closing between runs).
+    # Order by stable id, then by first appearance in the edge list -- both are
+    # functions of the Reactome data, not of the uuids we mint.
     max_fan = int(os.environ.get("LNG_SINK_BRIDGE_MAX_FANOUT", "0") or 0)
+    if max_fan < 0:
+        raise ValueError(f"LNG_SINK_BRIDGE_MAX_FANOUT={max_fan}: expected 0 (unlimited) or a positive count")
+    ordered_sinks = sorted(sinks, key=lambda s: (base(reactome_id_to_uuid.get(s, "")), first_seen.get(s, 0)))
     added = 0; skipped = 0; capped = 0; fan: List[int] = []
-    for sink in sorted(sinks):
+    for sink in ordered_sinks:
         sink_stid = reactome_id_to_uuid.get(sink)
         if sink_stid is None:
             continue
-        cands = [c for c in by_stid.get(base(sink_stid), []) if c != sink and out_deg[c] > 0]
+        # `consumes` is the pre-emitter set: a bridge target must consume the
+        # entity in a reaction, never be another readout sink.
+        cands = [c for c in by_stid.get(base(sink_stid), []) if c != sink and c in consumes]
         # a consuming copy that can reach the sink is upstream of it: bridging would close a cycle
         ok = [c for c in cands if sink not in _reach(c)]
-        skipped += len(cands) - len(ok)
+        if ok:
+            fan.append(len(ok))          # recorded for every eligible sink, capped or not
         if max_fan and len(ok) > max_fan:
             capped += 1
             continue
-        if ok:
-            fan.append(len(ok))
+        skipped += len(cands) - len(ok)
         for c in ok:
             pathway_logic_network_data.append({
                 "source_id": sink, "target_id": c, "pos_neg": "pos", "and_or": "or",

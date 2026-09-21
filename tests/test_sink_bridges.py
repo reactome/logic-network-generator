@@ -64,6 +64,105 @@ def test_idempotent_and_order_free():
     assert sorted(bridges(d1)) == sorted(bridges(d2))
 
 
+def two_sinks():
+    """Two sinks of ONE entity plus one real consumer: the cascade case.
+
+    The consumer filter must be evaluated against the pre-emitter out-degree,
+    or the first sink to receive a bridge becomes an eligible 'consumer' for
+    the second (69% of the first catalog run's edges were exactly this)."""
+    data = [
+        {"source_id": "u_T", "target_id": "s_aaa", "pos_neg": "pos", "and_or": "and", "edge_type": "dissociation", "stoichiometry": 1},
+        {"source_id": "u_T", "target_id": "s_zzz", "pos_neg": "pos", "and_or": "and", "edge_type": "dissociation", "stoichiometry": 1},
+        {"source_id": "u_cons", "target_id": "r9", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+        {"source_id": "r9", "target_id": "u_X", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1},
+    ]
+    r2u = {"s_aaa": P, "s_zzz": P, "u_cons": P, "u_T": "R-HSA-100", "u_X": "R-HSA-500", "r9": "R-HSA-900"}
+    return data, r2u
+
+
+def test_a_sink_is_never_a_bridge_target():
+    data, r2u = two_sinks()
+    n = _emit_sink_bridge_edges(data, r2u)
+    assert n == 2
+    assert sorted(bridges(data)) == [("s_aaa", "u_cons"), ("s_zzz", "u_cons")]
+    sinks = {e["target_id"] for e in data if e["edge_type"] == "dissociation"}
+    assert not [b for b in bridges(data) if b[1] in sinks]
+
+
+def test_sink_visit_order_does_not_change_the_emitted_set():
+    # identical graph, sink labels swapped: uuid4 ordering used to pick a different EDGE
+    d1, r1 = two_sinks()
+    d2, r2 = two_sinks()
+    swap = {"s_aaa": "s_zzz", "s_zzz": "s_aaa"}
+    d2 = [{**e, "source_id": swap.get(e["source_id"], e["source_id"]), "target_id": swap.get(e["target_id"], e["target_id"])} for e in d2]
+    _emit_sink_bridge_edges(d1, r1); _emit_sink_bridge_edges(d2, r2)
+    assert {(swap.get(s, s), t) for s, t in bridges(d1)} == set(bridges(d2))
+
+
+def accumulation():
+    """Four nodes of ONE entity X: two sinks (S0, S2) and two consumers (c, c2), wired so
+    that a bridge emitted for S0 changes what c2 reaches.
+
+        c  -> rA -> T2p --dissoc--> S2        (c reaches S2)
+        c2 -> rC -> T0  --dissoc--> S0        (c2 reaches S0)
+
+    Processing S0 first emits S0 -> c. That makes c2 reach S2 *through* the new edge, so
+    S2 -> c2 is now cycle-closing and must be skipped. With a stale reachability cache it
+    is emitted and closes S2 -> c2 -> rC -> T0 -> S0 -> c -> rA -> T2p -> S2."""
+    X = P
+    data = [
+        {"source_id": "u_T0", "target_id": "s0", "pos_neg": "pos", "and_or": "and", "edge_type": "dissociation", "stoichiometry": 1},
+        {"source_id": "u_T2p", "target_id": "s2", "pos_neg": "pos", "and_or": "and", "edge_type": "dissociation", "stoichiometry": 1},
+        {"source_id": "c", "target_id": "rA", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+        {"source_id": "rA", "target_id": "u_T2p", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1},
+        {"source_id": "c2", "target_id": "rC", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+        {"source_id": "rC", "target_id": "u_T0", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1},
+    ]
+    r2u = {"s0": X, "s2": X, "c": X, "c2": X, "u_T0": "R-HSA-100", "u_T2p": "R-HSA-101", "rA": "R-HSA-900", "rC": "R-HSA-901"}
+    return data, r2u
+
+
+def acyclic(data):
+    succ = {}
+    for e in data: succ.setdefault(e["source_id"], []).append(e["target_id"])
+    def reach(u):
+        seen, st = set(), [u]
+        while st:
+            x = st.pop()
+            for v in succ.get(x, []):
+                if v not in seen: seen.add(v); st.append(v)
+        return seen
+    return all(s not in reach(t) for s, t in bridges(data))
+
+
+def test_accumulation_a_bridge_makes_a_later_candidate_cycle_closing():
+    data, r2u = accumulation()
+    n = _emit_sink_bridge_edges(data, r2u)
+    assert acyclic(data), f"cycle-closing bridge emitted: {bridges(data)}"
+    assert n == 1 and bridges(data) == [("s0", "c")]
+
+
+def test_sink_visit_order_is_a_function_of_the_data_not_the_uuids():
+    # Same graph, sink labels swapped. Ordering by (stable id, first appearance) must give
+    # the structurally same bridge; ordering by uuid gives a different one.
+    d1, r1 = accumulation()
+    _emit_sink_bridge_edges(d1, r1)
+    d2, r2 = accumulation()
+    swap = {"s0": "s2", "s2": "s0"}
+    d2 = [{**e, "source_id": swap.get(e["source_id"], e["source_id"]), "target_id": swap.get(e["target_id"], e["target_id"])} for e in d2]
+    r2 = {swap.get(k, k): v for k, v in r2.items()}
+    _emit_sink_bridge_edges(d2, r2)
+    assert acyclic(d2)
+    assert {(swap.get(s, s), t) for s, t in bridges(d1)} == set(bridges(d2)), (bridges(d1), bridges(d2))
+
+
+def test_negative_fanout_cap_is_an_error(monkeypatch):
+    monkeypatch.setenv("LNG_SINK_BRIDGE_MAX_FANOUT", "-1")
+    data, r2u = net()
+    with pytest.raises(ValueError):
+        _emit_sink_bridge_edges(data, r2u)
+
+
 def test_fanout_cap_skips_broadcast_sinks(monkeypatch):
     data, r2u = net()
     # give P three more acyclic consuming copies -> fan-out 4
