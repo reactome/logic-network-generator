@@ -5,7 +5,6 @@ complex, a cycle Neo4j never had (1,994 of 2,077 cycle-carrying assembly edges o
 v97 catalog; deltasignal specs/018). A produced node that is NOT downstream is a real
 feed-forward link (hasComponent with no reaction) and must still be reused -- severing
 those cost Mitotic G1 28 cases in the first version of this fix."""
-import os
 import pytest
 import src.neo4j_connector as nc
 import src.logic_network_generator as lng
@@ -39,8 +38,7 @@ def assembly_sources(data):
     return {e["source_id"]: e for e in data if e["edge_type"] == "assembly"}
 
 
-def test_produced_node_is_not_reused_as_a_boundary_leaf(stub, monkeypatch):
-    monkeypatch.delenv("LNG_BOUNDARY_LEAF_REUSE", raising=False)
+def test_produced_node_is_not_reused_as_a_boundary_leaf(stub):
     data, r2u = network()
     _emit_boundary_decomposition_edges(data, r2u)
     asm = assembly_sources(data)
@@ -57,10 +55,9 @@ def test_produced_node_is_not_reused_as_a_boundary_leaf(stub, monkeypatch):
     assert not (sources_into_C & produced)
 
 
-def test_a_copy_reached_only_through_a_bridge_is_downstream_too(stub, monkeypatch):
+def test_a_copy_reached_only_through_a_bridge_is_downstream_too(stub):
     # P has two copies: u_Pout (reaction output, downstream of C) and u_Pin (an input copy whose
     # only incoming edge is a diagram bridge from u_Pout -- also downstream). Neither may be reused.
-    monkeypatch.delenv("LNG_BOUNDARY_LEAF_REUSE", raising=False)
     data, r2u = network()
     data.append({"source_id": "u_Pout", "target_id": "u_Pin", "pos_neg": "pos", "and_or": "and", "edge_type": "diagram_bridge", "stoichiometry": 1})
     data.append({"source_id": "u_Pin", "target_id": "r3", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1})
@@ -71,11 +68,10 @@ def test_a_copy_reached_only_through_a_bridge_is_downstream_too(stub, monkeypatc
     assert "u_Pout" not in asm and "u_Pin" not in asm
 
 
-def test_a_produced_copy_that_is_not_downstream_is_reused(stub, monkeypatch):
+def test_a_produced_copy_that_is_not_downstream_is_reused(stub):
     # The Mitotic G1 shape: P's only copy is produced by a reaction the root complex C does NOT
     # reach (r2, fed by Q). Reusing it adds no cycle and keeps the feed-forward link
     # P -> (assembly) -> C that Reactome joins only by hasComponent.
-    monkeypatch.delenv("LNG_BOUNDARY_LEAF_REUSE", raising=False)
     data = [
         {"source_id": "u_C", "target_id": "r1", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1},
         {"source_id": "r1", "target_id": "u_W", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1},
@@ -93,7 +89,6 @@ def test_a_produced_copy_that_is_not_downstream_is_reused(stub, monkeypatch):
 def test_two_root_complexes_sharing_a_subunit_each_get_an_acyclic_leaf(stub, monkeypatch):
     # C reaches P's produced copy (u_Pout) -> C gets a fresh leaf. C2 does NOT reach it ->
     # C2 reuses u_Pout (a real feed-forward link). Neither assembly edge closes a cycle.
-    monkeypatch.delenv("LNG_BOUNDARY_LEAF_REUSE", raising=False)
     data, r2u = network()
     data.append({"source_id": "u_C2", "target_id": "r4", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1})
     data.append({"source_id": "r4", "target_id": "u_Z", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1})
@@ -118,16 +113,11 @@ def test_two_root_complexes_sharing_a_subunit_each_get_an_acyclic_leaf(stub, mon
         assert not (srcs & reach(cpx))
 
 
-def test_legacy_reuse_is_available_and_welds_the_cycle(stub, monkeypatch):
-    monkeypatch.setenv("LNG_BOUNDARY_LEAF_REUSE", "any")
-    data, r2u = network()
-    _emit_boundary_decomposition_edges(data, r2u)
-    asm = assembly_sources(data)
-    assert "u_Pout" in asm          # the old behaviour: the produced copy is reused -> C -> r1 -> u_Pout -> C
-
-
-def test_bad_mode_is_an_error(stub, monkeypatch):
-    monkeypatch.setenv("LNG_BOUNDARY_LEAF_REUSE", "unproduced")
-    data, r2u = network()
-    with pytest.raises(ValueError):
-        _emit_boundary_decomposition_edges(data, r2u)
+def test_removed_flag_is_an_error_not_a_noop(stub, monkeypatch):
+    # The escape hatch was removed; a stale value must fail loudly rather than
+    # letting a run silently measure the default while claiming the old mode.
+    for val in ("any", "downstream_free", "unproduced"):
+        monkeypatch.setenv("LNG_BOUNDARY_LEAF_REUSE", val)
+        data, r2u = network()
+        with pytest.raises(ValueError, match="was removed"):
+            _emit_boundary_decomposition_edges(data, r2u)
