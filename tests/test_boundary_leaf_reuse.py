@@ -38,7 +38,7 @@ def assembly_sources(data):
     return {e["source_id"]: e for e in data if e["edge_type"] == "assembly"}
 
 
-def test_produced_node_is_not_reused_as_a_boundary_leaf(stub, monkeypatch):
+def test_produced_node_is_not_reused_as_a_boundary_leaf(stub):
     data, r2u = network()
     _emit_boundary_decomposition_edges(data, r2u)
     asm = assembly_sources(data)
@@ -55,7 +55,7 @@ def test_produced_node_is_not_reused_as_a_boundary_leaf(stub, monkeypatch):
     assert not (sources_into_C & produced)
 
 
-def test_a_copy_reached_only_through_a_bridge_is_downstream_too(stub, monkeypatch):
+def test_a_copy_reached_only_through_a_bridge_is_downstream_too(stub):
     # P has two copies: u_Pout (reaction output, downstream of C) and u_Pin (an input copy whose
     # only incoming edge is a diagram bridge from u_Pout -- also downstream). Neither may be reused.
     data, r2u = network()
@@ -68,7 +68,7 @@ def test_a_copy_reached_only_through_a_bridge_is_downstream_too(stub, monkeypatc
     assert "u_Pout" not in asm and "u_Pin" not in asm
 
 
-def test_a_produced_copy_that_is_not_downstream_is_reused(stub, monkeypatch):
+def test_a_produced_copy_that_is_not_downstream_is_reused(stub):
     # The Mitotic G1 shape: P's only copy is produced by a reaction the root complex C does NOT
     # reach (r2, fed by Q). Reusing it adds no cycle and keeps the feed-forward link
     # P -> (assembly) -> C that Reactome joins only by hasComponent.

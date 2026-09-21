@@ -481,6 +481,26 @@ def _register_entity_uuid(
     return entity_uuid_registry[key]
 
 
+# Flags that were removed once the question they existed to ask was answered
+# (see the flag-expiry policy in deltasignal specs/020). The names are still
+# READ so that a stale value in a shell, a compose file or an unversioned
+# benchmark script fails loudly instead of being silently ignored while the run
+# measures the default. That silent-input failure mode has bitten this project
+# four times (deltasignal DS #40-43).
+_REMOVED_ENV = {
+    "LNG_BOUNDARY_LEAF_REUSE":
+        "boundary leaves never reuse a node the root complex can reach at the time "
+        "the leaf is chosen. See deltasignal specs/018-derived-edge-loops.",
+}
+
+
+def _reject_removed_env() -> None:
+    """Raise if any removed LNG_* flag is set. Safe to call repeatedly."""
+    for name, why in sorted(_REMOVED_ENV.items()):
+        if name in os.environ:
+            raise ValueError(f"{name} was removed: {why}")
+
+
 def _register_phase1(
     vr_entities: Dict[str, tuple],
     entity_uuid_registry: Dict[tuple, str],
@@ -1715,15 +1735,19 @@ def _emit_boundary_decomposition_edges(
     #
     # This is unconditional. The LNG_BOUNDARY_LEAF_REUSE escape hatch that
     # restored the welding behaviour was removed once the question it existed
-    # to ask was answered (held-out +173, p<1e-4). Setting it is an error
-    # rather than a no-op, so a stale value in an environment or a script is
-    # not silently ignored while the run measures something else.
+    # to ask was answered (held-out +173, p<1e-4).
+    #
+    # SCOPE OF THE RULE, stated precisely: a leaf is refused if the root
+    # complex can reach it *at the moment that leaf is chosen*. `_succ` is a
+    # snapshot taken before the loop and is NOT updated as this function
+    # appends its own assembly edges, so a later root complex can still be
+    # handed a leaf that became reachable through an edge emitted for an
+    # earlier one. That residual weld is a real pre-existing bug -- it exists
+    # identically on both sides of the flag removal -- and it is tracked
+    # separately rather than fixed here, because fixing it changes emitted
+    # networks and would invalidate the measurement this rule rests on.
     from collections import defaultdict
-    if "LNG_BOUNDARY_LEAF_REUSE" in os.environ:
-        raise ValueError(
-            "LNG_BOUNDARY_LEAF_REUSE was removed: boundary leaves never reuse a node "
-            "the root complex can reach. See deltasignal specs/018-derived-edge-loops."
-        )
+    _reject_removed_env()
     _succ: Dict[str, List[str]] = defaultdict(list)
     for e in pathway_logic_network_data:
         _succ[str(e.get("source_id"))].append(str(e.get("target_id")))
