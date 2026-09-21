@@ -36,6 +36,15 @@ _FINGERPRINTED_ENV = (
     "LNG_HANDOFF_HUB_MAX",
     "LNG_SET_MEMBERS_OR",
     "LNG_DIAGRAM_SET_MEMBER",
+    # Of these three, only LNG_EMIT_ONE_SIDED is a genuine cache gap: it is
+    # read in reaction_generator.decompose_by_reactions, so it changes
+    # best_matches.csv / decomposed_uid_mapping.csv, which ARE cached.
+    # LNG_BOUNDARY_EXPANSION and LNG_COMPOSITION_EDGES are read inside
+    # create_pathway_logic_network, which is re-run from scratch every time, so
+    # listing them buys provenance in fingerprint.json at the cost of an
+    # unnecessary re-fetch when they are flipped. Kept deliberately: knowing
+    # which settings produced a catalog has been worth more than the re-fetch,
+    # and src_sha256 already invalidates on any source change anyway.
     "LNG_BOUNDARY_EXPANSION",
     "LNG_COMPOSITION_EDGES",
     "LNG_EMIT_ONE_SIDED",

@@ -9,7 +9,6 @@ Motivation (deltasignal specs/016): HDR's BCDX2 complex existed as 33 node copie
 -- one per variant reaction -- and no solver rule over copies is right: min over
 them measured -83 held-out, max -117. One node is the fix.
 """
-import pytest
 
 from src.logic_network_generator import _register_phase1
 
@@ -27,18 +26,13 @@ VR = {"v1": (["A", "S1"], ["B", "P1"]), "v2": (["A", "S2"], ["B", "P2"]), "v3": 
 V2R = {"v1": "R1", "v2": "R1", "v3": "R2"}
 
 
-def test_removed_flag_is_an_error_not_a_noop(monkeypatch):
-    # Sharing is unconditional. A stale LNG_SHARE_VARIANT_NODES must fail loudly
-    # rather than let a run silently measure the default under the old name.
-    from src.logic_network_generator import create_pathway_logic_network
-    import inspect
-    src = inspect.getsource(create_pathway_logic_network)
-    assert "LNG_SHARE_VARIANT_NODES was removed" in src
-    assert 'os.environ.get("LNG_SHARE_VARIANT_NODES"' not in src
+# The guard rejecting a stale LNG_SHARE_VARIANT_NODES is tested for real in
+# tests/test_removed_env_flags.py, which calls it and drives the entry point.
+# An earlier version asserted on inspect.getsource() here; that passed whether
+# or not the guard ran, and broke when the guard moved to a shared helper.
 
 
-def test_sharing_is_on_with_no_flag_set(monkeypatch):
-    monkeypatch.delenv("LNG_SHARE_VARIANT_NODES", raising=False)
+def test_sharing_is_on_with_no_flag_set():
     reg = phase1(VR, V2R)
     assert reg[("B", "v1", "output")] == reg[("B", "v2", "output")]
     assert reg[("A", "v1", "input")] == reg[("A", "v2", "input")]
@@ -70,18 +64,40 @@ def test_on_variant_specific_members_are_not_conflated():
 def test_boundary_entities_are_left_to_their_own_caches():
     # "A" is a root input: the boundary cache already shares it per stId; sharing
     # must not create a second uuid for it.
-    reg = phase1(VR, V2R, roots={"A"})
+    #
+    # NOTE on what this can and cannot catch. The `eid not in boundary_eids`
+    # skip in _register_phase1 is a STATS/CLARITY guard, not a correctness one:
+    # _register_entity_uuid consults the boundary cache regardless, so the
+    # variant cache could only ever store the boundary uuid. Deleting the skip
+    # leaves every uuid identical (verified over 300 randomized inputs) and only
+    # changes the `shared`/`distinct` counters. So assert on those too, or this
+    # test passes with the skip removed.
+    reg = {}
+    stats = _register_phase1(VR, reg, {"A"}, {}, set(), {}, vr_to_reaction=V2R)
     assert reg[("A", "v1", "input")] == reg[("A", "v2", "input")]
     assert len({reg[("A", v, "input")] for v in ("v1", "v2")}) == 1
+    # "A" must not be counted as a variant-cache reuse: the boundary cache did it.
+    assert stats["shared"] == 1, stats      # only B in R1 shares; A is boundary-excluded
+    assert stats["distinct"] == 7, stats
 
 
 def test_terminal_output_shared_across_reactions_by_its_own_cache_not_the_variant_cache():
     # "B" is an output in R1 (v1, v2) AND in R2 (v3), and a terminal output. The
-    # boundary cache shares it per stId across ALL three; an implementation that
-    # ignored the boundary exclusion and shared via the variant cache would give
-    # v3 a different uuid from v1/v2. All three must be one uuid.
-    reg = phase1(VR, V2R, terms={"B"})
+    # boundary cache shares it per stId across ALL three, so all three must be
+    # one uuid.
+    #
+    # The previous comment here claimed that "an implementation that ignored the
+    # boundary exclusion and shared via the variant cache would give v3 a
+    # different uuid from v1/v2". That mechanism cannot occur -- the variant
+    # cache would store the same boundary uuid -- so the claim was asserting
+    # something unreachable. The uuid assertion below is still the property we
+    # want; the stats assertion is what actually distinguishes the two
+    # implementations.
+    reg = {}
+    stats = _register_phase1(VR, reg, set(), {}, {"B"}, {}, vr_to_reaction=V2R)
     assert len({reg[("B", v, "output")] for v in ("v1", "v2", "v3")}) == 1
+    assert stats["shared"] == 1, stats      # A in R1; B is boundary-excluded
+    assert stats["distinct"] == 6, stats
 
 
 def test_missing_reaction_id_read_back_as_nan_string_is_not_a_shared_key():

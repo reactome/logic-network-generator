@@ -488,6 +488,9 @@ def _register_entity_uuid(
 # measures the default. That silent-input failure mode has bitten this project
 # four times (deltasignal DS #40-43).
 _REMOVED_ENV = {
+    "LNG_SHARE_VARIANT_NODES":
+        "variant-node sharing is always on. See deltasignal "
+        "specs/020-variant-node-sharing.",
     "LNG_BOUNDARY_LEAF_REUSE":
         "boundary leaves never reuse a node the root complex can reach at the time "
         "the leaf is chosen. See deltasignal specs/018-derived-edge-loops.",
@@ -510,7 +513,7 @@ def _register_phase1(
     terminal_output_uuid_cache: Dict[str, str],
     vr_to_reaction: Optional[Dict[str, str]] = None,
 ) -> Dict[str, int]:
-    """Phase 1 of UUID assignment: one key per (entity, REACTOME reaction, role).
+    """Phase 1 of UUID assignment: one key per (entity, virtual reaction, role).
 
     A Reactome reaction with EntitySet participants becomes several VIRTUAL
     reactions, one per member combination, and every one of them registers its
@@ -520,20 +523,32 @@ def _register_phase1(
     Nothing downstream can tell them apart, and any solver rule over the copies
     is wrong in one direction or the other: min over copies caps the container
     by whichever copy a perturbation missed (missed change); max lets one
-    elevated copy lift it (false change). Both were measured (deltasignal
-    specs/016): -83 and -117 held-out.
+    elevated copy lift it (false change). Both were measured on 81 pathways
+    (deltasignal specs/016 P12): min over copies **-85 held-out** (p 0.0021),
+    max over copies **-322** (p<0.0001). (An earlier revision of this docstring
+    cited "-83 and -117"; -83 was a superseded intermediate and -117 is a
+    DSB-Repair-only ACCURACY delta, not a held-out figure.)
 
-    So this keys on the REACTOME reaction, not the virtual one: the SAME entity
-    in the SAME role across the variants of ONE Reactome reaction gets one UUID.
+    The registry KEY is unchanged -- Phase 2 looks entities up by virtual
+    reaction (`entity_uuid_registry.get((on, p_vr, "output"))`) and would break
+    if it moved. What changed is the UUID *value*: the keys of the SAME entity
+    in the SAME role across the variants of ONE Reactome reaction now share one
+    value, because the variant cache is keyed on the Reactome reaction.
     Variants that differ in WHICH set member they use have different entity ids
     and are not conflated. Copies across DIFFERENT reactions stay positional, as
     designed (bridging those was measured harmful four times). Boundary entities
     already share per stId through their caches and are left to them.
 
     This is unconditional; the LNG_SHARE_VARIANT_NODES flag that gated it was
-    removed once measured (deltasignal specs/020): nodes -34.6%, edges -21.5%,
-    no pathway gains cyclic nodes, and 29 of 24,100 predictions change with
-    held-out net ZERO on both ground-truth axes. Note most of the Phase-1
+    removed once measured (deltasignal specs/020). Edges fall 21.5% and nodes
+    34.6%, but the node figure flatters it: sharing is a no-op in 47 of 92
+    pathways and the median reduction among the 45 that move is 6.7%, so the
+    spec names the edge figure as the conservative read. No pathway gains
+    cyclic nodes, so this does not undo the specs/018 unwelding. 29 of 24,100
+    predictions change; among cases both arms resolve identically the held-out
+    net is zero on both ground-truth axes, though that conditioning drops 4,094
+    cases as non-comparable and unconditioned both axes fall slightly
+    (curator 20414->20400, experimental 611->609). Note most of the Phase-1
     photocopying is already undone downstream -- Phase 2 unions producer-output
     with consumer-input across variant pairs, and the boundary caches share per
     stId -- so only 1,431 of 29,655 (entity, reaction, role) contexts actually
@@ -2186,11 +2201,7 @@ def create_pathway_logic_network(
     # LNG_SHARE_VARIANT_NODES flag; it is now unconditional, and setting the
     # variable is an error rather than a no-op so a stale value in a script is
     # not silently ignored.
-    if "LNG_SHARE_VARIANT_NODES" in os.environ:
-        raise ValueError(
-            "LNG_SHARE_VARIANT_NODES was removed: variant-node sharing is always on. "
-            "See deltasignal specs/020-variant-node-sharing."
-        )
+    _reject_removed_env()
     _register_phase1(
         vr_entities, entity_uuid_registry,
         root_input_eids, root_input_uuid_cache,

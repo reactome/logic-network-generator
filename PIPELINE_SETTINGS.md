@@ -111,4 +111,5 @@ run measure the default while the operator believes otherwise.
 
 | flag | removed | why |
 |---|---|---|
+| `LNG_SHARE_VARIANT_NODES` | 2026-09-21 | Variant-node sharing is always on. Edges -21.5%, nodes -34.6% (no-op in 47 of 92 pathways), no pathway gains cyclic nodes, held-out net zero on both axes (deltasignal `specs/020-variant-node-sharing`). |
 | `LNG_BOUNDARY_LEAF_REUSE` | 2026-09-21 | Boundary leaves never reuse a node the root complex can reach at the time the leaf is chosen. Held-out +173, p<1e-4 (deltasignal `specs/018-derived-edge-loops`). |
