@@ -1666,7 +1666,9 @@ def _emit_sink_bridge_edges(
         if e.get("edge_type") == "dissociation":
             sinks.add(t)
     sinks = {s for s in sinks if out_deg[s] == 0}
-    base = lambda stid: str(stid).split("::variant::")[0]
+    def base(stid: Any) -> str:
+        return str(stid).split("::variant::")[0]
+
     by_stid: Dict[str, List[str]] = defaultdict(list)
     for u, stid in reactome_id_to_uuid.items():
         by_stid[base(stid)].append(str(u))
@@ -1687,10 +1689,10 @@ def _emit_sink_bridge_edges(
     max_fan = int(os.environ.get("LNG_SINK_BRIDGE_MAX_FANOUT", "0") or 0)
     added = 0; skipped = 0; capped = 0; fan: List[int] = []
     for sink in sorted(sinks):
-        stid = reactome_id_to_uuid.get(sink)
-        if stid is None:
+        sink_stid = reactome_id_to_uuid.get(sink)
+        if sink_stid is None:
             continue
-        cands = [c for c in by_stid.get(base(stid), []) if c != sink and out_deg[c] > 0]
+        cands = [c for c in by_stid.get(base(sink_stid), []) if c != sink and out_deg[c] > 0]
         # a consuming copy that can reach the sink is upstream of it: bridging would close a cycle
         ok = [c for c in cands if sink not in _reach(c)]
         skipped += len(cands) - len(ok)
