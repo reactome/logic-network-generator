@@ -32,11 +32,11 @@ generator deliberately re-represents Reactome:
 A validator that fails on correct output is worse than no validator: it trains
 the reader to ignore it, and it masks the real defects underneath.
 
-## Architecture principle (Adam, 2026-09)
+## Architecture principle (stated 2026-09)
 
-> We want to make the LNGs in a way that represents them based on how curators
-> intended to design them. And DeltaSignal would figure out how best to
-> process them.
+The logic networks should represent pathways as the curators intended them to
+be designed; it is DeltaSignal's job to work out how best to process that
+representation.
 
 Validation follows from this: the validator must check **faithfulness to
 curator intent under the generator's chosen representation**, not

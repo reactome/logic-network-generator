@@ -32,7 +32,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from src.neo4j_connector import get_graph  # noqa: E402
 
-MP_BIOPATH_DIR = Path("/home/awright/gitroot/mp-biopath-pathways")
+# Overridable so the path is not tied to one machine; the default follows the
+# same ~/gitroot layout the rest of the tooling assumes.
+MP_BIOPATH_DIR = Path(os.environ.get("MPBIO_ROOT",
+                                     str(Path.home() / "gitroot" / "mp-biopath-pathways")))
 
 
 def load_pathway_lookup() -> dict[str, str]:

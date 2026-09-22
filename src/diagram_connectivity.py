@@ -242,9 +242,9 @@ def augment_reaction_connections(pathway_id: str,
 def diagram_glyph_positions(pathway_id: str) -> Dict[Tuple[str, str, str], List[int]]:
     """``(reaction_stId, entity_stId, role) -> [glyph_id]`` for one pathway.
 
-    Adam: *"two nodes in the reactome pathway diagram that are in the same
-    compartment could be the same thing but in two different places. We need
-    to be able to know which one the uuid was from."*
+    Requirement: two glyphs in the same compartment of a Reactome pathway
+    diagram can draw the same entity in two different places, and it must be
+    possible to tell which of them a uuid came from.
 
     That identity exists and this module already read it — ``x["id"]`` on each
     input/output/catalyst entry is the DiagramObject id, which is what the
