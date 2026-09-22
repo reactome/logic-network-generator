@@ -153,9 +153,9 @@ def test_glyph_id_and_diagram_are_written_together(tmp_path, monkeypatch):
 
     Glyph ids are unique only WITHIN a diagram — the same integer identifies a
     different drawing in another one — so a row carrying one without the other
-    cannot be resolved back to anything. This is the invariant behind Adam's
-    question: knowing a uuid came from glyph 535 is only useful if you also
-    know which diagram 535 belongs to.
+    cannot be resolved back to anything. This is the invariant behind the
+    original question: knowing a uuid came from glyph 535 is only useful if you
+    also know which diagram 535 belongs to.
     """
     monkeypatch.setattr(m, "get_labels", lambda e: ["EntityWithAccessionedSequence"], raising=False)
 

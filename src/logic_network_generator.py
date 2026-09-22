@@ -1422,7 +1422,7 @@ def _emit_precedingevent_handoff_edges(
     complex on the other — so bundling makes them different nodes and the link is
     lost. This is NOT a heuristic: the ``precedingEvent`` edge is in Neo4j.
 
-    Rule (per Adam): for each precedingEvent pair, do nothing if the reactions are
+    The rule: for each precedingEvent pair, do nothing if the reactions are
     ALREADY connected by a shared whole entity (the curator's asserted entity is
     represented). Only when they share no whole entity — yet the curator says
     they're connected — add ONE bridge, between the output/input nodes that share

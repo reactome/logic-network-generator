@@ -1,8 +1,8 @@
 """Completeness checks for node_resolution.csv, in both directions.
 
-Adam's requirement: "we need to be able to map every node in the database to
-the LNG node perfectly. and same with the other way around." "Perfectly" is
-not checkable, so it is expressed here as: no absence goes undeclared.
+Requirement: every node in the database must map to an LNG node, and back
+again. "Perfectly" is not checkable, so it is expressed here as: no absence
+goes undeclared.
 
 Pure functions over already-loaded rows, deliberately free of the filesystem
 and Neo4j, so the negative control in
