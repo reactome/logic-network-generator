@@ -1840,7 +1840,7 @@ def _emit_boundary_decomposition_edges(
     # root ISGF3:KPNA1:KPNB1 is translocated to the nucleus, and every IFN
     # alpha/beta perturbation upstream of ISGF3 was severed there (200 held-out
     # cases). The downstream-reuse rule (specs/018) applies unchanged.
-    hierarchy = os.environ.get("LNG_BOUNDARY_HIERARCHY", "0") == "1"
+    hierarchy = os.environ.get("LNG_BOUNDARY_HIERARCHY", "1") == "1"   # default since deltasignal specs/030 (+228 held-out)
     from src.neo4j_connector import get_complex_components
     nested_registry: Dict[str, str] = {}
     seen_edges: Set[tuple] = set()

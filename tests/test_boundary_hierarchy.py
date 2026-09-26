@@ -45,8 +45,8 @@ def assembly(data):
     return [(e["source_id"], e["target_id"]) for e in data if e["edge_type"] == "assembly"]
 
 
-def test_default_is_flat_leaves_as_before(stub, monkeypatch):
-    monkeypatch.delenv("LNG_BOUNDARY_HIERARCHY", raising=False)
+def test_flat_mode_is_leaves_as_before(stub, monkeypatch):
+    monkeypatch.setenv("LNG_BOUNDARY_HIERARCHY", "0")
     data, r2u = network()
     _emit_boundary_decomposition_edges(data, r2u)
     edges = assembly(data)
@@ -78,3 +78,10 @@ def test_a_produced_copy_downstream_of_the_root_is_not_reused(stub, monkeypatch)
     built_I = [u for u, s in r2u.items() if s == I and u != "u_I"]
     assert len(built_I) == 1                                   # a separate ISGF3 node is built instead
     assert {r2u[s] for s, t in edges if t == built_I[0]} == {S1, S2, IR}
+
+
+def test_hierarchy_is_the_default(stub, monkeypatch):
+    monkeypatch.delenv("LNG_BOUNDARY_HIERARCHY", raising=False)
+    data, r2u = network()
+    _emit_boundary_decomposition_edges(data, r2u)
+    assert ("u_I", next(u for u, s in r2u.items() if s == N)) in assembly(data)
