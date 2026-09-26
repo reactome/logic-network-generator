@@ -401,10 +401,11 @@ class TestInterReactionConnectivity:
         assert registry[("A", "vr1", "input")] != registry[("A", "vr2", "input")]
 
 
-# These stub get_labels as "Complex" for EVERY id, so they describe the flat leaf
-# mode; the hierarchical default (specs/030) would recurse into the fake leaves.
-# The leaf-reuse rules they pin are the ones the hierarchy uses for plain
-# proteins, and tests/test_boundary_hierarchy.py covers the hierarchical path.
+# Pinned to the flat leaf mode: this class stubs get_terminal_components but not
+# get_complex_components, which the hierarchical default (specs/030) calls, so
+# under the default the lookup would go to the database and return nothing for
+# these fake ids. The leaf-reuse rules it pins are covered for the hierarchy in
+# tests/test_boundary_hierarchy.py and tests/test_boundary_leaf_reuse.py.
 @patch.dict(os.environ, {"LNG_BOUNDARY_HIERARCHY": "0"})
 class TestBoundaryLeavesReuseExistingUUIDs:
     """Boundary expansion must NOT mint a fresh UUID for a leaf if that

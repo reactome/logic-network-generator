@@ -1675,6 +1675,12 @@ def _emit_boundary_decomposition_edges(
 ) -> None:
     """Expose the members of every root-input and terminal-output complex.
 
+    Under LNG_BOUNDARY_HIERARCHY=1 (the default since deltasignal specs/030) the
+    ROOT side is decomposed one hasComponent level at a time (see below); the
+    TERMINAL side is still flat. A produced species that the hierarchy joins
+    to a root keeps the dissociation sinks it was given as a terminal: they are
+    redundant readouts, harmless.
+
     Boundary membership is decided **positionally, per network occurrence** —
     not by a global stId set difference. A node is a *root input* if it is a
     source but never a target (no reaction produces it); a *terminal output* if
@@ -1842,17 +1848,28 @@ def _emit_boundary_decomposition_edges(
     # cases). The downstream-reuse rule (specs/018) applies unchanged.
     hierarchy = os.environ.get("LNG_BOUNDARY_HIERARCHY", "1") == "1"   # default since deltasignal specs/030 (+228 held-out)
     from src.neo4j_connector import get_complex_components
-    nested_registry: Dict[str, str] = {}
+    nested_registry: Dict[tuple, str] = {}
     seen_edges: Set[tuple] = set()
     assembly_count = 0
     nested_built = 0
 
+    # In-degree over the current graph, so a ROOT copy (the one the benchmark's
+    # root-pinning protocol perturbs) is preferred over a produced copy of the
+    # same species. Joining the first eligible copy linked PDGF A/B
+    # heterodimer to a produced PDGFB copy while the pinned root copy fed only
+    # the processing reaction, so a PDGFB knockdown never reached the complex.
+    _indeg: Dict[str, int] = defaultdict(int)
+    for e in pathway_logic_network_data:
+        _indeg[str(e.get("target_id"))] += 1
+
     def _existing_upstream(comp_stid: str, root_uuid: str):
         downstream = _downstream_of(root_uuid)
-        for cand in stid_to_existing_uuids.get(comp_stid, []):
-            if cand not in downstream and cand != root_uuid:
-                return cand
-        return None
+        ok = [c for c in stid_to_existing_uuids.get(comp_stid, [])
+              if c not in downstream and c != root_uuid]
+        if not ok:
+            return None
+        roots = [c for c in ok if _indeg[c] == 0]
+        return (roots or ok)[0]
 
     def _emit(src: str, dst: str) -> None:
         nonlocal assembly_count
@@ -1864,6 +1881,13 @@ def _emit_boundary_decomposition_edges(
             "edge_type": "assembly", "stoichiometry": 1,
         })
         assembly_count += 1
+        if hierarchy:
+            # Keep the downstream test current: without this, two joins that
+            # each pass against the pre-loop snapshot can close a cycle
+            # together (review of PR #97: a 162-node SCC in DSB Repair).
+            _succ[src].append(dst)
+            _indeg[dst] += 1
+            _reach_cache.clear()
 
     def _decompose_hier(container_uuid: str, container_stid: str, root_uuid: str, depth: int) -> None:
         nonlocal nested_built
@@ -1872,17 +1896,26 @@ def _emit_boundary_decomposition_edges(
             if existing is not None:
                 _emit(existing, container_uuid)          # a species the network already has
             elif _is_complex(comp) and depth < 6:
-                if comp not in nested_registry:           # build the missing nested complex once
-                    nested_registry[comp] = str(uuid.uuid4())
-                    reactome_id_to_uuid[nested_registry[comp]] = comp
+                # Built once PER ROOT: its inputs are chosen against that root's
+                # downstream set, so a copy built for another root may join a
+                # node that is not valid here, or miss one that is.
+                key = (root_uuid, comp)
+                if key not in nested_registry:
+                    nested_registry[key] = str(uuid.uuid4())
+                    reactome_id_to_uuid[nested_registry[key]] = comp
                     nested_built += 1
-                    _decompose_hier(nested_registry[comp], comp, root_uuid, depth + 1)
-                _emit(nested_registry[comp], container_uuid)
+                    _decompose_hier(nested_registry[key], comp, root_uuid, depth + 1)
+                _emit(nested_registry[key], container_uuid)
             else:
                 for leaf in sorted(get_terminal_components(comp)):
-                    _emit(_leaf_uuid(leaf, root_uuid), container_uuid)
+                    _emit(_existing_upstream(leaf, root_uuid) or _leaf_uuid(leaf, root_uuid), container_uuid)
 
-    for complex_uuid in (root_uuids if boundary_expansion else ()):
+    # Deterministic order under the hierarchy: with the downstream test now
+    # updated as edges are emitted, which of two jointly cycle-closing joins
+    # survives depends on order, and set order of uuid4 strings is not stable.
+    root_order = (sorted(root_uuids, key=lambda u: (reactome_id_to_uuid.get(u) or "", u))
+                  if hierarchy else root_uuids)
+    for complex_uuid in (root_order if boundary_expansion else ()):
         stid = reactome_id_to_uuid.get(complex_uuid) or ""
         if not stid or not _is_complex(stid):
             continue

@@ -85,3 +85,51 @@ def test_hierarchy_is_the_default(stub, monkeypatch):
     data, r2u = network()
     _emit_boundary_decomposition_edges(data, r2u)
     assert ("u_I", next(u for u, s in r2u.items() if s == N)) in assembly(data)
+
+
+# --- review of PR #97 -------------------------------------------------------
+
+def test_a_root_copy_is_preferred_over_a_produced_copy(stub, monkeypatch):
+    # PDGF shape: two copies of KPNB1. u_Bprod is produced by an unrelated
+    # reaction; u_Broot is a root (what the root-pinning benchmark perturbs).
+    monkeypatch.setenv("LNG_BOUNDARY_HIERARCHY", "1")
+    data, r2u = network()
+    data += [{"source_id": "u_Y", "target_id": "r9", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1},
+             {"source_id": "r9", "target_id": "u_Bprod", "pos_neg": "pos", "and_or": "or", "edge_type": "output", "stoichiometry": 1},
+             {"source_id": "u_Broot", "target_id": "r8", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1}]
+    r2u.update({"u_Y": "R-HSA-Y", "u_Bprod": B1, "u_Broot": B1})
+    _emit_boundary_decomposition_edges(data, r2u)
+    into_root = {s for s, t in assembly(data) if t == "u_K"}
+    assert "u_Broot" in into_root and "u_Bprod" not in into_root
+
+
+def test_two_joins_that_close_a_cycle_together_are_not_both_made(monkeypatch):
+    # Root R1 contains produced P2; root R2 contains produced P1. R1 -> rx -> P1 and
+    # R2 -> ry -> P2. Joining P2 -> R1 alone is acyclic, and so is P1 -> R2 alone,
+    # but both together close R1 -> P1 -> R2 -> P2 -> R1. A pre-loop snapshot
+    # allows both; the updated test must refuse the second.
+    R1, R2, P1, P2 = "R-HSA-R1", "R-HSA-R2", "R-HSA-P1", "R-HSA-P2"
+    labels = {R1: ["Complex"], R2: ["Complex"], P1: ["Complex"], P2: ["Complex"]}
+    comps = {R1: {P2: 1}, R2: {P1: 1}, P1: {}, P2: {}}
+    monkeypatch.setattr(nc, "get_labels", lambda s: labels.get(s, []))
+    monkeypatch.setattr(lng, "get_labels", lambda s: labels.get(s, []), raising=False)
+    monkeypatch.setattr(nc, "get_complex_components", lambda s: comps.get(s, {}))
+    monkeypatch.setattr(lng, "get_terminal_components", lambda s: {s}, raising=False)
+    monkeypatch.delenv("LNG_COMPOSITION_EDGES", raising=False)
+    monkeypatch.setenv("LNG_BOUNDARY_HIERARCHY", "1")
+    e = lambda a, b, t: {"source_id": a, "target_id": b, "pos_neg": "pos", "and_or": "and", "edge_type": t, "stoichiometry": 1}
+    data = [e("u_R1", "rx", "input"), e("rx", "u_P1", "output"), e("u_R2", "ry", "input"), e("ry", "u_P2", "output")]
+    r2u = {"u_R1": R1, "u_R2": R2, "u_P1": P1, "u_P2": P2}
+    _emit_boundary_decomposition_edges(data, r2u)
+    joins = {(s, t) for s, t in assembly(data)}
+    assert not {("u_P2", "u_R1"), ("u_P1", "u_R2")} <= joins      # never both
+
+
+def test_a_nested_complex_is_built_per_root(stub, monkeypatch):
+    # Two root occurrences of K each get their own ISGF3:KPNA1 node.
+    monkeypatch.setenv("LNG_BOUNDARY_HIERARCHY", "1")
+    data, r2u = network()
+    data.append({"source_id": "u_K2", "target_id": "r2", "pos_neg": "pos", "and_or": "and", "edge_type": "input", "stoichiometry": 1})
+    r2u["u_K2"] = K
+    _emit_boundary_decomposition_edges(data, r2u)
+    assert len([u for u, s in r2u.items() if s == N]) == 2
