@@ -46,6 +46,7 @@ _FINGERPRINTED_ENV = (
     # which settings produced a catalog has been worth more than the re-fetch,
     # and src_sha256 already invalidates on any source change anyway.
     "LNG_BOUNDARY_EXPANSION",
+    "LNG_BOUNDARY_HIERARCHY",
     "LNG_COMPOSITION_EDGES",
     "LNG_EMIT_ONE_SIDED",
     # Determinism controls: node ids are uuid4 and several selections iterate

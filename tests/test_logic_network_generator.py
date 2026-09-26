@@ -1,6 +1,7 @@
 """Tests for logic_network_generator module."""
 
 from typing import Dict, List, Any
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -400,6 +401,12 @@ class TestInterReactionConnectivity:
         assert registry[("A", "vr1", "input")] != registry[("A", "vr2", "input")]
 
 
+# Pinned to the flat leaf mode: this class stubs get_terminal_components but not
+# get_complex_components, which the hierarchical default (specs/030) calls, so
+# under the default the lookup would go to the database and return nothing for
+# these fake ids. The leaf-reuse rules it pins are covered for the hierarchy in
+# tests/test_boundary_hierarchy.py and tests/test_boundary_leaf_reuse.py.
+@patch.dict(os.environ, {"LNG_BOUNDARY_HIERARCHY": "0"})
 class TestBoundaryLeavesReuseExistingUUIDs:
     """Boundary expansion must NOT mint a fresh UUID for a leaf if that
     leaf's stId already has a UUID elsewhere in the network. Otherwise

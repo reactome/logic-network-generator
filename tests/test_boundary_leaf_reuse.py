@@ -20,6 +20,12 @@ def stub(monkeypatch):
     monkeypatch.setattr(lng, "get_labels", lambda stid: LABELS.get(stid, []), raising=False)
     monkeypatch.setattr(lng, "get_terminal_components", lambda stid: {P, Q} if stid == C else {stid}, raising=False)
     monkeypatch.delenv("LNG_COMPOSITION_EDGES", raising=False)
+    # One hasComponent level, derived from the same stub, so these reuse rules are
+    # exercised under LNG_BOUNDARY_HIERARCHY=1, the default since specs/030.
+    def _components(stid):
+        leaves = lng.get_terminal_components(stid)
+        return {} if leaves == {stid} else {x: 1 for x in leaves}
+    monkeypatch.setattr(nc, "get_complex_components", _components)
 
 
 def network():
