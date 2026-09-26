@@ -11,6 +11,7 @@ from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.logic_network_generator import (
     create_pathway_logic_network,
     export_cofactors,
+    export_drugs,
     export_containment,
     export_entity_reaction_proxy_mapping,
     export_node_reaction_context,
@@ -482,6 +483,14 @@ def generate_pathway_file(
                 result.logic_network,
                 result.uuid_mapping,
                 str(pathway_output_dir / "cofactors.csv"),
+            )
+
+            # Drug-derived entities (deltasignal specs/032), for a consumer that
+            # models a cell without the drug.
+            export_drugs(
+                result.logic_network,
+                result.uuid_mapping,
+                str(pathway_output_dir / "drugs.csv"),
             )
 
             # What each node CONTAINS, so a consumer can select nodes by

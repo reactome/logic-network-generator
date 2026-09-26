@@ -285,3 +285,53 @@ def test_export_cofactors_finds_an_entity_split_across_uuids(tmp_path, monkeypat
 
     df = pd.read_csv(out)
     assert int(df.in_network.sum()) == 1, "split entity missed when only one uuid is used"
+
+
+# --- drugs.csv (deltasignal specs/032) ---------------------------------------
+
+def test_export_drugs_lists_present_drug_entities_only(tmp_path, monkeypatch):
+    seen = {}
+    def fake(stids):
+        seen["asked"] = set(stids)
+        return {"R-HSA-D": {"schema_class": "ChemicalDrug", "name": "trametinib [cytosol]"}}
+    monkeypatch.setattr(neo4j_connector, "get_drug_entities", fake)
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    edges = pd.DataFrame([{"source_id": "u-d", "target_id": "u-x"}])
+    out = tmp_path / "drugs.csv"
+    m.export_drugs(edges, {"R-HSA-D": "u-d", "R-HSA-X::variant::R-HSA-A": "u-x"}, str(out))
+    df = pd.read_csv(out)
+    assert list(df.columns) == ["stable_id", "schema_class", "name", "reactome_release"]
+    assert list(df.stable_id) == ["R-HSA-D"] and set(df.reactome_release) == {97}
+    assert seen["asked"] == {"R-HSA-D", "R-HSA-X"}      # a variant is judged by its entity
+
+
+def test_export_drugs_writes_a_header_only_file_when_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(neo4j_connector, "get_drug_entities", lambda s: {})
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    out = tmp_path / "drugs.csv"
+    m.export_drugs(pd.DataFrame([{"source_id": "u-x", "target_id": "u-y"}]), {"R-HSA-X": "u-x"}, str(out))
+    assert out.exists() and len(pd.read_csv(out)) == 0
+
+
+def test_drug_rule_complex_any_component_set_every_member(monkeypatch):
+    # D is a drug. C1 = complex(P, D) is drug-derived; S_all = set{D, D2} is;
+    # S_mixed = set{D, P} is NOT (its physiological member must not be held);
+    # C2 = complex(P, S_mixed) is NOT either; P is not.
+    struct = {
+        "D": (True, []), "D2": (True, []), "P": (False, []),
+        "C1": (False, [("hasComponent", "P"), ("hasComponent", "D")]),
+        "S_all": (False, [("hasMember", "D"), ("hasCandidate", "D2")]),
+        "S_mixed": (False, [("hasMember", "D"), ("hasMember", "P")]),
+        "C2": (False, [("hasComponent", "P"), ("hasComponent", "S_mixed")]),
+    }
+    monkeypatch.setattr(neo4j_connector, "_drug_structure_cache", dict(struct))
+
+    class G:
+        def run(self, q, **kw):
+            class R:
+                def data(_):
+                    return [{"s": s, "c": "X", "d": s} for s in kw["ids"]]
+            return R()
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
+    got = neo4j_connector.get_drug_entities(struct)
+    assert set(got) == {"D", "D2", "C1", "S_all"}
