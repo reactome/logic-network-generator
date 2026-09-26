@@ -1846,7 +1846,7 @@ def _emit_boundary_decomposition_edges(
     # root ISGF3:KPNA1:KPNB1 is translocated to the nucleus, and every IFN
     # alpha/beta perturbation upstream of ISGF3 was severed there (200 held-out
     # cases). The downstream-reuse rule (specs/018) applies unchanged.
-    hierarchy = os.environ.get("LNG_BOUNDARY_HIERARCHY", "1") == "1"   # default since deltasignal specs/030 (+228 held-out)
+    hierarchy = os.environ.get("LNG_BOUNDARY_HIERARCHY", "1") == "1"   # default since deltasignal specs/030 (held-out +197, re-measured)
     from src.neo4j_connector import get_complex_components
     nested_registry: Dict[tuple, str] = {}
     seen_edges: Set[tuple] = set()
@@ -3178,6 +3178,62 @@ def export_cofactors(pathway_logic_network: pd.DataFrame,
     logger.info(
         f"Exported {len(rows)} cofactor species "
         f"({present_count} present in this network) to {output_file}")
+
+
+def export_drugs(pathway_logic_network: pd.DataFrame,
+                 reactome_id_to_uuid: Dict[str, str],
+                 output_file: str) -> None:
+    """Write drugs.csv: which entities in THIS network are drug-derived.
+
+    Reactome curates drug actions inside signalling pathways (MAP2K inhibitors
+    in the RAF/MAP kinase cascade, PARP inhibitors in DNA repair). The network
+    keeps them, since they are curated. A consumer modelling a cell WITHOUT the
+    drug needs to know which nodes they are, and, as with cofactors.csv, that
+    knowledge travels with the artifacts (deltasignal specs/032).
+
+    Only entities present in the network are listed (a release has thousands).
+    The file is written even when there are none, so a consumer can tell "no
+    drugs here" from "a bundle that predates this file".
+
+    Output CSV columns: stable_id, schema_class, name, reactome_release.
+    """
+    from src.neo4j_connector import get_drug_entities, get_reactome_release
+
+    node_ids: set[str] = set()
+    if not pathway_logic_network.empty:
+        node_ids = {str(n) for n in _uuid_to_stable_id_map(
+            pathway_logic_network, reactome_id_to_uuid).values()}
+
+    # A set_variant node id is "{parent}::variant::{m1}_{m2}...", and that exact
+    # string is what a consumer reads as the node's stable id
+    # (stid_to_uuid_mapping.csv), so it is what must be listed (review of PR
+    # #98). A variant is drug-derived if its parent is, or if a member it
+    # CHOSE is: a variant that picks the drug out of a mixed set is the drug.
+    def parts(node_id: str):
+        if "::variant::" not in node_id:
+            return node_id, []
+        parent, members = node_id.split("::variant::", 1)
+        return parent, [m for m in members.split("_") if m]
+
+    wanted = set()
+    for n in node_ids:
+        parent, members = parts(n)
+        wanted.add(parent)
+        wanted.update(members)
+    drugs = get_drug_entities(wanted)
+    release = get_reactome_release()
+    rows = []
+    for n in sorted(node_ids):
+        parent, members = parts(n)
+        hit = parent if parent in drugs else next((m for m in members if m in drugs), None)
+        if hit is None:
+            continue
+        rows.append({"stable_id": n, "schema_class": drugs[hit]["schema_class"],
+                     "name": drugs[hit]["name"],
+                     "reactome_release": release if release is not None else ""})
+    pd.DataFrame(rows, columns=["stable_id", "schema_class", "name", "reactome_release"]).to_csv(
+        output_file, index=False)
+    logger.info(f"Exported {len(rows)} drug-derived entities to {output_file}")
 
 
 def export_node_resolution(pathway_id: str,

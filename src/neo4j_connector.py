@@ -1,7 +1,7 @@
 import os
 
 from src.credential_redaction import scrub
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 from py2neo import Graph  # type: ignore
@@ -859,6 +859,77 @@ def get_reference_entity_id(entity_id: str) -> Union[str, None]:
         raise
 
 
+
+
+_drug_structure_cache: Dict[str, Tuple[bool, List[Tuple[str, str]]]] = {}
+_drug_meta_cache: Dict[str, Tuple[str, str]] = {}
+
+
+def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
+    """The entities among ``stable_ids`` that are DRUG-DERIVED, with their
+    schema class and display name (deltasignal specs/032).
+
+    Drug-derived is decided structurally, from the release itself:
+      - a Reactome ``Drug`` (ChemicalDrug, ProteinDrug, RNADrug) is;
+      - a complex is if ANY component is (a MAP2K bound to trametinib);
+      - a set is only if EVERY member is, so a ligand set that merely includes
+        a therapeutic antibody does not flag its physiological members.
+
+    A benchmark describes a cell without the drug, and a consumer that holds
+    these at baseline needs the list to travel with the network rather than
+    keep its own copy, which is how the cofactor lists once diverged.
+    """
+    ids = sorted({s for s in stable_ids if s})
+    missing = [s for s in ids if s not in _drug_structure_cache]
+    if missing:
+        query = """
+            UNWIND $ids AS s
+            MATCH (n:PhysicalEntity {stId: s})-[:hasComponent|hasMember|hasCandidate*0..10]->(x)
+            WITH DISTINCT x
+            OPTIONAL MATCH (x)-[r:hasComponent|hasMember|hasCandidate]->(y)
+            RETURN x.stId AS x, x:Drug AS is_drug, x.schemaClass AS c, x.displayName AS d,
+                   collect(CASE WHEN y IS NULL THEN NULL ELSE [type(r), y.stId] END) AS kids
+        """
+        try:
+            rows = get_graph().run(query, ids=missing).data()
+        except Exception:
+            logger.error("Error in get_drug_entities", **_traceback_kwargs())
+            raise
+        for r in rows:
+            if r.get("x"):
+                _drug_structure_cache[r["x"]] = (
+                    bool(r["is_drug"]), [tuple(k) for k in r["kids"] if k and k[1]])
+                _drug_meta_cache[r["x"]] = (r.get("c") or "", r.get("d") or "")
+        for s in missing:
+            _drug_structure_cache.setdefault(s, (False, []))
+
+    memo: Dict[str, bool] = {}
+
+    def derived(s: str, depth: int = 0) -> bool:
+        if s in memo:
+            return memo[s]
+        memo[s] = False                      # a malformed self-containing entity cannot recurse
+        is_drug, kids = _drug_structure_cache.get(s, (False, []))
+        comps = [y for t, y in kids if t == "hasComponent"]
+        members = [y for t, y in kids if t != "hasComponent"]
+        if is_drug:
+            out = True
+        elif depth >= 10:
+            out = False
+        elif comps:
+            out = any(derived(y, depth + 1) for y in comps)
+        elif members:
+            out = all(derived(y, depth + 1) for y in members)
+        else:
+            out = False
+        memo[s] = out
+        return out
+
+    # Class and name come back with the structure query: a second, unlabelled
+    # MATCH (n {stId: s}) scanned every node (review of PR #98: ~30 s a pathway).
+    return {s: {"schema_class": _drug_meta_cache.get(s, ("", ""))[0],
+                "name": _drug_meta_cache.get(s, ("", ""))[1]}
+            for s in ids if derived(s)}
 
 
 def get_reactome_release() -> Optional[int]:

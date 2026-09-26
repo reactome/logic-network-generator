@@ -285,3 +285,94 @@ def test_export_cofactors_finds_an_entity_split_across_uuids(tmp_path, monkeypat
 
     df = pd.read_csv(out)
     assert int(df.in_network.sum()) == 1, "split entity missed when only one uuid is used"
+
+
+# --- drugs.csv (deltasignal specs/032) ---------------------------------------
+
+def test_export_drugs_lists_present_drug_entities_only(tmp_path, monkeypatch):
+    seen = {}
+    def fake(stids):
+        seen["asked"] = set(stids)
+        return {"R-HSA-D": {"schema_class": "ChemicalDrug", "name": "trametinib [cytosol]"}}
+    monkeypatch.setattr(neo4j_connector, "get_drug_entities", fake)
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    edges = pd.DataFrame([{"source_id": "u-d", "target_id": "u-x"}])
+    out = tmp_path / "drugs.csv"
+    m.export_drugs(edges, {"R-HSA-D": "u-d", "R-HSA-X::variant::R-HSA-A": "u-x"}, str(out))
+    df = pd.read_csv(out)
+    assert list(df.columns) == ["stable_id", "schema_class", "name", "reactome_release"]
+    assert list(df.stable_id) == ["R-HSA-D"] and set(df.reactome_release) == {97}
+    # A variant is judged by its parent AND the members it chose.
+    assert seen["asked"] == {"R-HSA-D", "R-HSA-X", "R-HSA-A"}
+
+
+def test_export_drugs_lists_a_variant_by_its_exact_node_id(tmp_path, monkeypatch):
+    # Set S mixes a drug D and a protein P, so S is not drug-derived; the variant
+    # that CHOSE D is, and it must be listed under the exact id a consumer reads
+    # (stid_to_uuid_mapping.csv), not the parent's.
+    monkeypatch.setattr(neo4j_connector, "get_drug_entities",
+                        lambda stids: {"R-HSA-D": {"schema_class": "ChemicalDrug", "name": "d"}})
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    vd, vp = "R-HSA-S::variant::R-HSA-D", "R-HSA-S::variant::R-HSA-P"
+    edges = pd.DataFrame([{"source_id": "u-1", "target_id": "u-2"}])
+    out = tmp_path / "drugs.csv"
+    m.export_drugs(edges, {vd: "u-1", vp: "u-2"}, str(out))
+    assert list(pd.read_csv(out).stable_id) == [vd]
+
+
+def test_export_drugs_writes_a_header_only_file_when_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(neo4j_connector, "get_drug_entities", lambda s: {})
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    out = tmp_path / "drugs.csv"
+    m.export_drugs(pd.DataFrame([{"source_id": "u-x", "target_id": "u-y"}]), {"R-HSA-X": "u-x"}, str(out))
+    assert out.exists() and len(pd.read_csv(out)) == 0
+
+
+def test_drug_rule_complex_any_component_set_every_member(monkeypatch):
+    # D is a drug. C1 = complex(P, D) is drug-derived; S_all = set{D, D2} is;
+    # S_mixed = set{D, P} is NOT (its physiological member must not be held);
+    # C2 = complex(P, S_mixed) is NOT either; P is not.
+    struct = {
+        "D": (True, []), "D2": (True, []), "P": (False, []),
+        "C1": (False, [("hasComponent", "P"), ("hasComponent", "D")]),
+        # candidate-only, so dropping hasCandidate from the rule is caught
+        "S_all": (False, [("hasCandidate", "D"), ("hasCandidate", "D2")]),
+        "S_mixed": (False, [("hasMember", "D"), ("hasMember", "P")]),
+        "C2": (False, [("hasComponent", "P"), ("hasComponent", "S_mixed")]),
+    }
+    monkeypatch.setattr(neo4j_connector, "_drug_structure_cache", dict(struct))
+
+    monkeypatch.setattr(neo4j_connector, "_drug_meta_cache", {})
+
+    def boom():
+        raise AssertionError("fully cached: no query expected")
+    monkeypatch.setattr(neo4j_connector, "get_graph", boom)
+    got = neo4j_connector.get_drug_entities(struct)
+    assert set(got) == {"D", "D2", "C1", "S_all"}
+
+
+def test_get_drug_entities_queries_uncached_ids_and_keeps_misses(monkeypatch):
+    # The Cypher path: the structure query returns one row per reachable entity
+    # (with class and name), and an id it does not return (a reaction stid) is
+    # cached as not-a-drug instead of being re-queried.
+    monkeypatch.setattr(neo4j_connector, "_drug_structure_cache", {})
+    monkeypatch.setattr(neo4j_connector, "_drug_meta_cache", {})
+    calls = []
+
+    class G:
+        def run(self, q, **kw):
+            calls.append(sorted(kw["ids"]))
+
+            class R:
+                def data(_):
+                    return [{"x": "C", "is_drug": False, "c": "Complex", "d": "P:D",
+                             "kids": [["hasComponent", "P"], ["hasComponent", "D"]]},
+                            {"x": "P", "is_drug": False, "c": "EWAS", "d": "P", "kids": [None]},
+                            {"x": "D", "is_drug": True, "c": "ChemicalDrug", "d": "d", "kids": []}]
+            return R()
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
+    got = neo4j_connector.get_drug_entities({"C", "R-RXN"})
+    assert got == {"C": {"schema_class": "Complex", "name": "P:D"}}
+    assert calls == [["C", "R-RXN"]]
+    assert neo4j_connector.get_drug_entities({"C", "R-RXN"}) == got
+    assert len(calls) == 1                         # second call served from the cache
