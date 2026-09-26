@@ -1828,11 +1828,66 @@ def _emit_boundary_decomposition_edges(
     #
     # Default ON pending the measurement that decides it.
     boundary_expansion = os.environ.get("LNG_BOUNDARY_EXPANSION", "1") == "1"
+    # LNG_BOUNDARY_HIERARCHY=1 (deltasignal specs/030): decompose a root complex
+    # ONE hasComponent level at a time instead of straight to its base leaves.
+    # A component that already exists as a node -- e.g. ISGF3 [cytosol], which
+    # the pathway produces -- is joined to the complex and not descended into;
+    # a nested complex that does not exist (ISGF3:KPNA1) is BUILT as a node and
+    # decomposed in turn; everything else falls back to its terminal leaves as
+    # before. Flat decomposition skipped every intermediate complex, so a
+    # species the pathway produces never reached the root complex that
+    # contains it: Reactome has no ISGF3 + KPNA1 + KPNB1 binding reaction, the
+    # root ISGF3:KPNA1:KPNB1 is translocated to the nucleus, and every IFN
+    # alpha/beta perturbation upstream of ISGF3 was severed there (200 held-out
+    # cases). The downstream-reuse rule (specs/018) applies unchanged.
+    hierarchy = os.environ.get("LNG_BOUNDARY_HIERARCHY", "0") == "1"
+    from src.neo4j_connector import get_complex_components
+    nested_registry: Dict[str, str] = {}
     seen_edges: Set[tuple] = set()
     assembly_count = 0
+    nested_built = 0
+
+    def _existing_upstream(comp_stid: str, root_uuid: str):
+        downstream = _downstream_of(root_uuid)
+        for cand in stid_to_existing_uuids.get(comp_stid, []):
+            if cand not in downstream and cand != root_uuid:
+                return cand
+        return None
+
+    def _emit(src: str, dst: str) -> None:
+        nonlocal assembly_count
+        if (src, dst) in seen_edges:
+            return
+        seen_edges.add((src, dst))
+        pathway_logic_network_data.append({
+            "source_id": src, "target_id": dst, "pos_neg": "pos", "and_or": "and",
+            "edge_type": "assembly", "stoichiometry": 1,
+        })
+        assembly_count += 1
+
+    def _decompose_hier(container_uuid: str, container_stid: str, root_uuid: str, depth: int) -> None:
+        nonlocal nested_built
+        for comp in sorted(get_complex_components(container_stid) or {}):
+            existing = _existing_upstream(comp, root_uuid)
+            if existing is not None:
+                _emit(existing, container_uuid)          # a species the network already has
+            elif _is_complex(comp) and depth < 6:
+                if comp not in nested_registry:           # build the missing nested complex once
+                    nested_registry[comp] = str(uuid.uuid4())
+                    reactome_id_to_uuid[nested_registry[comp]] = comp
+                    nested_built += 1
+                    _decompose_hier(nested_registry[comp], comp, root_uuid, depth + 1)
+                _emit(nested_registry[comp], container_uuid)
+            else:
+                for leaf in sorted(get_terminal_components(comp)):
+                    _emit(_leaf_uuid(leaf, root_uuid), container_uuid)
+
     for complex_uuid in (root_uuids if boundary_expansion else ()):
         stid = reactome_id_to_uuid.get(complex_uuid) or ""
         if not stid or not _is_complex(stid):
+            continue
+        if hierarchy:
+            _decompose_hier(complex_uuid, stid, complex_uuid, 0)
             continue
         leaves = get_terminal_components(stid)
         if leaves == {str(stid)}:  # nothing below the complex to expose
@@ -1875,6 +1930,8 @@ def _emit_boundary_decomposition_edges(
             })
             dissociation_count += 1
 
+    if hierarchy:
+        logger.info(f"Boundary hierarchy: {nested_built} nested complexes built")
     if assembly_count or dissociation_count:
         logger.info(
             f"Boundary expansion (positional): {assembly_count} assembly edges "
