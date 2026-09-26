@@ -302,7 +302,22 @@ def test_export_drugs_lists_present_drug_entities_only(tmp_path, monkeypatch):
     df = pd.read_csv(out)
     assert list(df.columns) == ["stable_id", "schema_class", "name", "reactome_release"]
     assert list(df.stable_id) == ["R-HSA-D"] and set(df.reactome_release) == {97}
-    assert seen["asked"] == {"R-HSA-D", "R-HSA-X"}      # a variant is judged by its entity
+    # A variant is judged by its parent AND the members it chose.
+    assert seen["asked"] == {"R-HSA-D", "R-HSA-X", "R-HSA-A"}
+
+
+def test_export_drugs_lists_a_variant_by_its_exact_node_id(tmp_path, monkeypatch):
+    # Set S mixes a drug D and a protein P, so S is not drug-derived; the variant
+    # that CHOSE D is, and it must be listed under the exact id a consumer reads
+    # (stid_to_uuid_mapping.csv), not the parent's.
+    monkeypatch.setattr(neo4j_connector, "get_drug_entities",
+                        lambda stids: {"R-HSA-D": {"schema_class": "ChemicalDrug", "name": "d"}})
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    vd, vp = "R-HSA-S::variant::R-HSA-D", "R-HSA-S::variant::R-HSA-P"
+    edges = pd.DataFrame([{"source_id": "u-1", "target_id": "u-2"}])
+    out = tmp_path / "drugs.csv"
+    m.export_drugs(edges, {vd: "u-1", vp: "u-2"}, str(out))
+    assert list(pd.read_csv(out).stable_id) == [vd]
 
 
 def test_export_drugs_writes_a_header_only_file_when_none(tmp_path, monkeypatch):
@@ -320,18 +335,44 @@ def test_drug_rule_complex_any_component_set_every_member(monkeypatch):
     struct = {
         "D": (True, []), "D2": (True, []), "P": (False, []),
         "C1": (False, [("hasComponent", "P"), ("hasComponent", "D")]),
-        "S_all": (False, [("hasMember", "D"), ("hasCandidate", "D2")]),
+        # candidate-only, so dropping hasCandidate from the rule is caught
+        "S_all": (False, [("hasCandidate", "D"), ("hasCandidate", "D2")]),
         "S_mixed": (False, [("hasMember", "D"), ("hasMember", "P")]),
         "C2": (False, [("hasComponent", "P"), ("hasComponent", "S_mixed")]),
     }
     monkeypatch.setattr(neo4j_connector, "_drug_structure_cache", dict(struct))
 
-    class G:
-        def run(self, q, **kw):
-            class R:
-                def data(_):
-                    return [{"s": s, "c": "X", "d": s} for s in kw["ids"]]
-            return R()
-    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
+    monkeypatch.setattr(neo4j_connector, "_drug_meta_cache", {})
+
+    def boom():
+        raise AssertionError("fully cached: no query expected")
+    monkeypatch.setattr(neo4j_connector, "get_graph", boom)
     got = neo4j_connector.get_drug_entities(struct)
     assert set(got) == {"D", "D2", "C1", "S_all"}
+
+
+def test_get_drug_entities_queries_uncached_ids_and_keeps_misses(monkeypatch):
+    # The Cypher path: the structure query returns one row per reachable entity
+    # (with class and name), and an id it does not return (a reaction stid) is
+    # cached as not-a-drug instead of being re-queried.
+    monkeypatch.setattr(neo4j_connector, "_drug_structure_cache", {})
+    monkeypatch.setattr(neo4j_connector, "_drug_meta_cache", {})
+    calls = []
+
+    class G:
+        def run(self, q, **kw):
+            calls.append(sorted(kw["ids"]))
+
+            class R:
+                def data(_):
+                    return [{"x": "C", "is_drug": False, "c": "Complex", "d": "P:D",
+                             "kids": [["hasComponent", "P"], ["hasComponent", "D"]]},
+                            {"x": "P", "is_drug": False, "c": "EWAS", "d": "P", "kids": [None]},
+                            {"x": "D", "is_drug": True, "c": "ChemicalDrug", "d": "d", "kids": []}]
+            return R()
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
+    got = neo4j_connector.get_drug_entities({"C", "R-RXN"})
+    assert got == {"C": {"schema_class": "Complex", "name": "P:D"}}
+    assert calls == [["C", "R-RXN"]]
+    assert neo4j_connector.get_drug_entities({"C", "R-RXN"}) == got
+    assert len(calls) == 1                         # second call served from the cache

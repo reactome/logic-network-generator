@@ -862,6 +862,7 @@ def get_reference_entity_id(entity_id: str) -> Union[str, None]:
 
 
 _drug_structure_cache: Dict[str, Tuple[bool, List[Tuple[str, str]]]] = {}
+_drug_meta_cache: Dict[str, Tuple[str, str]] = {}
 
 
 def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
@@ -886,7 +887,7 @@ def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
             MATCH (n:PhysicalEntity {stId: s})-[:hasComponent|hasMember|hasCandidate*0..10]->(x)
             WITH DISTINCT x
             OPTIONAL MATCH (x)-[r:hasComponent|hasMember|hasCandidate]->(y)
-            RETURN x.stId AS x, x:Drug AS is_drug,
+            RETURN x.stId AS x, x:Drug AS is_drug, x.schemaClass AS c, x.displayName AS d,
                    collect(CASE WHEN y IS NULL THEN NULL ELSE [type(r), y.stId] END) AS kids
         """
         try:
@@ -898,6 +899,7 @@ def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
             if r.get("x"):
                 _drug_structure_cache[r["x"]] = (
                     bool(r["is_drug"]), [tuple(k) for k in r["kids"] if k and k[1]])
+                _drug_meta_cache[r["x"]] = (r.get("c") or "", r.get("d") or "")
         for s in missing:
             _drug_structure_cache.setdefault(s, (False, []))
 
@@ -923,20 +925,11 @@ def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
         memo[s] = out
         return out
 
-    hits = [s for s in ids if derived(s)]
-    if not hits:
-        return {}
-    try:
-        meta = get_graph().run(
-            "UNWIND $ids AS s MATCH (n {stId: s}) "
-            "RETURN n.stId AS s, n.schemaClass AS c, n.displayName AS d",
-            ids=hits).data()
-    except Exception:
-        logger.error("Error in get_drug_entities", **_traceback_kwargs())
-        raise
-    by = {m["s"]: m for m in meta}
-    return {s: {"schema_class": (by.get(s) or {}).get("c") or "",
-                "name": (by.get(s) or {}).get("d") or ""} for s in hits}
+    # Class and name come back with the structure query: a second, unlabelled
+    # MATCH (n {stId: s}) scanned every node (review of PR #98: ~30 s a pathway).
+    return {s: {"schema_class": _drug_meta_cache.get(s, ("", ""))[0],
+                "name": _drug_meta_cache.get(s, ("", ""))[1]}
+            for s in ids if derived(s)}
 
 
 def get_reactome_release() -> Optional[int]:

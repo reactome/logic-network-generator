@@ -3199,18 +3199,38 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
     """
     from src.neo4j_connector import get_drug_entities, get_reactome_release
 
-    present: set[str] = set()
+    node_ids: set[str] = set()
     if not pathway_logic_network.empty:
-        for node_id in _uuid_to_stable_id_map(
-                pathway_logic_network, reactome_id_to_uuid).values():
-            # set_variant ids are "{parent}::variant::{members}": the drug rule
-            # is decided on the entity itself.
-            present.add(str(node_id).split("::")[0])
-    drugs = get_drug_entities(present)
+        node_ids = {str(n) for n in _uuid_to_stable_id_map(
+            pathway_logic_network, reactome_id_to_uuid).values()}
+
+    # A set_variant node id is "{parent}::variant::{m1}_{m2}...", and that exact
+    # string is what a consumer reads as the node's stable id
+    # (stid_to_uuid_mapping.csv), so it is what must be listed (review of PR
+    # #98). A variant is drug-derived if its parent is, or if a member it
+    # CHOSE is: a variant that picks the drug out of a mixed set is the drug.
+    def parts(node_id: str):
+        if "::variant::" not in node_id:
+            return node_id, []
+        parent, members = node_id.split("::variant::", 1)
+        return parent, [m for m in members.split("_") if m]
+
+    wanted = set()
+    for n in node_ids:
+        parent, members = parts(n)
+        wanted.add(parent)
+        wanted.update(members)
+    drugs = get_drug_entities(wanted)
     release = get_reactome_release()
-    rows = [{"stable_id": s, "schema_class": d["schema_class"], "name": d["name"],
-             "reactome_release": release if release is not None else ""}
-            for s, d in sorted(drugs.items())]
+    rows = []
+    for n in sorted(node_ids):
+        parent, members = parts(n)
+        hit = parent if parent in drugs else next((m for m in members if m in drugs), None)
+        if hit is None:
+            continue
+        rows.append({"stable_id": n, "schema_class": drugs[hit]["schema_class"],
+                     "name": drugs[hit]["name"],
+                     "reactome_release": release if release is not None else ""})
     pd.DataFrame(rows, columns=["stable_id", "schema_class", "name", "reactome_release"]).to_csv(
         output_file, index=False)
     logger.info(f"Exported {len(rows)} drug-derived entities to {output_file}")
