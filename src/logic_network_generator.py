@@ -1853,22 +1853,23 @@ def _emit_boundary_decomposition_edges(
     assembly_count = 0
     nested_built = 0
 
-    # In-degree over the current graph, so a ROOT copy (the one the benchmark's
-    # root-pinning protocol perturbs) is preferred over a produced copy of the
-    # same species. Joining the first eligible copy linked PDGF A/B
-    # heterodimer to a produced PDGFB copy while the pinned root copy fed only
-    # the processing reaction, so a PDGFB knockdown never reached the complex.
-    _indeg: Dict[str, int] = defaultdict(int)
-    for e in pathway_logic_network_data:
-        _indeg[str(e.get("target_id"))] += 1
-
+    # A ROOT copy (the one the benchmark's root-pinning protocol perturbs) is
+    # preferred over a produced copy of the same species. Joining the first
+    # eligible copy linked PDGF A/B heterodimer to a produced PDGFB copy while
+    # the pinned root copy fed only the processing reaction, so a PDGFB
+    # knockdown never reached the complex. "Root" is `targets` above: produced
+    # by no reaction of the pathway, depletion not counting as production. A
+    # live in-degree (review of PR #97) also counted the joins this function
+    # emits, so a root complex stopped being a root once it had been
+    # decomposed and the choice followed stid sort order; and it counted
+    # depletion edges, which root detection deliberately ignores.
     def _existing_upstream(comp_stid: str, root_uuid: str):
         downstream = _downstream_of(root_uuid)
         ok = [c for c in stid_to_existing_uuids.get(comp_stid, [])
               if c not in downstream and c != root_uuid]
         if not ok:
             return None
-        roots = [c for c in ok if _indeg[c] == 0]
+        roots = [c for c in ok if c not in targets]
         return (roots or ok)[0]
 
     def _emit(src: str, dst: str) -> None:
@@ -1886,7 +1887,6 @@ def _emit_boundary_decomposition_edges(
             # each pass against the pre-loop snapshot can close a cycle
             # together (review of PR #97: a 162-node SCC in DSB Repair).
             _succ[src].append(dst)
-            _indeg[dst] += 1
             _reach_cache.clear()
 
     def _decompose_hier(container_uuid: str, container_stid: str, root_uuid: str, depth: int) -> None:
@@ -1913,7 +1913,12 @@ def _emit_boundary_decomposition_edges(
     # Deterministic order under the hierarchy: with the downstream test now
     # updated as edges are emitted, which of two jointly cycle-closing joins
     # survives depends on order, and set order of uuid4 strings is not stable.
-    root_order = (sorted(root_uuids, key=lambda u: (reactome_id_to_uuid.get(u) or "", u))
+    # Copies of one stid are ordered by insertion, NOT by uuid string: a uuid4
+    # is new every run, so a string tiebreak picked a different copy run to
+    # run (review of PR #97; _emit_diagram_set_member_edges has the same rule).
+    _ordinal = {u: i for i, u in enumerate(reactome_id_to_uuid)}
+    root_order = (sorted(root_uuids, key=lambda u: (reactome_id_to_uuid.get(u) or "",
+                                                    _ordinal.get(u, len(_ordinal))))
                   if hierarchy else root_uuids)
     for complex_uuid in (root_order if boundary_expansion else ()):
         stid = reactome_id_to_uuid.get(complex_uuid) or ""

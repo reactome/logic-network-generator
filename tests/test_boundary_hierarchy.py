@@ -133,3 +133,53 @@ def test_a_nested_complex_is_built_per_root(stub, monkeypatch):
     r2u["u_K2"] = K
     _emit_boundary_decomposition_edges(data, r2u)
     assert len([u for u, s in r2u.items() if s == N]) == 2
+
+
+# --- second review of PR #97 ------------------------------------------------
+
+def _fixture(monkeypatch, labels, comps):
+    monkeypatch.setattr(nc, "get_labels", lambda s: labels.get(s, []))
+    monkeypatch.setattr(lng, "get_labels", lambda s: labels.get(s, []), raising=False)
+    monkeypatch.setattr(nc, "get_complex_components", lambda s: comps.get(s, {}))
+    monkeypatch.setattr(lng, "get_terminal_components",
+                        lambda s: set(comps[s]) if comps.get(s) else {s}, raising=False)
+    monkeypatch.delenv("LNG_COMPOSITION_EDGES", raising=False)
+    monkeypatch.setenv("LNG_BOUNDARY_HIERARCHY", "1")
+
+
+def _e(a, b, t):
+    return {"source_id": a, "target_id": b, "pos_neg": "pos", "and_or": "and", "edge_type": t, "stoichiometry": 1}
+
+
+@pytest.mark.parametrize("k1, k2", [("u_z", "u_a"), ("u_a", "u_z")])
+def test_copies_of_one_root_are_ordered_by_insertion_not_uuid_string(monkeypatch, k1, k2):
+    # Two root copies of K = {A, B}: K1 -> r -> a_prod, K2 -> s -> b_prod. Whichever
+    # copy is processed first takes the real join (the other is then downstream of
+    # it), so the order must not follow the uuid STRING, which is new every run.
+    K_, A_, B_ = "R-HSA-K", "R-HSA-A", "R-HSA-B"
+    _fixture(monkeypatch, {K_: ["Complex"]}, {K_: {A_: 1, B_: 1}})
+    data = [_e(k1, "r", "input"), _e("r", "a_prod", "output"),
+            _e(k2, "s", "input"), _e("s", "b_prod", "output")]
+    r2u = {k1: K_, k2: K_, "a_prod": A_, "b_prod": B_}   # k1 inserted first
+    _emit_boundary_decomposition_edges(data, r2u)
+    joins = set(assembly(data))
+    assert ("b_prod", k1) in joins and ("a_prod", k2) not in joins
+
+
+@pytest.mark.parametrize("depleted", [False, True])
+def test_a_root_copy_stays_a_root_after_it_is_decomposed(monkeypatch, depleted):
+    # S has a root copy (itself a root complex, decomposed FIRST because its stid
+    # sorts first, which gives it incoming joins) and a produced copy. Root R
+    # contains S and must still prefer the root copy. A depletion edge into the
+    # root copy does not make it produced either.
+    S_, R_, L_ = "R-HSA-AAA", "R-HSA-ZZZ", "R-HSA-L"
+    _fixture(monkeypatch, {S_: ["Complex"], R_: ["Complex"]}, {S_: {L_: 1}, R_: {S_: 1}})
+    data = [_e("s_root", "r1", "input"), _e("u_Y", "r2", "input"), _e("r2", "s_prod", "output"),
+            _e("u_R", "r3", "input")]
+    if depleted:
+        data.append(_e("u_W", "s_root", "depletion"))
+    # s_prod is registered first, so falling back to list order would pick it.
+    r2u = {"s_prod": S_, "s_root": S_, "u_R": R_, "u_Y": "R-HSA-Y", "u_W": "R-HSA-W"}
+    _emit_boundary_decomposition_edges(data, r2u)
+    into_r = {s for s, t in assembly(data) if t == "u_R"}
+    assert into_r == {"s_root"}
