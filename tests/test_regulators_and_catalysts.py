@@ -8,6 +8,7 @@ These tests verify that:
 5. Regulatory relationships are properly created
 """
 
+import os
 import pytest
 import pandas as pd
 from typing import Dict, List, Any
@@ -29,6 +30,7 @@ def _mock_decompose(entity_id, variant_decomposition=False, bundle_complex=False
     return [(entity_id, 1)]
 
 
+@patch.dict(os.environ, {"LNG_SET_POOL": "0"})   # these pin the member fan-out; pooling: tests/test_set_pool.py
 class TestRegulatorsAndCatalysts:
     """Test regulatory and catalytic relationships in logic networks."""
 

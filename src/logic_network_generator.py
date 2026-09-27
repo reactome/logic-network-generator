@@ -2075,7 +2075,9 @@ def append_regulators(
         # deltasignal specs/033: a bare EntitySet regulator becomes ONE pool node
         # (the set itself) fed by its members, instead of every member wired
         # onto every reaction copy as a separate required (or blocking) term.
-        set_pool = os.environ.get("LNG_SET_POOL", "0") == "1"
+        # Default ON since specs/033's arms (held-out +6, tuning +10, exp +3 with
+        # DS_SET_POOL_MODE=product); "0" restores the member fan-out.
+        set_pool = os.environ.get("LNG_SET_POOL", "1") == "1"
         from src.neo4j_connector import get_labels, get_set_members
 
         for _, row in map_df.iterrows():

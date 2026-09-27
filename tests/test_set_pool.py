@@ -61,7 +61,7 @@ def reach(data, src):
 
 
 def test_off_is_the_legacy_member_fan_out(stub, monkeypatch):
-    monkeypatch.delenv("LNG_SET_POOL", raising=False)
+    monkeypatch.setenv("LNG_SET_POOL", "0")
     data, r2u = run(cat=[(S, "rx1"), (S, "rx2")])
     assert len(data) == 6                                    # 3 members x 2 copies
     assert {e["and_or"] for e in data} == {"and"} and {e["edge_type"] for e in data} == {"catalyst"}
@@ -170,3 +170,9 @@ def test_export_nodes_marks_a_pool(tmp_path, monkeypatch):
     rows = {r["uuid"]: r for r in pd.read_csv(out).to_dict("records")}
     assert rows[p]["node_kind"] == "set_pool"
     assert set(str(rows[p]["member_leaves"]).split("|")) == {"R-HSA-M1", "R-HSA-M2"}
+
+
+def test_pooling_is_the_default(stub, monkeypatch):
+    monkeypatch.delenv("LNG_SET_POOL", raising=False)
+    data, r2u = run(cat=[(S, "rx1")])
+    assert sum(e["edge_type"] == "set_member" for e in data) == 3
