@@ -58,6 +58,12 @@ enums:
           an assembly edge.
       regulator_variant:
         description: A set-variant produced by catalyst / negative-regulator decomposition.
+      set_pool:
+        description: >-
+          An EntitySet catalyst or regulator kept as ONE node (LNG_SET_POOL,
+          deltasignal specs/033): its members feed it by set_member edges and it
+          feeds each reaction it serves once. diagram_entity_id is the set;
+          member_leaves are its members.
       reaction:
         description: A virtual-reaction node (edges route input->reaction->output).
       other:

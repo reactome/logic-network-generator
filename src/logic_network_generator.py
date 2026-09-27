@@ -2014,6 +2014,8 @@ def append_regulators(
             if entity_dbId not in stid_to_existing_uuid:
                 stid_to_existing_uuid[entity_dbId] = entity_uuid
 
+    set_pool_uuids: Dict[str, str] = {}   # set stId -> its pool node (LNG_SET_POOL)
+
     regulator_configs = [
         (catalyst_map, "pos", "catalyst"),
         (negative_regulator_map, "neg", "regulator"),
@@ -2050,6 +2052,10 @@ def append_regulators(
         # Emit set-derived positive regulator members as OR alternatives
         # (see the and_or comment below). Opt-in while it is being A/B'd.
         set_members_or = os.environ.get("LNG_SET_MEMBERS_OR", "0") == "1"
+        # deltasignal specs/033: a bare EntitySet regulator becomes ONE pool node
+        # (the set itself) fed by its members, instead of every member wired
+        # onto every reaction copy as a separate required (or blocking) term.
+        set_pool = os.environ.get("LNG_SET_POOL", "0") == "1"
         from src.neo4j_connector import get_labels, get_set_members
 
         for _, row in map_df.iterrows():
@@ -2099,6 +2105,45 @@ def append_regulators(
                     members = get_set_members(entity_id)
                     if len(members) > 1 and len(terminal_members) == len(members):
                         and_or = "or"
+
+            if (set_pool and len(terminal_members) > 1
+                    and entity_id not in modifier_isoform_set_ids()
+                    and any(x in (get_labels(entity_id) or [])
+                            for x in ("EntitySet", "DefinedSet", "CandidateSet"))):
+                # One pool node per set per pathway, keyed apart from any node
+                # the same stId has as a produced/consumed entity, so a pool
+                # never mixes its members with a producing reaction. Members
+                # reach every reaction the set serves exactly as before, so
+                # reachability (and every cycle) is unchanged.
+                pool_uuid = set_pool_uuids.get(entity_id)
+                if pool_uuid is None:
+                    pool_uuid = str(uuid.uuid4())
+                    set_pool_uuids[entity_id] = pool_uuid
+                    reactome_id_to_uuid[pool_uuid] = entity_id
+                    for member_id, member_stoich in terminal_members:
+                        if member_id in stid_to_existing_uuid:
+                            member_uuid = stid_to_existing_uuid[member_id]
+                        else:
+                            member_uuid = str(uuid.uuid4())
+                            stid_to_existing_uuid[member_id] = member_uuid
+                        pathway_logic_network_data.append({
+                            "source_id": member_uuid,
+                            "target_id": pool_uuid,
+                            "pos_neg": "pos",
+                            "and_or": "or",
+                            "edge_type": "set_member",
+                            "stoichiometry": member_stoich,
+                        })
+                        reactome_id_to_uuid[member_uuid] = member_id
+                pathway_logic_network_data.append({
+                    "source_id": pool_uuid,
+                    "target_id": row["reaction_uuid"],
+                    "pos_neg": pos_neg,
+                    "and_or": and_or,
+                    "edge_type": edge_type,
+                    "stoichiometry": 1,
+                })
+                continue
 
             for member_id, member_stoich in terminal_members:
                 if member_id in stid_to_existing_uuid:
@@ -2929,6 +2974,13 @@ def export_nodes(pathway_logic_network: pd.DataFrame,
                 inc = incoming_types.get(u, set())
                 if "dissociation" in inc and u not in has_outgoing:
                     kind, members = "dissociation_sink", [s]
+                elif "set_member" in inc:
+                    # LNG_SET_POOL (specs/033): the set itself, fed by its members.
+                    kind = "set_pool"
+                    try:
+                        members = sorted(get_terminal_components(s))
+                    except Exception:
+                        members = [s]
                 else:
                     try:
                         labels = get_labels(s)
