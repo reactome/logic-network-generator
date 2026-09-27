@@ -120,3 +120,53 @@ def test_a_member_already_in_the_network_is_reused(stub, monkeypatch):
     registry = {("R-HSA-M2", "some-rxn", "input"): "u-m2-existing"}
     append_regulators(pd.DataFrame([row(S, "rx1")]), pd.DataFrame(), pd.DataFrame(), data, r2u, registry)
     assert any(e["source_id"] == "u-m2-existing" and e["edge_type"] == "set_member" for e in data)
+
+
+# --- review of the set-pool change ------------------------------------------
+
+def _e(a, b, et, pn="pos", ao="and"):
+    return {"source_id": a, "target_id": b, "pos_neg": pn, "and_or": ao, "edge_type": et, "stoichiometry": 1}
+
+
+def test_a_pooled_phosphatase_does_not_deplete_its_own_member(monkeypatch):
+    # Pool P = {M1, M2} catalyses rx, a phosphatase (outputs Pi) whose inputs are
+    # M2 (a member: skipped, or member -> P -| member would be a new cycle) and
+    # S (a real substrate: depleted by the pool).
+    monkeypatch.setattr(lng, "_cofactor_stids", lambda: frozenset())
+    data = [_e("u-m1", "pool", "set_member", ao="or"), _e("u-m2", "pool", "set_member", ao="or"),
+            _e("pool", "rx", "catalyst"), _e("u-m2", "rx", "input"), _e("u-s", "rx", "input"),
+            _e("rx", "u-pi", "output")]
+    r2u = {"u-m1": "R-HSA-M1", "u-m2": "R-HSA-M2", "pool": S, "u-s": "R-HSA-SUB", "u-pi": "R-ALL-29372"}
+    lng._emit_substrate_depletion_edges(data, r2u, pd.DataFrame())
+    dep = {(e["source_id"], e["target_id"]) for e in data if e["edge_type"] == "depletion"}
+    assert dep == {("pool", "u-s")}
+
+
+def test_pooling_needs_complex_as_node(stub, monkeypatch):
+    monkeypatch.setenv("LNG_SET_POOL", "1")
+    monkeypatch.setenv("LNG_COMPLEX_AS_NODE", "0")
+    data, _ = run(cat=[(S, "rx1")])
+    assert not any(e["edge_type"] == "set_member" for e in data)
+
+
+def test_set_members_or_does_not_turn_the_pool_into_an_or_bypass(stub, monkeypatch):
+    monkeypatch.setenv("LNG_SET_POOL", "1")
+    monkeypatch.setenv("LNG_SET_MEMBERS_OR", "1")
+    data, r2u = run(cat=[(S, "rx1")])
+    p = next(u for u, s in r2u.items() if s == S)
+    assert [e["and_or"] for e in data if e["source_id"] == p] == ["and"]
+
+
+def test_export_nodes_marks_a_pool(tmp_path, monkeypatch):
+    import src.neo4j_connector as nc
+    monkeypatch.setattr(nc, "get_labels", lambda e: ["DefinedSet"] if e == S else ["EntityWithAccessionedSequence"])
+    monkeypatch.setattr(lng, "get_terminal_components", lambda s: {"R-HSA-M1", "R-HSA-M2"} if s == S else {s})
+    a, b, p = ("aaaaaaaa-0000-0000-0000-00000000000%d" % i for i in (1, 2, 3))
+    edges = pd.DataFrame([{"source_id": a, "target_id": p, "edge_type": "set_member"},
+                          {"source_id": b, "target_id": p, "edge_type": "set_member"}])
+    out = tmp_path / "nodes.csv"
+    lng.export_nodes(edges, pd.DataFrame(columns=["uid", "reactome_id"]),
+                     {a: "R-HSA-M1", b: "R-HSA-M2", p: S}, str(out))
+    rows = {r["uuid"]: r for r in pd.read_csv(out).to_dict("records")}
+    assert rows[p]["node_kind"] == "set_pool"
+    assert set(str(rows[p]["member_leaves"]).split("|")) == {"R-HSA-M1", "R-HSA-M2"}

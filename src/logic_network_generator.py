@@ -1304,6 +1304,22 @@ def _emit_substrate_depletion_edges(
             if sid:
                 stid_to_uuids_in_net.setdefault(sid, []).append(uid)
 
+    # LNG_SET_POOL (specs/033): a pooled set catalyst depletes through its pool
+    # node, but the "a catalyst does not deplete itself" guards below compare
+    # stIds, and the pool's stId is the SET's. Without this a pool would deplete
+    # its own member (an E3-ligase set containing the substrate gene), closing a
+    # member -> pool -| member cycle the unpooled network did not have (review).
+    pool_members: Dict[str, Tuple[Set[str], Set[str]]] = {}
+    for edge in pathway_logic_network_data:
+        if edge.get("edge_type") == "set_member":
+            uu, ss = pool_members.setdefault(edge["target_id"], (set(), set()))
+            uu.add(edge["source_id"])
+            ss.add(reactome_id_to_uuid.get(edge["source_id"], ""))
+
+    def _pool_contains(cat_uuid: str, uid: str, sid: str) -> bool:
+        uu, ss = pool_members.get(cat_uuid, (set(), set()))
+        return uid in uu or (bool(sid) and sid in ss)
+
     # Emit depletion edges. For phosphatase reactions: catalyst → input
     # (free substrate IS the input). For ubiquitin reactions: catalyst →
     # all network UUIDs of the substrate protein stId (free form, not the
@@ -1325,6 +1341,8 @@ def _emit_substrate_depletion_edges(
                 inp_stid = reactome_id_to_uuid.get(inp_uuid, "")
                 if inp_stid == cat_stid and inp_stid:
                     continue  # same biological entity at different positions
+                if _pool_contains(cat_uuid, inp_uuid, inp_stid):
+                    continue  # a pooled set catalyst does not deplete its own member
                 if inp_stid in _cofactor_stids():
                     continue
                 key = (cat_uuid, inp_uuid)
@@ -1357,10 +1375,12 @@ def _emit_substrate_depletion_edges(
             cat_stid = reactome_id_to_uuid.get(cat_uuid, "")
             for subst_stid in subst_stids:
                 if subst_stid == cat_stid: continue
+                if _pool_contains(cat_uuid, "", subst_stid): continue
                 if subst_stid in _cofactor_stids(): continue
                 target_uuids = stid_to_uuids_in_net.get(subst_stid, [])
                 for tgt_uuid in target_uuids:
                     if tgt_uuid == cat_uuid: continue
+                    if _pool_contains(cat_uuid, tgt_uuid, ""): continue
                     key = (cat_uuid, tgt_uuid)
                     if key in seen_edges: continue
                     seen_edges.add(key)
@@ -2106,7 +2126,7 @@ def append_regulators(
                     if len(members) > 1 and len(terminal_members) == len(members):
                         and_or = "or"
 
-            if (set_pool and len(terminal_members) > 1
+            if (set_pool and complex_as_node and len(terminal_members) > 1
                     and entity_id not in modifier_isoform_set_ids()
                     and any(x in (get_labels(entity_id) or [])
                             for x in ("EntitySet", "DefinedSet", "CandidateSet"))):
@@ -2135,11 +2155,15 @@ def append_regulators(
                             "stoichiometry": member_stoich,
                         })
                         reactome_id_to_uuid[member_uuid] = member_id
+                # The pool IS the "any one member" semantics, so its edge keeps
+                # the role's reaction-level flag (pos AND, neg OR) even under
+                # LNG_SET_MEMBERS_OR, which would otherwise make the pool an OR
+                # alternative that bypasses the reaction's AND inputs (review).
                 pathway_logic_network_data.append({
                     "source_id": pool_uuid,
                     "target_id": row["reaction_uuid"],
                     "pos_neg": pos_neg,
-                    "and_or": and_or,
+                    "and_or": "and" if pos_neg == "pos" else "or",
                     "edge_type": edge_type,
                     "stoichiometry": 1,
                 })
