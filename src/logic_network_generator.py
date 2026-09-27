@@ -823,6 +823,11 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
     return {str(entity_id)}  # simple entity (protein / small molecule / …)
 
 
+# vr_uid -> {input set stId -> member node ids}: set inputs whose alternatives
+# were bundled (specs/036, LNG_CAP_POOLS). Filled by _resolve_vr_entities.
+_vr_input_pools: Dict[str, Dict[str, Set[str]]] = {}
+
+
 def _resolve_vr_entities(
     reaction_id_map: pd.DataFrame,
     uid_index: Dict[str, tuple]
@@ -863,6 +868,8 @@ def _resolve_vr_entities(
             stoich_cache[key] = get_reaction_io_stoichiometry(reaction_id, io)
         return stoich_cache[key]
 
+    cap_pools = os.environ.get("LNG_CAP_POOLS", "0") == "1"
+
     def _resolve_io(reaction_id: str, io: str, members: Set[str]) -> tuple:
         # Node identity comes from the reaction's annotated entities; the
         # curated stoichiometry is carried per annotated entity and attached to
@@ -872,13 +879,30 @@ def _resolve_vr_entities(
         by_entity = _annotated_stoich(reaction_id, io)
         node_ids: Set[str] = set()
         node_stoich: Dict[str, int] = {}
+        pools: Dict[str, Set[str]] = {}
         for e in _annotated(reaction_id, io):
             s = by_entity.get(str(e), 1)
-            for n in _map_annotated_entity_to_nodes(str(e), members):
+            mapped = _map_annotated_entity_to_nodes(str(e), members)
+            # deltasignal specs/036: in a normal virtual reaction a set input
+            # resolves to the ONE member this copy chose. It resolves to several
+            # only when the alternatives were bundled -- by the variant cap
+            # (issue #40), which merges every alternative into one variant -- and
+            # then every member became a separate REQUIRED input (RAF's scaffold
+            # binding: 8 alternative scaffolds, all required). Record the set as
+            # a pool of those members instead; Phase 3 wires members -> pool ->
+            # reaction, so the reaction has one input per curated component.
+            if (cap_pools and io == "input" and len(mapped) > 1
+                    and str(e) not in modifier_isoform_set_ids()):
+                from src.neo4j_connector import get_labels
+                if any(x in (get_labels(str(e)) or [])
+                       for x in ("EntitySet", "DefinedSet", "CandidateSet")):
+                    pools[str(e)] = set(mapped)
+            for n in mapped:
                 node_ids.add(n)
                 node_stoich[n] = node_stoich.get(n, 0) + s
-        return list(node_ids), node_stoich
+        return list(node_ids), node_stoich, pools
 
+    _vr_input_pools.clear()   # one pathway per call; the dict is module state
     vr_entities: Dict[str, tuple] = {}
     for _, row in reaction_id_map.iterrows():
         vr_uid = row["uid"]
@@ -886,8 +910,10 @@ def _resolve_vr_entities(
         input_members = set(_resolve_to_terminal_reactome_ids(uid_index, row["input_hash"]))
         output_members = set(_resolve_to_terminal_reactome_ids(uid_index, row["output_hash"]))
 
-        input_ids, input_stoich = _resolve_io(reaction_id, "input", input_members)
-        output_ids, output_stoich = _resolve_io(reaction_id, "output", output_members)
+        input_ids, input_stoich, input_pools = _resolve_io(reaction_id, "input", input_members)
+        output_ids, output_stoich, _ = _resolve_io(reaction_id, "output", output_members)
+        if input_pools:
+            _vr_input_pools[vr_uid] = input_pools
 
         vr_entities[vr_uid] = (
             input_ids, output_ids,
@@ -2456,8 +2482,31 @@ def create_pathway_logic_network(
             continue
         reaction_stid = vr_to_reaction.get(str(vr_uid))
 
+        # specs/036: bundled set alternatives feed ONE pool node per set, which
+        # feeds the reaction once (members -> pool by set_member, OR).
+        pools = _vr_input_pools.get(vr_uid, {})
+        pooled_member: Dict[str, str] = {}
+        for set_stid, mem in sorted(pools.items()):
+            pool_uuid = str(uuid.uuid4())
+            reactome_id_to_uuid[pool_uuid] = set_stid
+            for m in mem:
+                pooled_member.setdefault(m, pool_uuid)
+            pathway_logic_network_data.append({
+                "source_id": pool_uuid, "target_id": vr_uid, "pos_neg": "pos",
+                "and_or": "and", "edge_type": "input",
+                "stoichiometry": input_stoich.get(set_stid, 1),
+                "edge_reaction_id": reaction_stid,
+            })
+
         for eid in input_ids:
             input_uuid = entity_uuid_registry[(eid, vr_uid, "input")]
+            if eid in pooled_member:
+                pathway_logic_network_data.append({
+                    "source_id": input_uuid, "target_id": pooled_member[eid],
+                    "pos_neg": "pos", "and_or": "or", "edge_type": "set_member",
+                    "stoichiometry": 1, "edge_reaction_id": reaction_stid,
+                })
+                continue
             pathway_logic_network_data.append({
                 "source_id": input_uuid,
                 "target_id": vr_uid,
