@@ -95,6 +95,10 @@ def _int_env(name: str, default: str) -> int:
 
 MAX_VARIANTS = _int_env("LNG_MAX_VARIANTS", "512")
 
+# Ids whose set combinations exceeded MAX_VARIANTS and were bundled into one
+# variant (deltasignal specs/036): LNG_CAP_POOLS pools only these.
+CAPPED_IDS: Set[str] = set()
+
 class _DecompositionStore:
     """Append-mostly buffer for decomposition rows with O(1) lookups.
 
@@ -288,6 +292,7 @@ def get_broken_apart_ids(
             merged: Set[str] = set()
             for member in new_broken_apart_members:
                 merged |= member
+            CAPPED_IDS.add(str(reactome_id))
             logger.warning(
                 f"variant cap hit for {reactome_id}: {cartesian_size} "
                 f"combinations > {MAX_VARIANTS}; bundling "
