@@ -5,6 +5,7 @@ intermediates, and a transition is a path state -> intermediates* -> state.
 Shapes: RAS (GEF / intrinsic / GAP bind-hydrolyse-release), a six-form
 kinase/phosphatase ring, an enzyme's own binding loop."""
 import pandas as pd
+import pytest
 
 import src.logic_network_generator as m
 
@@ -597,3 +598,67 @@ def test_a_member_of_a_set_valued_catalyst_acts_through_the_set_pool_node():
     net.loc[net["edge_type"] == "catalyst", "target_id"] = U["v1"]
     base, st = base_and_stats(net, rmap, umap, profiles, steps)
     assert base == U["s"] and st["activity_fallbacks"] == 1
+
+
+# --- amendment 7 (LNG_POOL_ACTIVE_VIA=made_from): the state the catalytic form is made from ------------------
+
+def cdk2_shape():
+    """CCNA:CDK2 <-> CCNA:p-Y15-CDK2 (the pool); CCNA:CDK2 -> CAK -> CCNA:p-T160-CDK2,
+    which catalyses a downstream phosphorylation (v8)."""
+    net, rmap, umap, profiles, steps = two_state()
+    extra = [e("s", "v5", "input"), e("v5", "i2", "output"), e("i2", "v8", "catalyst"), e("i3", "v8", "input")]
+    net = pd.concat([net, pd.DataFrame(extra)], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v5"], U["v8"]], "reactome_id": ["R-HSA-v5", "R-HSA-v8"]})],
+                     ignore_index=True)
+    umap[U["i2"]], umap[U["i3"]] = "R-HSA-T160", "R-HSA-ORC"
+    profiles["R-HSA-T160"] = prof([SUB], [("res", "pT160")], mods=1)
+    profiles["R-HSA-ORC"] = prof([40])
+    return net, rmap, umap, profiles, steps
+
+
+def test_made_from_flips_the_cdk2_shape_and_direct_does_not(monkeypatch):
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    base, st = base_and_stats(*cdk2_shape())
+    assert base == U["sx"] and st["oriented_by_activity"] == 1
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "direct")
+    base, st = base_and_stats(*cdk2_shape())
+    assert base == U["s"] and st["activity_fallbacks"] == 1
+    monkeypatch.delenv("LNG_POOL_ACTIVE_VIA")
+    assert base_and_stats(*cdk2_shape())[0] == U["s"]          # the default is direct
+    # the catalytic form reached through a set-pool node counts too
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    net, rmap, umap, profiles, steps = cdk2_shape()
+    net.loc[(net["source_id"] == U["i2"]) & (net["edge_type"] == "catalyst"), "edge_type"] = "set_member"
+    net.loc[(net["source_id"] == U["i2"]) & (net["edge_type"] == "set_member"), "target_id"] = U["i4"]
+    net = pd.concat([net, pd.DataFrame([e("i4", "v8", "catalyst")])], ignore_index=True)
+    umap[U["i4"]] = "R-HSA-CDK2S"
+    profiles["R-HSA-CDK2S"] = prof([SUB, 41])
+    assert base_and_stats(net, rmap, umap, profiles, steps)[0] == U["sx"]
+
+
+def test_made_from_does_not_flip_the_ras_shape(monkeypatch):
+    # RAS:GTP binds RAF as an INPUT; RAS:GTP:RAF catalyses nothing within two reactions
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    net, rmap, umap, profiles, participants = ras_network()
+    extra = [e("t", "v5", "input"), e("a2", "v5", "input"), e("v5", "i2", "output"),
+             e("i2", "v8", "input"), e("v8", "i3", "output")]
+    net = pd.concat([net, pd.DataFrame(extra)], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v5"], U["v8"]], "reactome_id": ["R-HSA-v5", "R-HSA-v8"]})],
+                     ignore_index=True)
+    umap[U["a2"]], umap[U["i2"]], umap[U["i3"]] = "R-HSA-RAF", "R-HSA-RASRAF", "R-HSA-PRAF"
+    profiles.update({"R-HSA-RAF": prof([50]), "R-HSA-RASRAF": prof([RAS, 50], slots=2, comps=2),
+                     "R-HSA-PRAF": prof([50], [("res", "p")], mods=1)})
+    base, st = base_and_stats(net, rmap, umap, profiles, m.r_steps(participants, profiles), {"R-HSA-vgef"})
+    assert base == U["g"] and st["activity_fallbacks"] == 1
+    # a pool step's own reaction (the GAP binding) never counts as the route
+    assert st["oriented_by_activity"] == 0
+
+
+def test_unknown_pool_active_via_is_a_startup_error(monkeypatch):
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "indirect")
+    with pytest.raises(ValueError, match="LNG_POOL_ACTIVE_VIA"):
+        m._reject_removed_env()
+    with pytest.raises(ValueError):
+        m.find_pools(*two_state()[:3], two_state()[4], two_state()[3])
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    m._reject_removed_env()
