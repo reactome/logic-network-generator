@@ -582,3 +582,18 @@ def test_three_states_take_the_non_active_state_furthest_from_the_active_one():
     base, st = base_and_stats(*line([e("s", "v5", "input"), e("v5", "sx", "output"),
                                      e("sx", "v6", "input"), e("v6", "s", "output")]), donors=set())
     assert base == U["s"] and st["activity_fallbacks"] == 1     # a tie: residues decide
+
+
+def test_a_member_of_a_set_valued_catalyst_acts_through_the_set_pool_node():
+    # LPIN1 <-> p-S106-LPIN1: the unphosphorylated form is a member of the
+    # "lipins" set-pool node, and that node catalyses PA dephosphorylation
+    net, rmap, umap, profiles, steps = two_state()
+    net = pd.concat([net, pd.DataFrame([e("s", "i2", "set_member"), e("i2", "v7", "catalyst")])], ignore_index=True)
+    umap[U["i2"]] = "R-HSA-LIPINS"
+    profiles["R-HSA-LIPINS"] = prof([SUB, 30])
+    base, st = base_and_stats(net, rmap, umap, profiles, steps)
+    assert base == U["sx"] and st["oriented_by_activity"] == 1
+    # a set-pool node that acts on nothing outside the pool gives no activity
+    net.loc[net["edge_type"] == "catalyst", "target_id"] = U["v1"]
+    base, st = base_and_stats(net, rmap, umap, profiles, steps)
+    assert base == U["s"] and st["activity_fallbacks"] == 1

@@ -3461,7 +3461,8 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     ``POOL_PATH_BUDGET`` paths is dropped and counted (``budget_dropped``). The base state is the
     resting, INACTIVE form (amendment 6): a state is active if it has a
     ``catalyst`` or positive ``regulator`` edge into a reaction node that is
-    not one of the pool's own steps; with exactly one active state the base is
+    not one of the pool's own steps, directly or through a set-pool node it
+    feeds by a ``set_member`` edge (a member of a set-valued catalyst); with exactly one active state the base is
     the other state (two states) or the non-active state furthest from it in
     the state graph (more; a tie falls back). Otherwise amendment 1 decides
     (residues, then the donor-consuming direction, then components; undecided
@@ -3502,6 +3503,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     outs: Dict[str, Dict[str, float]] = {}
     cats: Dict[str, Set[str]] = {}
     acts: Dict[str, Set[str]] = {}     # node -> reaction nodes it catalyses or positively regulates
+    set_pools_of: Dict[str, Set[str]] = {}   # member node -> the set-pool nodes it feeds (specs/033)
     has_st = "stoichiometry" in pathway_logic_network.columns
     for _, e in pathway_logic_network.iterrows():
         s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
@@ -3522,6 +3524,8 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             acts.setdefault(s, set()).add(t)
         elif et == "regulator" and t in vr and str(e.get("pos_neg", "pos")) == "pos":
             acts.setdefault(s, set()).add(t)
+        elif et == "set_member":
+            set_pools_of.setdefault(s, set()).add(t)
     copies: Dict[str, List[str]] = {}
     for u, r in vr.items():
         copies.setdefault(r, []).append(u)
@@ -3751,7 +3755,15 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
         # state furthest from it in the state graph (more); otherwise, or on a
         # tie, the residue / donor / component rule decides.
         step_nodes = {c for path in paths for st in path for c in st[4]}
-        active = {u for u in states if acts.get(u, set()) - step_nodes}
+
+        def acts_on(u: str) -> Set[str]:
+            # a member of a set-valued catalyst reaches the reaction through the
+            # set's pool node (specs/033), so the pool node's edges are the member's
+            out = set(acts.get(u, set()))
+            for sp in set_pools_of.get(u, ()):
+                out |= acts.get(sp, set())
+            return out
+        active = {u for u in states if acts_on(u) - step_nodes}
         base = None
         if len(active) == 1:
             a0 = next(iter(active))
