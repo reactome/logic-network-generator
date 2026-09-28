@@ -624,7 +624,7 @@ def test_made_from_flips_the_cdk2_shape_and_direct_does_not(monkeypatch):
     base, st = base_and_stats(*cdk2_shape())
     assert base == U["s"] and st["activity_fallbacks"] == 1
     monkeypatch.delenv("LNG_POOL_ACTIVE_VIA")
-    assert base_and_stats(*cdk2_shape())[0] == U["s"]          # the default is direct
+    assert base_and_stats(*cdk2_shape())[0] == U["sx"]         # the default is made_from
     # the catalytic form reached through a set-pool node counts too
     monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
     net, rmap, umap, profiles, steps = cdk2_shape()

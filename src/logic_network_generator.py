@@ -513,13 +513,14 @@ _POOL_ACTIVE_VIA = ("direct", "made_from")
 def pool_active_via() -> str:
     """LNG_POOL_ACTIVE_VIA (deltasignal specs/039 amendments 6 and 7): how a
     pool's state is found to act downstream, for the base-state orientation.
-    ``direct`` (default): a catalyst or positive regulator edge into a
-    reaction outside the pool's steps, directly or through a set-pool node.
-    ``made_from``: also when an input edge from the state enters a non-step
-    reaction whose output is, or feeds the set-pool node of, such a catalyst
-    or regulator (CCNA:CDK2 is made into the catalytic CCNA:p-T160-CDK2 by
-    CAK). Any other value is an error at startup."""
-    value = os.environ.get("LNG_POOL_ACTIVE_VIA", "direct")
+    ``made_from`` (default since deltasignal adopted amendment 7, 2026-09-28):
+    a catalyst or positive regulator edge into a reaction outside the pool's
+    steps, directly or through a set-pool node; or an input edge from the state
+    into a non-step reaction whose output is, or feeds the set-pool node of,
+    such a catalyst or regulator (CCNA:CDK2 is made into the catalytic
+    CCNA:p-T160-CDK2 by CAK). ``direct``: the first test only (amendment 6).
+    Any other value is an error at startup."""
+    value = os.environ.get("LNG_POOL_ACTIVE_VIA", "made_from")
     if value not in _POOL_ACTIVE_VIA:
         raise ValueError(f"LNG_POOL_ACTIVE_VIA must be one of {_POOL_ACTIVE_VIA}, got {value!r}")
     return value
