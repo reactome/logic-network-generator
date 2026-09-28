@@ -3414,7 +3414,8 @@ POOL_PATH_BUDGET = 20000    # a pool with more paths (node + reaction sequences)
 POOL_STATS_KEYS = ("pools", "states", "intermediates", "paths", "multi_step_pools", "long_paths_dropped",
                    "shared_nodes_dropped", "ties", "carriers", "autocat_source", "autocat_product",
                    "autocat_other", "carrier_loops", "no_path_pools", "off_path_intermediates",
-                   "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins", "copy_rows")
+                   "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins", "copy_rows",
+                   "carrier_conflicts")
 
 
 def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
@@ -3434,10 +3435,14 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     A step exists at node level only as a reaction node whose R-containing
     input node and output node map to the step's forms (the node's entity, its
     variant parent, or a member of the step's set). Per R, the R-graph over
-    form nodes is condensed; a strongly connected set with >= 2 forms and >= 2
-    modification signatures is a pool candidate (one signature is a carrier
-    loop: an enzyme's E -> E:S -> E). In each signature the forms with the
-    fewest non-small slots are states, the rest intermediates. Transitions are
+    form nodes is condensed. In a strongly connected set with >= 2 forms, the
+    CORE is the proteins every form carries; only a form made of exactly the
+    core (small molecules allowed) can be a state, and the set is a pool only
+    if its core-only forms carry >= 2 modification signatures (amendment 3;
+    one signature is a carrier loop: an enzyme's E -> E:S -> E, and a set
+    whose forms differ only by what else is bound is not a pool). In each
+    signature the core-only forms with the fewest non-small slots are states,
+    the rest intermediates. Transitions are
     simple directed paths state -> intermediates* -> another state of at most
     ``POOL_MAX_STEPS`` steps, longer ones dropped and counted. A path's
     identity is its node sequence plus the reaction stId at each step; the
@@ -3455,7 +3460,8 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     recomputed, and the node is counted. Carriers are the enzyme's free-form
     nodes (a joining input of an enzyme-driven step, containing a protein and
     not R, that a step of the pool releases) with the reaction nodes releasing
-    them.
+    them; a carrier that any pool manages (state, intermediate or step
+    node) is excluded and counted (``carrier_conflicts``).
 
     Returns (forms, transitions, carriers):
       forms:       [(pool_id, node_uuid, stable_id, role, is_base)], role state | intermediate
@@ -3567,9 +3573,15 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             for scc in nx.strongly_connected_components(g):
                 if len(scc) < 2:
                     continue
+                # amendment 3: the core is the proteins every form of the set carries;
+                # only a form made of exactly the core (small molecules allowed) can
+                # be a state, and the set is a pool only if such forms carry >= 2
+                # signatures. An enzyme's loop has one core-only form: not a pool.
+                core = frozenset.intersection(*(proteins(u) for u in scc))
                 by_sig: Dict[frozenset, List[str]] = {}
                 for u in scc:
-                    by_sig.setdefault(sig(u, r), []).append(u)
+                    if proteins(u) == core:
+                        by_sig.setdefault(sig(u, r), []).append(u)
                 if len(by_sig) < 2:
                     local["carrier_loops"] += 1
                     continue
@@ -3600,13 +3612,13 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                             continue
                         new = so_far + ((u, v, rs, enz_of[(u, v, rs)], tuple(copies_of[(u, v, rs)])),)
                         if v in states:
-                            paths.append(new)
-                            if len(paths) > POOL_PATH_BUDGET:
+                            if len(new) > POOL_MAX_STEPS:
+                                local["long_paths_dropped"] += 1   # a whole path, not a prefix
+                            else:
+                                paths.append(new)
+                            if len(paths) + local["long_paths_dropped"] > POOL_PATH_BUDGET:
                                 over_budget = True
                                 return
-                            continue
-                        if len(new) >= POOL_MAX_STEPS:
-                            local["long_paths_dropped"] += 1
                             continue
                         walk(v, new, seen | {v})
                 for s0 in sorted(states):
@@ -3649,6 +3661,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
         removed |= shared
         dropped_shared += len(shared)
     stats.update(local)
+    managed: Set[str] = set().union(*(p["nodes"] for p in pools)) if pools else set()
     stats["shared_nodes_dropped"] = dropped_shared
 
     def path_key(p):
@@ -3714,6 +3727,11 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                         for rel in rx_on_paths:
                             if j in outs.get(rel, {}):
                                 found.add((j, rel))
+        # a carrier that a pool manages (a state, an intermediate or a step node of
+        # any pool) is not a carrier: its value is that pool's to write
+        conflicts = {j for j, _ in found if j in managed}
+        stats["carrier_conflicts"] += len(conflicts)
+        found = {(j, rel) for j, rel in found if j not in conflicts}
         carriers.extend((pid, j, rel) for j, rel in sorted(found, key=lambda t: (ent.get(t[0], ""), t[0], t[1])))
         for _, _, kind in autocat:
             stats[kind] += 1
@@ -3795,7 +3813,8 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
         f"{len(steps)} R-steps at stId level; "
         f"{stats['long_paths_dropped']} paths over {POOL_MAX_STEPS} steps dropped, "
         f"{stats['shared_nodes_dropped']} shared nodes dropped, {stats['ties']} oriented by tie-break, "
-        f"{stats['carriers']} carriers, {stats['carrier_loops']} carrier loops, "
+        f"{stats['carriers']} carriers ({stats['carrier_conflicts']} excluded as pool nodes), "
+        f"{stats['carrier_loops']} carrier loops, "
         f"{stats['merged_proteins']} co-travelling proteins merged, {stats['no_path_pools']} candidates with no path, "
         f"{stats['off_path_states']}/{stats['off_path_intermediates']} states/intermediates off every path, "
         f"{stats['ambiguous_copies']} ambiguous reaction copies, {stats['budget_dropped']} over the path budget; "

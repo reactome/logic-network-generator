@@ -11,7 +11,8 @@ import src.logic_network_generator as m
 # _uuid_to_stable_id_map detects the mapping direction by uuid SHAPE
 NAMES = ["g", "t", "tx", "gap", "gef", "vgef", "vhyd", "vbind", "vrel", "a2",
          "s", "se", "sxe", "sx", "sxp", "sp", "e", "p", "v1", "v2", "v3", "v4", "v5", "v6",
-         "x", "y", "xy", "va", "vb", "i1", "i2", "i3", "i4", "i5", "i6", "v7", "v8", "vback"]
+         "x", "y", "xy", "va", "vb", "i1", "i2", "i3", "i4", "i5", "i6", "v7", "v8", "vback",
+         "xsy", "xs", "ys", "vc", "vd", "ve"]
 U = {k: f"00000000-0000-0000-0000-{i:012d}" for i, k in enumerate(NAMES, 1)}
 RAS, GAP_P, GEF_P, SUB, KIN, PHOS = 1, 2, 3, 10, 11, 12   # reference entities
 
@@ -178,18 +179,89 @@ def test_an_enzymes_own_binding_loop_is_not_a_pool():
 # --- shared nodes, path cap, orientation --------------------------------------------------------------------
 
 def test_a_node_claimed_by_two_pools_is_dropped_and_counted():
-    # X + Y -> XY (both get modified) -> X + Y: the complex is a form of X's pool and of Y's
+    # X + Y -> X:Y -> X*:Y* -> X* + Y*; X* -> X and Y* -> Y directly. X's pool and
+    # Y's pool both claim the two complexes and the three reaction nodes.
     edges = [e("x", "va", "input"), e("y", "va", "input"), e("va", "xy", "output"),
-             e("xy", "vb", "input"), e("vb", "x", "output"), e("vb", "y", "output")]
-    net, rmap, umap = network(edges, ["va", "vb"], {"x": "R-HSA-X", "y": "R-HSA-Y", "xy": "R-HSA-XY"})
-    profiles = {"R-HSA-X": prof([1]), "R-HSA-Y": prof([2]),
-                "R-HSA-XY": {"proteins": {1, 2}, "fixed": {1, 2}, "mods": 2, "comps": 2, "slots": 2,
-                             "sig": {1: frozenset([("res", "p1")]), 2: frozenset([("res", "p2")])}}}
-    steps = [("R-HSA-va", 1, "R-HSA-X", "R-HSA-XY", True), ("R-HSA-vb", 1, "R-HSA-XY", "R-HSA-X", False),
-             ("R-HSA-va", 2, "R-HSA-Y", "R-HSA-XY", True), ("R-HSA-vb", 2, "R-HSA-XY", "R-HSA-Y", False)]
+             e("xy", "vb", "input"), e("vb", "xsy", "output"),
+             e("xsy", "vc", "input"), e("vc", "xs", "output"), e("vc", "ys", "output"),
+             e("xs", "vd", "input"), e("vd", "x", "output"), e("ys", "ve", "input"), e("ve", "y", "output")]
+    net, rmap, umap = network(edges, ["va", "vb", "vc", "vd", "ve"],
+                              {"x": "R-HSA-X", "y": "R-HSA-Y", "xy": "R-HSA-XY", "xsy": "R-HSA-XSY",
+                               "xs": "R-HSA-XS", "ys": "R-HSA-YS"})
+    p1, p2 = [("res", "p1")], [("res", "p2")]
+    profiles = {"R-HSA-X": prof([1]), "R-HSA-Y": prof([2]), "R-HSA-XS": prof([1], p1, mods=1), "R-HSA-YS": prof([2], p2, mods=1),
+                "R-HSA-XY": {"proteins": {1, 2}, "fixed": {1, 2}, "mods": 0, "comps": 2, "slots": 2,
+                             "sig": {1: frozenset(), 2: frozenset()}},
+                "R-HSA-XSY": {"proteins": {1, 2}, "fixed": {1, 2}, "mods": 2, "comps": 2, "slots": 2,
+                              "sig": {1: frozenset(p1), 2: frozenset(p2)}}}
+    steps = [("R-HSA-va", 1, "R-HSA-X", "R-HSA-XY", True), ("R-HSA-vb", 1, "R-HSA-XY", "R-HSA-XSY", False),
+             ("R-HSA-vc", 1, "R-HSA-XSY", "R-HSA-XS", False), ("R-HSA-vd", 1, "R-HSA-XS", "R-HSA-X", True),
+             ("R-HSA-va", 2, "R-HSA-Y", "R-HSA-XY", True), ("R-HSA-vb", 2, "R-HSA-XY", "R-HSA-XSY", False),
+             ("R-HSA-vc", 2, "R-HSA-XSY", "R-HSA-YS", False), ("R-HSA-ve", 2, "R-HSA-YS", "R-HSA-Y", True)]
+    # each alone is a pool
+    for keep in (1, 2):
+        st = {}
+        m.find_pools(net, rmap, umap, [t for t in steps if t[1] == keep], profiles, set(), {}, st)
+        assert st["pools"] == 1 and st["intermediates"] == 2
     st = {}
     assert m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st) == ([], [], [])
-    assert st["shared_nodes_dropped"] == 3 and st["pools"] == 0   # XY and both reaction nodes
+    assert st["shared_nodes_dropped"] == 5 and st["pools"] == 0   # X:Y, X*:Y* and the three reaction nodes
+
+
+def test_forms_differing_only_by_a_bound_partner_are_not_a_pool():
+    # Activated FGFR4 <-> FGFR4:PLCG1 <-> FGFR4:p-PLCG1 (R-HSA-5654743): the PLCG1
+    # phosphorylation gives FGFR4 no new signature; the only core-only form is
+    # FGFR4 itself, so this is a carrier loop, not a pool (amendment 3)
+    edges = [e("x", "va", "input"), e("y", "va", "input"), e("va", "xy", "output"),
+             e("xy", "vb", "input"), e("vb", "xsy", "output"),
+             e("xsy", "vc", "input"), e("vc", "x", "output"), e("vc", "ys", "output")]
+    net, rmap, umap = network(edges, ["va", "vb", "vc"],
+                              {"x": "R-HSA-X", "y": "R-HSA-Y", "xy": "R-HSA-XY", "xsy": "R-HSA-XSY", "ys": "R-HSA-YS"})
+    p2 = [("res", "p2")]
+    profiles = {"R-HSA-X": prof([1]), "R-HSA-Y": prof([2]), "R-HSA-YS": prof([2], p2, mods=1),
+                "R-HSA-XY": {"proteins": {1, 2}, "fixed": {1, 2}, "mods": 0, "comps": 2, "slots": 2,
+                             "sig": {1: frozenset(), 2: frozenset()}},
+                "R-HSA-XSY": {"proteins": {1, 2}, "fixed": {1, 2}, "mods": 1, "comps": 2, "slots": 2,
+                              "sig": {1: frozenset(), 2: frozenset(p2)}}}
+    steps = [("R-HSA-va", 1, "R-HSA-X", "R-HSA-XY", True), ("R-HSA-vb", 1, "R-HSA-XY", "R-HSA-XSY", False),
+             ("R-HSA-vc", 1, "R-HSA-XSY", "R-HSA-X", False)]
+    st = {}
+    assert m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st) == ([], [], [])
+    assert st["carrier_loops"] == 1
+    # and the same shape where the RECEPTOR is what gets phosphorylated IS a pool
+    profiles["R-HSA-XSY"]["sig"] = {1: frozenset(p2), 2: frozenset()}
+    profiles["R-HSA-XS"] = prof([1], p2, mods=1)
+    umap[U["ys"]] = "R-HSA-XS"
+    steps = [("R-HSA-va", 1, "R-HSA-X", "R-HSA-XY", True), ("R-HSA-vb", 1, "R-HSA-XY", "R-HSA-XSY", False),
+             ("R-HSA-vc", 1, "R-HSA-XSY", "R-HSA-XS", False)]
+    edges += [e("ys", "vd", "input"), e("vd", "x", "output")]
+    net, rmap, _ = network(edges, ["va", "vb", "vc", "vd"], {})
+    steps.append(("R-HSA-vd", 1, "R-HSA-XS", "R-HSA-X", True))
+    st = {}
+    forms, _, _ = m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["pools"] == 1 and {u: r for _, u, _, r, _ in forms} == {
+        U["x"]: "state", U["ys"]: "state", U["xy"]: "intermediate", U["xsy"]: "intermediate"}
+
+
+def test_a_carrier_that_another_pool_manages_is_excluded_and_counted():
+    # the ring's kinase E is also a form of its own pool (E <-> E* by an outside
+    # kinase and phosphatase): E is not a carrier of the substrate's pool
+    net, rmap, umap, profiles, participants = ring_network()
+    edges = [e("e", "v7", "input"), e("v7", "i1", "output"), e("i1", "v8", "input"), e("v8", "e", "output")]
+    net = pd.concat([net, pd.DataFrame(edges)], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v7"], U["v8"]], "reactome_id": ["R-HSA-v7", "R-HSA-v8"]})],
+                     ignore_index=True)
+    umap[U["i1"]] = "R-HSA-ES"
+    profiles["R-HSA-ES"] = prof([KIN], [("res", "pE")], mods=1)
+    participants += [("R-HSA-v7", "input", "R-HSA-E", 1), ("R-HSA-v7", "output", "R-HSA-ES", 1),
+                     ("R-HSA-v7", "catalyst", "R-HSA-P", 1),
+                     ("R-HSA-v8", "input", "R-HSA-ES", 1), ("R-HSA-v8", "output", "R-HSA-E", 1),
+                     ("R-HSA-v8", "catalyst", "R-HSA-P", 1)]
+    st = {}
+    forms, _, carriers = m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles, set(), {}, st)
+    assert st["pools"] == 2 and st["shared_nodes_dropped"] == 0
+    assert carriers == [(next(p for p, u, *_ in forms if u == U["s"]), U["p"], U["v6"])]
+    assert st["carrier_conflicts"] == 1 and st["carriers"] == 1
 
 
 def test_co_travelling_proteins_of_one_set_are_one_pool():
@@ -234,6 +306,13 @@ def test_paths_over_six_steps_are_dropped_and_counted():
     forms, _, _ = m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
     assert st["paths"] == 1 and st["long_paths_dropped"] == 1
     assert st["off_path_intermediates"] == 6 and [r for _, _, _, r, _ in forms] == ["state", "state"]
+    # a second reaction for one of its steps is a second dropped PATH, not a prefix
+    net = pd.concat([net, pd.DataFrame([e("i3", "v8", "input"), e("v8", "i4", "output")])], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v8"]], "reactome_id": ["R-HSA-v8"]})], ignore_index=True)
+    steps.append(("R-HSA-v8", SUB, "R-HSA-I3", "R-HSA-I4", True))
+    st = {}
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["paths"] == 1 and st["long_paths_dropped"] == 2
 
 
 def test_orientation_by_residues_then_donor_then_components_and_ties_are_counted():
