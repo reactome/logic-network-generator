@@ -957,61 +957,143 @@ def get_donor_reactions(reaction_ids, ubiquitin_stids=()) -> Set[str]:
     return {r["rid"] for r in rows}
 
 
-def get_interconversion_pairs(pathway_id: str, ubiquitin_stids=()) -> List[Tuple[str, str, str, str]]:
-    """Curated interconversion pairs in a pathway (deltasignal specs/039):
-    (forward reaction, reverse reaction, A, B) with F: A -> B and R: B -> A, both
-    events of the pathway, and A, B two FORMS OF ONE PROTEIN:
-
-    - each reaction converts one form into the other: its only non-small-molecule
-      input is the source form and its only non-small-molecule output is the
-      other form (ubiquitin counts as a co-substrate). That excludes binding
-      (E + S -> E:S), release, degradation, and reactions taking two forms;
-    - the two forms share a protein (a reference entity of an EWAS leaf).
-
-    Review of specs/039: without these, 78 of 102 shipped pools were enzyme
-    binding cycles, non-shared-protein pairs or degradation "reverse" steps.
-    Returned as stIds, sorted, each pair once per orientation."""
-    query = """
-        MATCH (p:Pathway {stId: $pid})-[:hasEvent*]->(r1:ReactionLikeEvent)-[:input]->(a:PhysicalEntity),
-              (r1)-[:output]->(b:PhysicalEntity)
-        MATCH (p)-[:hasEvent*]->(r2:ReactionLikeEvent)-[:input]->(b), (r2)-[:output]->(a)
-        WHERE r1 <> r2 AND a <> b AND NOT a:SimpleEntity AND NOT b:SimpleEntity
-          AND size([(r1)-[:input]->(x) WHERE x <> a AND NOT x:SimpleEntity AND NOT x.stId IN $ub | x]) = 0
-          AND size([(r1)-[:output]->(y) WHERE y <> b AND NOT y:SimpleEntity AND NOT y.stId IN $ub | y]) = 0
-          AND size([(r2)-[:input]->(x) WHERE x <> b AND NOT x:SimpleEntity AND NOT x.stId IN $ub | x]) = 0
-          AND size([(r2)-[:output]->(y) WHERE y <> a AND NOT y:SimpleEntity AND NOT y.stId IN $ub | y]) = 0
-        WITH DISTINCT r1, r2, a, b,
-             [(a)-[:hasComponent|hasMember|hasCandidate*0..6]->(:EntityWithAccessionedSequence)-[:referenceEntity]->(re) | re.dbId] AS ra,
-             [(b)-[:hasComponent|hasMember|hasCandidate*0..6]->(:EntityWithAccessionedSequence)-[:referenceEntity]->(re) | re.dbId] AS rb
-        WHERE any(x IN ra WHERE x IN rb)
-        RETURN DISTINCT r1.stId AS f, r2.stId AS r, a.stId AS a, b.stId AS b
+def get_reaction_participants(pathway_id: str) -> List[Tuple[str, str, str, int]]:
+    """(reaction stId, role, entity stId, stoichiometry) for every input, output
+    and catalyst of every reaction-like event of a pathway (deltasignal
+    specs/039 amendment 2). Roles are ``input``, ``output`` and ``catalyst``;
+    a catalyst's stoichiometry is 1. One round trip per role."""
+    io_query = """
+        MATCH (p:Pathway {stId: $pid})-[:hasEvent*]->(rx:ReactionLikeEvent)
+        WITH DISTINCT rx
+        MATCH (rx)-[e:input|output]->(pe:PhysicalEntity)
+        RETURN rx.stId AS rx, type(e) AS role, pe.stId AS pe, coalesce(e.stoichiometry, 1) AS st
+    """
+    cat_query = """
+        MATCH (p:Pathway {stId: $pid})-[:hasEvent*]->(rx:ReactionLikeEvent)
+        WITH DISTINCT rx
+        MATCH (rx)-[:catalystActivity]->(:CatalystActivity)-[:physicalEntity]->(pe:PhysicalEntity)
+        RETURN DISTINCT rx.stId AS rx, 'catalyst' AS role, pe.stId AS pe, 1 AS st
     """
     try:
-        rows = get_graph().run(query, pid=pathway_id, ub=list(ubiquitin_stids)).data()
+        rows = get_graph().run(io_query, pid=pathway_id).data()
+        rows += get_graph().run(cat_query, pid=pathway_id).data()
     except Exception:
-        logger.error("Error in get_interconversion_pairs", **_traceback_kwargs())
+        logger.error("Error in get_reaction_participants", **_traceback_kwargs())
         raise
-    return sorted((r["f"], r["r"], r["a"], r["b"]) for r in rows)
+    return sorted({(r["rx"], r["role"], r["pe"], int(r["st"] or 1)) for r in rows})
 
 
-def get_form_modification_counts(stable_ids) -> Dict[str, Tuple[int, int]]:
-    """stId -> (modified residues summed over its protein leaves, component
-    count), to pick a pool's least-modified (base) form (deltasignal specs/039)."""
+_form_profile_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def get_form_profiles(stable_ids) -> Dict[str, Dict[str, Any]]:
+    """stId -> what a form is, for pool detection (deltasignal specs/039
+    amendment 2). Per entity:
+
+    - ``proteins``: reference entities (dbIds) of its EWAS leaves, through
+      components, members and candidates;
+    - ``fixed``: the subset reached through components only (no set on the
+      way), which every variant of the entity carries;
+    - ``sig``: per reference entity R, its modification signature: the
+      modified residues on R's leaves plus the small molecules (ChEBI id, else
+      name) that are direct components of the complex R's leaf sits in, looking
+      through sets (GTP attaches to RAS in p21 RAS:GTP = [GTP, {H,K,N}RAS], and
+      not to the GAP in p21 RAS:GTP:RAS GAPs, which nests it);
+    - ``mods``: modified residues summed over all leaves (amendment 1's base
+      rule), ``comps``: components at any depth, ``slots``: non-small-molecule
+      positions (a set inside a complex is one position; a bare protein or set
+      is one).
+
+    Cached per process: the 92 catalog pathways share most entities."""
+    ids = sorted({s for s in stable_ids if s})
+    missing = [s for s in ids if s not in _form_profile_cache]
+    leaves_query = """
+        UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})
+        OPTIONAL MATCH p = (e)-[:hasComponent|hasMember|hasCandidate*0..8]->(l:EntityWithAccessionedSequence)-[:referenceEntity]->(re)
+        RETURN s, re.dbId AS r,
+               CASE WHEN p IS NULL THEN [] ELSE
+                 [n IN nodes(p) WHERE n:PhysicalEntity |
+                  [n.stId, CASE WHEN n:Complex THEN 'C' WHEN n:EntitySet THEN 'S' ELSE 'L' END]] END AS chain,
+               CASE WHEN l IS NULL THEN [] ELSE [(l)-[:hasModifiedResidue]->(m) | m.displayName] END AS res
+    """
+    counts_query = """
+        UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})
+        RETURN s,
+          size([(e)-[:hasComponent*1..6]->(c) | c]) AS comps,
+          size([(e)-[:hasComponent*0..6]->(x) WHERE NOT x:Complex AND NOT x:SimpleEntity | x]) AS slots
+    """
+    smalls_query = """
+        UNWIND $ids AS s MATCH (c:Complex {stId: s})-[:hasComponent]->(sm:SimpleEntity)
+        OPTIONAL MATCH (sm)-[:referenceEntity]->(rm)
+        RETURN s, coalesce(rm.identifier, head(sm.name), sm.displayName) AS mol
+    """
+    try:
+        for i in range(0, len(missing), 200):
+            chunk = missing[i:i + 200]
+            prof: Dict[str, Dict[str, Any]] = {
+                s: {"proteins": set(), "fixed": set(), "sig": {}, "mods": 0, "comps": 0, "slots": 0,
+                    "_res": {}, "_cx": {}} for s in chunk}
+            leaf_rows = get_graph().run(leaves_query, ids=chunk).data()
+            for r in get_graph().run(counts_query, ids=chunk).data():
+                prof[r["s"]]["comps"] = int(r["comps"])
+                prof[r["s"]]["slots"] = int(r["slots"])
+            complexes = set()
+            for r in leaf_rows:
+                if r["r"] is None:
+                    continue
+                pr, rid, chain, res = prof[r["s"]], int(r["r"]), r["chain"], list(r["res"])
+                pr["proteins"].add(rid)
+                if all(k != "S" for _, k in chain[:-1]):
+                    pr["fixed"].add(rid)
+                pr["mods"] += len(res)
+                pr["_res"].setdefault(rid, set()).update(res)
+                # the complex R's leaf sits in: the nearest Complex above it with
+                # only set steps between
+                cx = None
+                for st_id, kind in reversed(chain[:-1]):
+                    if kind == "C":
+                        cx = st_id
+                        break
+                    if kind != "S":
+                        break
+                if cx is not None:
+                    pr["_cx"].setdefault(rid, set()).add(cx)
+                    complexes.add(cx)
+            smalls: Dict[str, Set[str]] = {}
+            for j in range(0, len(complexes), 200):
+                for r in get_graph().run(smalls_query, ids=sorted(complexes)[j:j + 200]).data():
+                    smalls.setdefault(r["s"], set()).add(str(r["mol"]))
+            for s, pr in prof.items():
+                for rid in pr["proteins"]:
+                    sig = {("res", x) for x in pr["_res"].get(rid, ())}
+                    for cx in pr["_cx"].get(rid, ()):
+                        sig |= {("mol", x) for x in smalls.get(cx, ())}
+                    pr["sig"][rid] = frozenset(sig)
+                del pr["_res"], pr["_cx"]
+                _form_profile_cache[s] = pr
+    except Exception:
+        logger.error("Error in get_form_profiles", **_traceback_kwargs())
+        raise
+    return {s: _form_profile_cache[s] for s in ids if s in _form_profile_cache}
+
+
+def get_set_descendants(stable_ids) -> Dict[str, Set[str]]:
+    """stId -> the stIds an EntitySet reaches through members and candidates
+    (deltasignal specs/039 amendment 2): a set-valued participant appears in
+    the network as its member nodes, and this says which nodes those are."""
     ids = sorted({s for s in stable_ids if s})
     if not ids:
         return {}
     query = """
-        UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})
-        RETURN s,
-          size([(e)-[:hasComponent|hasMember|hasCandidate*0..6]->(l:EntityWithAccessionedSequence)-[:hasModifiedResidue]->(m) | m]) AS mods,
-          size([(e)-[:hasComponent*1..6]->(c) | c]) AS comps
+        UNWIND $ids AS s MATCH (e:EntitySet {stId: s})
+        RETURN s, [(e)-[:hasMember|hasCandidate*1..6]->(m) | m.stId] AS members
     """
     try:
         rows = get_graph().run(query, ids=ids).data()
     except Exception:
-        logger.error("Error in get_form_modification_counts", **_traceback_kwargs())
+        logger.error("Error in get_set_descendants", **_traceback_kwargs())
         raise
-    return {r["s"]: (int(r["mods"]), int(r["comps"])) for r in rows}
+    return {r["s"]: {str(m) for m in r["members"] if m} for r in rows}
 
 
 def get_reactome_release() -> Optional[int]:

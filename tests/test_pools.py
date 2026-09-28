@@ -1,88 +1,272 @@
-"""Interconversion pools (deltasignal specs/039): each protein's forms joined by
-curated forward/reverse reactions, found at NODE level and oriented so the base
-is the resting (unmodified) form. Shape: RAS. A = RAS:GDP, B = RAS:GTP;
-F = "GEF exchange" consumes GTP (a donor), R = "GAP hydrolysis"."""
+"""Modification-cycle pools (deltasignal specs/039 amendment 2): a protein's
+forms joined by R-steps, found at NODE level; states are the least-bound form
+of each modification signature, the enzyme complexes on the way are
+intermediates, and a transition is a path state -> intermediates* -> state.
+Shapes: RAS (GEF / intrinsic / GAP bind-hydrolyse-release), a six-form
+kinase/phosphatase ring, an enzyme's own binding loop."""
 import pandas as pd
 
 import src.logic_network_generator as m
 
 # _uuid_to_stable_id_map detects the mapping direction by uuid SHAPE
-U = {k: f"00000000-0000-0000-0000-{i:012d}" for i, k in enumerate(["a", "a2", "b", "vf", "vr"], 1)}
-
-A, B, F, R = "R-HSA-GDP", "R-HSA-GTP", "R-HSA-F", "R-HSA-R"
-PAIRS = [(F, R, A, B), (R, F, B, A)]
-
-
-def e(s, t, et):
-    return {"source_id": U[s], "target_id": U[t], "edge_type": et}
+NAMES = ["g", "t", "tx", "gap", "gef", "vgef", "vhyd", "vbind", "vrel", "a2",
+         "s", "se", "sxe", "sx", "sxp", "sp", "e", "p", "v1", "v2", "v3", "v4", "v5", "v6",
+         "x", "y", "xy", "va", "vb", "i1", "i2", "i3", "i4", "i5", "i6", "v7", "v8", "vback"]
+U = {k: f"00000000-0000-0000-0000-{i:012d}" for i, k in enumerate(NAMES, 1)}
+RAS, GAP_P, GEF_P, SUB, KIN, PHOS = 1, 2, 3, 10, 11, 12   # reference entities
 
 
-def net(loop=True):
-    # a -> f -> b -> r -> a (the node-level loop); with loop=False, R's output is a
-    # different copy of A (a2), which the uuids keep apart
-    a_out = "a" if loop else "a2"
-    edges = pd.DataFrame([e("a", "vf", "input"), e("vf", "b", "output"),
-                          e("b", "vr", "input"), e("vr", a_out, "output")])
-    rmap = pd.DataFrame({"uid": [U["vf"], U["vr"]], "reactome_id": [F, R]})
-    umap = {U["a"]: A, U["a2"]: A, U["b"]: B}
-    return edges, rmap, umap
+def e(s, t, et, st=1):
+    return {"source_id": U[s], "target_id": U[t], "edge_type": et, "stoichiometry": st}
 
 
-def test_a_node_level_loop_is_one_pool_with_the_resting_form_as_base():
-    edges, rmap, umap = net()
-    forms, trans = m.find_pools(edges, rmap, umap, PAIRS, {A: (0, 2), B: (0, 2)}, {F})
-    assert sorted((u, base) for _, u, _, base in forms) == sorted([(U["a"], True), (U["b"], False)])
-    assert sorted((f, t, rx) for _, f, t, rx, _, _ in trans) == sorted([(U["a"], U["b"], U["vf"]), (U["b"], U["a"], U["vr"])])
-    assert {p for p, *_ in forms} == {"pool1"}
+def prof(proteins, sig=None, slots=1, mods=0, comps=0, fixed=None):
+    return {"proteins": set(proteins), "fixed": set(fixed if fixed is not None else proteins),
+            "sig": {r: frozenset(sig or ()) for r in proteins}, "mods": mods, "comps": comps, "slots": slots}
 
 
-def test_copies_the_uuids_separated_are_not_pooled():
-    edges, rmap, umap = net(loop=False)
-    forms, trans = m.find_pools(edges, rmap, umap, PAIRS, {}, {F})
-    assert forms == [] and trans == []
+def network(edges, reactions, umap):
+    return (pd.DataFrame(edges),
+            pd.DataFrame({"uid": [U[k] for k in reactions], "reactome_id": [f"R-HSA-{k}" for k in reactions]}),
+            {U[k]: s for k, s in umap.items()})
 
 
-def test_orientation_by_residues_then_donor_then_components():
-    edges, rmap, umap = net()
+# --- RAS: GDP <-> GTP by GEF (enzyme), intrinsic exchange / hydrolysis (self), GAP bind + release ----------
+
+def ras_network(hydrolysis_catalyst="t"):
+    edges = [e("g", "vgef", "input"), e("vgef", "t", "output"), e("gef", "vgef", "catalyst"),
+             e("t", "vhyd", "input"), e("vhyd", "g", "output"), e(hydrolysis_catalyst, "vhyd", "catalyst"),
+             e("t", "vbind", "input"), e("gap", "vbind", "input"), e("vbind", "tx", "output"),
+             e("tx", "vrel", "input"), e("vrel", "g", "output"), e("vrel", "gap", "output")]
+    net, rmap, umap = network(edges, ["vgef", "vhyd", "vbind", "vrel"],
+                              {"g": "R-HSA-G", "t": "R-HSA-T", "tx": "R-HSA-TX", "gap": "R-HSA-GAP", "gef": "R-HSA-GEF"})
+    profiles = {"R-HSA-G": prof([RAS], [("mol", "GDP")], slots=1, comps=2),
+                "R-HSA-T": prof([RAS], [("mol", "GTP")], slots=1, comps=2),
+                "R-HSA-TX": {"proteins": {RAS, GAP_P}, "fixed": {RAS, GAP_P},
+                             "sig": {RAS: frozenset([("mol", "GTP")]), GAP_P: frozenset()}, "mods": 0, "comps": 3, "slots": 2},
+                "R-HSA-GAP": prof([GAP_P]), "R-HSA-GEF": prof([GEF_P])}
+    participants = [("R-HSA-vgef", "input", "R-HSA-G", 1), ("R-HSA-vgef", "output", "R-HSA-T", 1),
+                    ("R-HSA-vgef", "catalyst", "R-HSA-GEF", 1),
+                    ("R-HSA-vhyd", "input", "R-HSA-T", 1), ("R-HSA-vhyd", "output", "R-HSA-G", 1),
+                    ("R-HSA-vhyd", "catalyst", "R-HSA-T", 1),
+                    ("R-HSA-vbind", "input", "R-HSA-T", 1), ("R-HSA-vbind", "input", "R-HSA-GAP", 1),
+                    ("R-HSA-vbind", "output", "R-HSA-TX", 1),
+                    ("R-HSA-vrel", "input", "R-HSA-TX", 1), ("R-HSA-vrel", "output", "R-HSA-G", 1),
+                    ("R-HSA-vrel", "output", "R-HSA-GAP", 1)]
+    return net, rmap, umap, profiles, participants
+
+
+def test_r_steps_flag_self_catalysis_as_non_enzyme():
+    _, _, _, profiles, participants = ras_network()
+    steps = m.r_steps(participants, profiles)
+    by = {(rx, r): (a, b, enz) for rx, r, a, b, enz in steps}
+    assert by[("R-HSA-vgef", RAS)] == ("R-HSA-G", "R-HSA-T", True)        # GEF catalyst: enzyme
+    assert by[("R-HSA-vhyd", RAS)] == ("R-HSA-T", "R-HSA-G", False)       # catalysed by RAS:GTP itself
+    assert by[("R-HSA-vbind", RAS)] == ("R-HSA-T", "R-HSA-TX", True)      # joining input: the GAP
+    assert by[("R-HSA-vrel", RAS)] == ("R-HSA-TX", "R-HSA-G", False)      # release: nothing joins
+    assert by[("R-HSA-vbind", GAP_P)] == ("R-HSA-GAP", "R-HSA-TX", True)  # for the GAP, RAS:GTP joins
+    assert ("R-HSA-vrel", GAP_P) in by
+
+
+def test_ras_pool_has_gdp_base_gtp_state_and_the_gap_complex_as_intermediate():
+    net, rmap, umap, profiles, participants = ras_network()
+    st = {}
+    forms, trans, carriers = m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles,
+                                          {"R-HSA-vgef"}, {}, st)
+    assert [(u, role, base) for _, u, _, role, base in forms] == [
+        (U["g"], "state", True), (U["t"], "state", False), (U["tx"], "intermediate", False)]
+    paths = {}
+    for _, pid, step, a, b, rx, rs, enz in trans:
+        paths.setdefault(pid, []).append((step, a, b, rx, rs, enz))
+    shapes = sorted(tuple((a, b, rs, enz) for _, a, b, _, rs, enz in sorted(p)) for p in paths.values())
+    assert shapes == sorted([
+        ((U["g"], U["t"], "R-HSA-vgef", True),),
+        ((U["t"], U["g"], "R-HSA-vhyd", False),),
+        ((U["t"], U["tx"], "R-HSA-vbind", True), (U["tx"], U["g"], "R-HSA-vrel", False)),
+    ])
+    assert carriers == [("pool1", U["gap"], U["vrel"])]
+    assert st["pools"] == 1 and st["states"] == 2 and st["intermediates"] == 1 and st["paths"] == 3
+    assert st["multi_step_pools"] == 1 and st["carriers"] == 1 and st["ties"] == 0
+    assert st["carrier_loops"] == 1            # the GAP's own GAP -> RAS:GTP:GAP -> GAP loop
+    assert st["autocat_source"] == 1 and st["autocat_product"] == 0 and st["autocat_other"] == 0
+
+
+def test_a_step_whose_node_loop_is_broken_is_not_a_transition():
+    net, rmap, umap, profiles, participants = ras_network()
+    # the release reaction returns a DIFFERENT copy of RAS:GDP
+    net.loc[(net["source_id"] == U["vrel"]) & (net["target_id"] == U["g"]), "target_id"] = U["a2"]
+    umap[U["a2"]] = "R-HSA-G"
+    st = {}
+    forms, trans, _ = m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles, set(), {}, st)
+    assert {u for _, u, _, _, _ in forms} == {U["g"], U["t"]} and st["paths"] == 2 and st["intermediates"] == 0
+
+
+def test_a_form_node_that_is_a_member_of_the_steps_set_maps_to_it():
+    net, rmap, umap, profiles, participants = ras_network()
+    participants = [(rx, role, "R-HSA-GSET" if pe == "R-HSA-G" else pe, s) for rx, role, pe, s in participants]
+    profiles["R-HSA-GSET"] = profiles["R-HSA-G"]
+    steps = m.r_steps(participants, profiles)
+    assert m.find_pools(net, rmap, umap, steps, profiles, set(), {}, {})[0] == []
+    forms, _, _ = m.find_pools(net, rmap, umap, steps, profiles, set(), {"R-HSA-GSET": {"R-HSA-G"}}, {})
+    assert len(forms) == 3
+
+
+# --- six-form ring S -> S:E -> S*:E -> S* -> S*:P -> S:P -> S -----------------------------------------------
+
+def ring_network():
+    edges = [e("s", "v1", "input"), e("e", "v1", "input"), e("v1", "se", "output"),
+             e("se", "v2", "input"), e("v2", "sxe", "output"),
+             e("sxe", "v3", "input"), e("v3", "sx", "output"), e("v3", "e", "output"),
+             e("sx", "v4", "input"), e("p", "v4", "input"), e("v4", "sxp", "output"),
+             e("sxp", "v5", "input"), e("v5", "sp", "output"),
+             e("sp", "v6", "input"), e("v6", "s", "output"), e("v6", "p", "output")]
+    net, rmap, umap = network(edges, ["v1", "v2", "v3", "v4", "v5", "v6"],
+                              {"s": "R-HSA-S", "se": "R-HSA-SE", "sxe": "R-HSA-SXE", "sx": "R-HSA-SX",
+                               "sxp": "R-HSA-SXP", "sp": "R-HSA-SP", "e": "R-HSA-E", "p": "R-HSA-P"})
+    ph = [("res", "phospho-S at 1")]
+    profiles = {"R-HSA-S": prof([SUB]), "R-HSA-SX": prof([SUB], ph, mods=1),
+                "R-HSA-E": prof([KIN]), "R-HSA-P": prof([PHOS]),
+                "R-HSA-SE": {"proteins": {SUB, KIN}, "fixed": {SUB, KIN}, "sig": {SUB: frozenset(), KIN: frozenset()},
+                             "mods": 0, "comps": 2, "slots": 2},
+                "R-HSA-SXE": {"proteins": {SUB, KIN}, "fixed": {SUB, KIN}, "sig": {SUB: frozenset(ph), KIN: frozenset()},
+                              "mods": 1, "comps": 2, "slots": 2},
+                "R-HSA-SXP": {"proteins": {SUB, PHOS}, "fixed": {SUB, PHOS}, "sig": {SUB: frozenset(ph), PHOS: frozenset()},
+                              "mods": 1, "comps": 2, "slots": 2},
+                "R-HSA-SP": {"proteins": {SUB, PHOS}, "fixed": {SUB, PHOS}, "sig": {SUB: frozenset(), PHOS: frozenset()},
+                             "mods": 0, "comps": 2, "slots": 2}}
+    participants = [("R-HSA-v1", "input", "R-HSA-S", 1), ("R-HSA-v1", "input", "R-HSA-E", 1), ("R-HSA-v1", "output", "R-HSA-SE", 1),
+                    ("R-HSA-v2", "input", "R-HSA-SE", 1), ("R-HSA-v2", "output", "R-HSA-SXE", 1),
+                    ("R-HSA-v3", "input", "R-HSA-SXE", 1), ("R-HSA-v3", "output", "R-HSA-SX", 1), ("R-HSA-v3", "output", "R-HSA-E", 1),
+                    ("R-HSA-v4", "input", "R-HSA-SX", 1), ("R-HSA-v4", "input", "R-HSA-P", 1), ("R-HSA-v4", "output", "R-HSA-SXP", 1),
+                    ("R-HSA-v5", "input", "R-HSA-SXP", 1), ("R-HSA-v5", "output", "R-HSA-SP", 1),
+                    ("R-HSA-v6", "input", "R-HSA-SP", 1), ("R-HSA-v6", "output", "R-HSA-S", 1), ("R-HSA-v6", "output", "R-HSA-P", 1)]
+    return net, rmap, umap, profiles, participants
+
+
+def test_six_form_ring_gives_two_states_four_intermediates_two_paths_two_carriers():
+    net, rmap, umap, profiles, participants = ring_network()
+    st = {}
+    forms, trans, carriers = m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles, set(), {}, st)
+    roles = {u: (role, base) for _, u, _, role, base in forms}
+    assert roles == {U["s"]: ("state", True), U["sx"]: ("state", False),
+                     U["se"]: ("intermediate", False), U["sxe"]: ("intermediate", False),
+                     U["sxp"]: ("intermediate", False), U["sp"]: ("intermediate", False)}
+    paths = {}
+    for _, pid, step, a, b, rx, rs, enz in trans:
+        paths.setdefault(pid, []).append((step, a, b, rx, enz))
+    assert len(paths) == 2 and st["paths"] == 2 and st["multi_step_pools"] == 1
+    for p in paths.values():
+        assert [s for s, *_ in sorted(p)] == [1, 2, 3]
+        assert any(enz for *_, enz in p)                         # the binding step joins the enzyme
+        assert [enz for *_, enz in sorted(p)] == [True, False, False]
+    assert {(p[0][1], p[-1][2]) for p in (sorted(v) for v in paths.values())} == {(U["s"], U["sx"]), (U["sx"], U["s"])}
+    assert sorted(carriers) == sorted([("pool1", U["e"], U["v3"]), ("pool1", U["p"], U["v6"])])
+    assert st["carriers"] == 2 and st["carrier_loops"] == 2 and st["ties"] == 0
+
+
+def test_an_enzymes_own_binding_loop_is_not_a_pool():
+    # E -> E:S -> E: one signature for E, so a carrier loop, not a pool
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "v3", "input"), e("v3", "e", "output")]
+    net, rmap, umap = network(edges, ["v1", "v3"], {"e": "R-HSA-E", "se": "R-HSA-SE"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False)]
+    st = {}
+    assert m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st) == ([], [], [])
+    assert st["carrier_loops"] == 1 and st["pools"] == 0
+
+
+# --- shared nodes, path cap, orientation --------------------------------------------------------------------
+
+def test_a_node_claimed_by_two_pools_is_dropped_and_counted():
+    # X + Y -> XY (both get modified) -> X + Y: the complex is a form of X's pool and of Y's
+    edges = [e("x", "va", "input"), e("y", "va", "input"), e("va", "xy", "output"),
+             e("xy", "vb", "input"), e("vb", "x", "output"), e("vb", "y", "output")]
+    net, rmap, umap = network(edges, ["va", "vb"], {"x": "R-HSA-X", "y": "R-HSA-Y", "xy": "R-HSA-XY"})
+    profiles = {"R-HSA-X": prof([1]), "R-HSA-Y": prof([2]),
+                "R-HSA-XY": {"proteins": {1, 2}, "fixed": {1, 2}, "mods": 2, "comps": 2, "slots": 2,
+                             "sig": {1: frozenset([("res", "p1")]), 2: frozenset([("res", "p2")])}}}
+    steps = [("R-HSA-va", 1, "R-HSA-X", "R-HSA-XY", True), ("R-HSA-vb", 1, "R-HSA-XY", "R-HSA-X", False),
+             ("R-HSA-va", 2, "R-HSA-Y", "R-HSA-XY", True), ("R-HSA-vb", 2, "R-HSA-XY", "R-HSA-Y", False)]
+    st = {}
+    assert m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st) == ([], [], [])
+    assert st["shared_nodes_dropped"] == 3 and st["pools"] == 0   # XY and both reaction nodes
+
+
+def test_co_travelling_proteins_of_one_set_are_one_pool():
+    # p21 RAS:GDP <-> RAS:GTP: the H/K/NRAS graphs are identical, so one pool, counted as merged
+    net, rmap, umap, profiles, participants = ras_network()
+    for s in ("R-HSA-G", "R-HSA-T"):
+        profiles[s] = prof([RAS, 4], profiles[s]["sig"][RAS], comps=2)
+    profiles["R-HSA-TX"]["proteins"].add(4)
+    profiles["R-HSA-TX"]["sig"][4] = profiles["R-HSA-TX"]["sig"][RAS]
+    st = {}
+    forms, _, _ = m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles, set(), {}, st)
+    assert st["pools"] == 1 and st["merged_proteins"] == 1 and st["shared_nodes_dropped"] == 0 and len(forms) == 3
+
+
+def chain_network(n_intermediates):
+    inter = ["i1", "i2", "i3", "i4", "i5", "i6"][:n_intermediates]
+    seq = ["s"] + inter + ["sx"]
+    rxs = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"][:len(seq) - 1]
+    edges, umap, steps = [], {"s": "R-HSA-S", "sx": "R-HSA-SX"}, []
+    profiles = {"R-HSA-S": prof([SUB]), "R-HSA-SX": prof([SUB], [("res", "p")], mods=1)}
+    for k, rx in enumerate(rxs):
+        a, b = seq[k], seq[k + 1]
+        edges += [e(a, rx, "input"), e(rx, b, "output")]
+        for x in (a, b):
+            if x in inter:
+                umap[x] = f"R-HSA-{x.upper()}"
+                profiles[f"R-HSA-{x.upper()}"] = prof([SUB], slots=2, comps=2)
+        steps.append((f"R-HSA-{rx}", SUB, umap[a], umap[b], True))
+    edges += [e("sx", "vback", "input"), e("vback", "s", "output")]
+    steps.append(("R-HSA-vback", SUB, "R-HSA-SX", "R-HSA-S", True))
+    net, rmap, umap = network(edges, rxs + ["vback"], umap)
+    return net, rmap, umap, steps, profiles
+
+
+def test_paths_over_six_steps_are_dropped_and_counted():
+    net, rmap, umap, steps, profiles = chain_network(5)     # 6 steps: kept
+    st = {}
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["paths"] == 2 and st["long_paths_dropped"] == 0 and st["intermediates"] == 5
+    net, rmap, umap, steps, profiles = chain_network(6)     # 7 steps: dropped
+    st = {}
+    forms, _, _ = m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["paths"] == 1 and st["long_paths_dropped"] == 1
+    assert st["off_path_intermediates"] == 6 and [r for _, _, _, r, _ in forms] == ["state", "state"]
+
+
+def test_orientation_by_residues_then_donor_then_components_and_ties_are_counted():
+    net, rmap, umap, profiles, participants = ras_network()
+    steps = m.r_steps(participants, profiles)
+
+    def base_of(profiles, donors, st=None):
+        forms, _, _ = m.find_pools(net, rmap, umap, steps, profiles, donors, {}, st if st is not None else {})
+        return next(u for _, u, _, role, base in forms if base)
+    # no residue difference: the donor is consumed on the way to GTP, so GDP is base
+    assert base_of(profiles, {"R-HSA-vgef"}) == U["g"]
+    assert base_of(profiles, {"R-HSA-vhyd"}) == U["t"]
     # residues decide first, whatever the donor says
-    forms, _ = m.find_pools(edges, rmap, umap, PAIRS, {A: (2, 1), B: (0, 1)}, {F})
-    assert dict((u, b) for _, u, _, b in forms)[U["b"]] is True
-    # no residue difference: the donor sits on the REVERSE reaction, so GDP is modified
-    forms, _ = m.find_pools(edges, rmap, umap, PAIRS, {A: (0, 2), B: (0, 2)}, {R})
-    assert dict((u, b) for _, u, _, b in forms) == {U["a"]: False, U["b"]: True}
+    profiles["R-HSA-G"]["mods"] = 2
+    assert base_of(profiles, {"R-HSA-vgef"}) == U["t"]
+    profiles["R-HSA-G"]["mods"] = 0
     # no residue or donor difference: the form with more components is modified
-    forms, _ = m.find_pools(edges, rmap, umap, PAIRS, {A: (0, 1), B: (0, 3)}, set())
-    assert dict((u, b) for _, u, _, b in forms)[U["a"]] is True
-
-
-def test_undecided_pool_is_counted_as_a_tie():
-    edges, rmap, umap = net()
+    profiles["R-HSA-T"]["comps"] = 3
+    assert base_of(profiles, set()) == U["g"]
+    profiles["R-HSA-T"]["comps"] = 2
+    # nothing decides: smaller stId, counted as a tie
     st = {}
-    forms, _ = m.find_pools(edges, rmap, umap, PAIRS, {A: (0, 1), B: (0, 1)}, set(), st)
-    assert st["ties"] == 1 and len(forms) == 2
-    st = {}
-    m.find_pools(edges, rmap, umap, PAIRS, {A: (0, 1), B: (0, 1)}, {F}, st)
-    assert st["ties"] == 0
+    assert base_of(profiles, set(), st) == U["g"] and st["ties"] == 1
 
 
-def test_a_reaction_converting_two_pairs_is_dropped():
-    # vf also converts a2 -> b: its node would be written by two fluxes
-    edges, rmap, umap = net()
-    edges = pd.concat([edges, pd.DataFrame([e("a2", "vf", "input"), e("vr", "a2", "output")])], ignore_index=True)
-    st = {}
-    forms, trans = m.find_pools(edges, rmap, umap, PAIRS, {}, {F}, st)
-    assert forms == [] and trans == [] and st["multi_use"] >= 1
+def test_no_steps_or_empty_network_give_no_pools():
+    net, rmap, umap, profiles, participants = ras_network()
+    assert m.find_pools(net, rmap, umap, [], profiles, set()) == ([], [], [])
+    empty = pd.DataFrame(columns=["source_id", "target_id", "edge_type"])
+    assert m.find_pools(empty, rmap, umap, m.r_steps(participants, profiles), profiles, set()) == ([], [], [])
 
 
-def test_no_pairs_or_empty_network_give_no_pools():
-    edges, rmap, umap = net()
-    assert m.find_pools(edges, rmap, umap, [], {}, set()) == ([], [])
-    assert m.find_pools(pd.DataFrame(columns=["source_id", "target_id", "edge_type"]), rmap, umap, PAIRS, {}, set()) == ([], [])
-
-
-def test_transitions_say_whether_they_are_catalysed():
-    edges, rmap, umap = net()
-    edges = pd.concat([edges, pd.DataFrame([{"source_id": U["a2"], "target_id": U["vf"], "edge_type": "catalyst"}])],
-                      ignore_index=True)
-    _, trans = m.find_pools(edges, rmap, umap, PAIRS, {}, {F})
-    assert {rx: c for _, _, _, rx, _, c in trans} == {U["vf"]: True, U["vr"]: False}
+def test_a_stoichiometry_two_input_is_not_a_step():
+    _, _, _, profiles, participants = ras_network()
+    participants = [(rx, role, pe, 2 if (rx, role) == ("R-HSA-vgef", "input") else s) for rx, role, pe, s in participants]
+    assert ("R-HSA-vgef", RAS) not in {(rx, r) for rx, r, *_ in m.r_steps(participants, profiles)}

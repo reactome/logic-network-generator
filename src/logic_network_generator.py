@@ -3409,157 +3409,382 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
     logger.info(f"Exported {len(rows)} drug-derived entities to {output_file}")
 
 
+POOL_MAX_STEPS = 6          # a state -> intermediates -> state path longer than this is dropped
+POOL_PATH_BUDGET = 20000    # a pool with more uuid paths than this is dropped (a safety cap, counted)
+POOL_STATS_KEYS = ("pools", "states", "intermediates", "paths", "multi_step_pools", "long_paths_dropped",
+                   "shared_nodes_dropped", "ties", "carriers", "autocat_source", "autocat_product",
+                   "autocat_other", "carrier_loops", "no_path_pools", "off_path_intermediates",
+                   "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins")
+
+
 def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
-               uuid_mapping: Dict[str, str], pairs, mod_counts: Dict[str, Tuple[int, int]],
-               donor_reactions: Optional[Set[str]] = None, stats: Optional[Dict[str, int]] = None):
-    """Interconversion pools at NODE level (deltasignal specs/039).
+               uuid_mapping: Dict[str, str], steps, profiles: Dict[str, Dict[str, Any]],
+               donor_reactions: Optional[Set[str]] = None,
+               set_members: Optional[Dict[str, Set[str]]] = None,
+               stats: Optional[Dict[str, int]] = None):
+    """Modification-cycle pools at NODE level (deltasignal specs/039 amendment 2).
 
-    A curated pair (F: A -> B, R: B -> A) is a pool transition only where the
-    same A node feeds a copy of F and receives a copy of R's output, and the
-    same B node is produced by that F and consumed by that R: the loop
-    A -> F -> B -> R -> A exists in this network. Occurrences the per-position
-    uuids separated are not re-merged. Forms joined by such loops form one pool.
+    ``steps`` are the pathway's R-steps at stId level, ``(reaction, R, input
+    form, output form, enzyme_driven)``: a reaction whose exactly one input and
+    exactly one output contain the reference entity R, both at stoichiometry 1,
+    and which differ (see :func:`r_steps`). ``profiles`` is
+    :func:`get_form_profiles` over every node's entity (and a variant's chosen
+    members); ``set_members`` says which nodes a set-valued participant became.
 
-    Returns (forms, transitions):
-      forms:       [(pool_id, node_uuid, stable_id, is_base)]
-      transitions: [(pool_id, from_uuid, to_uuid, reaction_uuid, reaction_stid, catalysed)]
-    ``catalysed`` says whether the reaction node has a catalyst edge; a consumer
-    weighs an uncatalysed (intrinsic) step beside a catalysed one for the same
-    pair (specs/039 amendment 2).
-    A reaction node that would be a transition more than once (it converts two
-    different form pairs) is dropped, with every loop through it: its node would
-    be written by two fluxes (review of specs/039, finding 2).
+    A step exists at node level only as a reaction node whose R-containing
+    input node and output node map to the step's forms (the node's entity, its
+    variant parent, or a member of the step's set). Per R, the R-graph over
+    form nodes is condensed; a strongly connected set with >= 2 forms and >= 2
+    modification signatures is a pool candidate (one signature is a carrier
+    loop: an enzyme's E -> E:S -> E). In each signature the forms with the
+    fewest non-small slots are states, the rest intermediates. Transitions are
+    simple directed paths state -> intermediates* -> another state of at most
+    ``POOL_MAX_STEPS`` steps; each uuid path is one parallel transition, and
+    longer ones are dropped and counted. Because an intermediate is one node
+    however many reaction copies enter and leave it, the uuid paths through it
+    are the product of the copies per step (RAF: 48 GAP binding copies x 48
+    release copies = 2,304 two-step paths); a pool with more than
+    ``POOL_PATH_BUDGET`` paths is dropped and counted (``budget_dropped``). The base state follows amendment 1
+    (residues, then the donor-consuming direction, then components; undecided
+    pools fall back to the smaller stId and are counted). Pools identical for
+    several R (the members of one set travelling together) are one pool; a node
+    claimed by two DIFFERENT pools is removed from both, everything is
+    recomputed, and the node is counted. Carriers are the enzyme's free-form
+    nodes (a joining input of an enzyme-driven step, containing a protein and
+    not R, that a step of the pool releases) with the reaction nodes releasing
+    them.
 
-    The base form (the unmodified, resting form) is decided per pair, then per pool
-    (specs/039 amendment 1): the modified form is the one with more modified
-    residues (as pre-registered); failing that, the product of the direction that
-    consumes a group donor (ATP, GTP, SAM, acetyl-CoA, NAD+, ubiquitin: RAS:GDP
-    and RAS:GTP carry no residue difference); failing that, the form with more
-    components. The pool's base is the form no pair marks as modified; a pool no
-    pair decides falls back to the smaller stId and is counted in
-    ``stats["ties"]``, with the dropped reactions in ``stats["multi_use"]``.
+    Returns (forms, transitions, carriers):
+      forms:       [(pool_id, node_uuid, stable_id, role, is_base)], role state | intermediate
+      transitions: [(pool_id, path_id, step, source_uuid, target_uuid, reaction_uuid, reaction_stid, enzyme_driven)]
+                   ``enzyme_driven`` is the STEP's flag; a path is enzyme-driven if any step is.
+      carriers:    [(pool_id, carrier_uuid, release_reaction_uuid)]
+    ``stats`` receives the counts in ``POOL_STATS_KEYS``; the autocatalysis
+    counts are distinct (reaction node, catalyst) pairs where a form of the pool
+    catalyses a step of its own pool, split by whether the catalyst is the
+    step's source form, its product form, or another form.
     """
+    import networkx as nx
     stats = stats if stats is not None else {}
-    stats["ties"] = 0
-    stats["multi_use"] = 0
+    for k in POOL_STATS_KEYS:
+        stats[k] = 0
     donor_reactions = donor_reactions or set()
-    if pathway_logic_network.empty or not pairs:
-        return [], []
+    set_members = set_members or {}
+    steps = list(steps)
+    if pathway_logic_network.empty or not steps:
+        return [], [], []
     ent = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
     vr = {str(u): str(r) for u, r in zip(reaction_id_map["uid"], reaction_id_map["reactome_id"])}
-    ins: Dict[str, Set[str]] = {}
-    outs: Dict[str, Set[str]] = {}
-    catalysed: Set[str] = set()
+    ins: Dict[str, Dict[str, float]] = {}
+    outs: Dict[str, Dict[str, float]] = {}
+    cats: Dict[str, Set[str]] = {}
+    has_st = "stoichiometry" in pathway_logic_network.columns
     for _, e in pathway_logic_network.iterrows():
         s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
-        if et == "catalyst" and t in vr:
-            catalysed.add(t)
+        st = 1.0
+        if has_st:
+            try:
+                st = float(e["stoichiometry"])
+            except (TypeError, ValueError):
+                st = 1.0
+            if st != st:  # NaN
+                st = 1.0
         if et == "input" and t in vr:
-            ins.setdefault(t, set()).add(s)
+            ins.setdefault(t, {})[s] = st
         elif et == "output" and s in vr:
-            outs.setdefault(s, set()).add(t)
+            outs.setdefault(s, {})[t] = st
+        elif et == "catalyst" and t in vr:
+            cats.setdefault(t, set()).add(s)
     copies: Dict[str, List[str]] = {}
     for u, r in vr.items():
         copies.setdefault(r, []).append(u)
-    trans = set()
-    for f, r, a, b in pairs:
-        for fu in sorted(copies.get(f, [])):
-            for ru in sorted(copies.get(r, [])):
-                for au in sorted(ins.get(fu, set()) & outs.get(ru, set())):
-                    if ent.get(au) != a:
-                        continue
-                    for bu in sorted(outs.get(fu, set()) & ins.get(ru, set())):
-                        if ent.get(bu) != b:
-                            continue
-                        trans.add((au, bu, fu, f))
-                        trans.add((bu, au, ru, r))
-    uses: Dict[str, Set[Tuple[str, str]]] = {}
-    for a_u, b_u, rx, _ in trans:
-        uses.setdefault(rx, set()).add((a_u, b_u))
-    multi = {rx for rx, s in uses.items() if len(s) > 1}
-    if multi:
-        stats["multi_use"] = len(multi)
-        bad = {(a_u, b_u) for a_u, b_u, rx, _ in trans if rx in multi}
-        bad |= {(b, a) for a, b in bad}
-        trans = {t for t in trans if (t[0], t[1]) not in bad}
-    if not trans:
-        return [], []
-    parent: Dict[str, str] = {}
 
-    def find(x):
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-    for a_u, b_u, _, _ in trans:
-        ra, rb = find(a_u), find(b_u)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-    groups: Dict[str, List[str]] = {}
-    for n in sorted(parent):
-        groups.setdefault(find(n), []).append(n)
-
-    def modified_side(a_u, b_u, f_stid, r_stid):
-        """The node the pair marks as modified, or None when undecidable."""
-        ma, ca = mod_counts.get(ent.get(a_u, ""), (0, 0))
-        mb, cb = mod_counts.get(ent.get(b_u, ""), (0, 0))
-        if ma != mb:
-            return b_u if mb > ma else a_u
-        fd, rd = f_stid in donor_reactions, r_stid in donor_reactions
-        if fd != rd:
-            return b_u if fd else a_u
-        if ca != cb:
-            return b_u if cb > ca else a_u
-        return None
-    marked: Dict[str, int] = {}
-    fwd = {(a_u, b_u): rs for a_u, b_u, _, rs in trans}
-    for (a_u, b_u), fs in fwd.items():
-        rs = fwd.get((b_u, a_u))
-        if rs is None or a_u > b_u:
-            continue
-        side = modified_side(a_u, b_u, fs, rs)
-        if side is not None:
-            marked[side] = marked.get(side, 0) + 1
-
-    def base_key(u):
+    def parts(u: str) -> Tuple[str, List[str]]:
         s = ent.get(u, "")
-        mods, comps = mod_counts.get(s, (0, 0))
-        return (marked.get(u, 0), mods, comps, s, u)
-    forms, transitions = [], []
-    order = sorted(groups.values(), key=lambda g: min(ent.get(u, "") + u for u in g))
-    for i, members in enumerate(order, start=1):
+        if "::variant::" not in s:
+            return s, []
+        parent, members = s.split("::variant::", 1)
+        return parent, [m for m in members.split("_") if m]
+
+    def pe_of(u: str) -> str:
+        return parts(u)[0]
+
+    prot_cache: Dict[str, frozenset] = {}
+
+    def proteins(u: str) -> frozenset:
+        if u not in prot_cache:
+            parent, members = parts(u)
+            if not members:
+                out = set(profiles.get(parent, {}).get("proteins", ()))
+            else:
+                out = set(profiles.get(parent, {}).get("fixed", ()))
+                for m in members:
+                    out |= set(profiles.get(m, {}).get("proteins", ()))
+            prot_cache[u] = frozenset(out)
+        return prot_cache[u]
+
+    def prof(u: str, key: str, default=0):
+        return profiles.get(pe_of(u), {}).get(key, default)
+
+    def sig(u: str, r):
+        return profiles.get(pe_of(u), {}).get("sig", {}).get(r, frozenset())
+
+    def maps(u: str, pe: str) -> bool:
+        p = pe_of(u)
+        return p == pe or p in set_members.get(pe, ())
+
+    # uuid-level steps: (R, in node, out node, reaction node) -> (reaction stId, enzyme_driven)
+    ustep: Dict[Tuple[Any, str, str, str], Tuple[str, bool]] = {}
+    for rx, r, a, b, enz in steps:
+        for rx_u in sorted(copies.get(rx, [])):
+            cin = [u for u, st in ins.get(rx_u, {}).items() if st == 1 and maps(u, a) and r in proteins(u)]
+            cout = [u for u, st in outs.get(rx_u, {}).items() if st == 1 and maps(u, b) and r in proteins(u)]
+            if len(cin) != 1 or len(cout) != 1:
+                if len(cin) > 1 or len(cout) > 1:
+                    stats["ambiguous_copies"] += 1
+                continue
+            if cin[0] != cout[0]:
+                ustep[(r, cin[0], cout[0], rx_u)] = (rx, bool(enz))
+    if not ustep:
+        return [], [], []
+
+    def build(removed: Set[str]):
+        local = {k: 0 for k in POOL_STATS_KEYS}
+        by_r: Dict[Any, List[Tuple[str, str, str, str, bool]]] = {}
+        for (r, a_u, b_u, rx_u), (rs, enz) in ustep.items():
+            if a_u in removed or b_u in removed or rx_u in removed:
+                continue
+            by_r.setdefault(r, []).append((a_u, b_u, rx_u, rs, enz))
+        pools: Dict[tuple, Dict[str, Any]] = {}
+        for r in sorted(by_r):
+            g = nx.DiGraph()
+            g.add_edges_from((a_u, b_u) for a_u, b_u, _, _, _ in by_r[r])
+            for scc in nx.strongly_connected_components(g):
+                if len(scc) < 2:
+                    continue
+                by_sig: Dict[frozenset, List[str]] = {}
+                for u in scc:
+                    by_sig.setdefault(sig(u, r), []).append(u)
+                if len(by_sig) < 2:
+                    local["carrier_loops"] += 1
+                    continue
+                states: Set[str] = set()
+                for members in by_sig.values():
+                    fewest = min(prof(u, "slots") for u in members)
+                    states |= {u for u in members if prof(u, "slots") == fewest}
+                adj: Dict[str, List[Tuple[str, str, str, bool]]] = {}
+                for a_u, b_u, rx_u, rs, enz in sorted(by_r[r]):
+                    if a_u in scc and b_u in scc:
+                        adj.setdefault(a_u, []).append((b_u, rx_u, rs, enz))
+                paths: List[Tuple[Tuple[str, str, str, str, bool], ...]] = []
+                over_budget = False
+
+                def walk(u, so_far, seen):
+                    nonlocal over_budget
+                    for v, rx_u, rs, enz in adj.get(u, ()):
+                        if over_budget:
+                            return
+                        if v in seen:
+                            continue
+                        new = so_far + ((u, v, rx_u, rs, enz),)
+                        if v in states:
+                            paths.append(new)
+                            if len(paths) > POOL_PATH_BUDGET:
+                                over_budget = True
+                                return
+                            continue
+                        if len(new) >= POOL_MAX_STEPS:
+                            local["long_paths_dropped"] += 1
+                            continue
+                        walk(v, new, seen | {v})
+                for s0 in sorted(states):
+                    walk(s0, (), {s0})
+                if over_budget:
+                    local["budget_dropped"] += 1
+                    continue
+                if not paths:
+                    local["no_path_pools"] += 1
+                    continue
+                on_path: Set[str] = {n for p in paths for st in p for n in (st[0], st[1])}
+                kept_states = states & on_path
+                if len({sig(u, r) for u in kept_states}) < 2:
+                    local["no_path_pools"] += 1
+                    continue
+                inter = (scc - states) & on_path
+                local["off_path_states"] += len(states - on_path)
+                local["off_path_intermediates"] += len(scc - states - on_path)
+                key = (frozenset(kept_states), frozenset(inter),
+                       frozenset(tuple((a_u, b_u, rx_u) for a_u, b_u, rx_u, _, _ in p) for p in paths))
+                if key in pools:
+                    pools[key]["r"].add(r)
+                    local["merged_proteins"] += 1
+                else:
+                    pools[key] = {"r": {r}, "states": kept_states, "inter": inter, "paths": paths,
+                                  "nodes": kept_states | inter | {st[2] for p in paths for st in p}}
+        return list(pools.values()), local
+
+    removed: Set[str] = set()
+    dropped_shared = 0
+    while True:
+        pools, local = build(removed)
+        claimed: Dict[str, int] = {}
+        for p in pools:
+            for n in p["nodes"]:
+                claimed[n] = claimed.get(n, 0) + 1
+        shared = {n for n, c in claimed.items() if c > 1}
+        if not shared:
+            break
+        removed |= shared
+        dropped_shared += len(shared)
+    stats.update(local)
+    stats["shared_nodes_dropped"] = dropped_shared
+
+    def path_key(p):
+        return tuple((ent.get(a, ""), a, ent.get(b, ""), b, rx) for a, b, rx, _, _ in p)
+
+    def modified_side(x, y, xy, yx):
+        """The state a pair marks as modified, or None when undecidable."""
+        mx, my = prof(x, "mods"), prof(y, "mods")
+        if mx != my:
+            return y if my > mx else x
+        fd = any(rs in donor_reactions for p in xy for _, _, _, rs, _ in p)
+        rd = any(rs in donor_reactions for p in yx for _, _, _, rs, _ in p)
+        if fd != rd:
+            return y if fd else x
+        cx, cy = prof(x, "comps"), prof(y, "comps")
+        if cx != cy:
+            return y if cy > cx else x
+        return None
+
+    forms, transitions, carriers = [], [], []
+    pools.sort(key=lambda p: min(ent.get(u, "") + u for u in p["states"]))
+    for i, p in enumerate(pools, start=1):
         pid = f"pool{i}"
-        base = min(members, key=base_key)
-        if not any(marked.get(u, 0) for u in members):
+        states, inter, paths, rset = p["states"], p["inter"], sorted(p["paths"], key=path_key), p["r"]
+        between: Dict[Tuple[str, str], List[tuple]] = {}
+        for path in paths:
+            between.setdefault((path[0][0], path[-1][1]), []).append(path)
+        marked: Dict[str, int] = {}
+        for x in sorted(states):
+            for y in sorted(states):
+                if x >= y or not (between.get((x, y)) or between.get((y, x))):
+                    continue
+                side = modified_side(x, y, between.get((x, y), []), between.get((y, x), []))
+                if side is not None:
+                    marked[side] = marked.get(side, 0) + 1
+        base = min(states, key=lambda u: (marked.get(u, 0), prof(u, "mods"), prof(u, "comps"), ent.get(u, ""), u))
+        if not marked:
             stats["ties"] += 1
-        for u in sorted(members):
-            forms.append((pid, u, ent.get(u, ""), u == base))
-        for a_u, b_u, rx, rs in sorted(trans):
-            if a_u in members:
-                transitions.append((pid, a_u, b_u, rx, rs, rx in catalysed))
-    return forms, transitions
+        for u in sorted(states | inter, key=lambda u: (ent.get(u, ""), u)):
+            forms.append((pid, u, ent.get(u, ""), "state" if u in states else "intermediate", u == base))
+        for n, path in enumerate(paths, start=1):
+            for k, (a_u, b_u, rx_u, rs, enz) in enumerate(path, start=1):
+                transitions.append((pid, f"{pid}_p{n}", k, a_u, b_u, rx_u, rs, enz))
+        rx_on_paths = sorted({st[2] for path in paths for st in path})
+        found: Set[Tuple[str, str]] = set()
+        autocat: Set[Tuple[str, str, str]] = set()
+        for path in paths:
+            for a_u, b_u, rx_u, _, enz in path:
+                for c in cats.get(rx_u, ()):
+                    if c in p["nodes"]:   # a form of the pool catalyses a step of its own pool
+                        autocat.add((rx_u, c, "autocat_source" if c == a_u else "autocat_product" if c == b_u
+                                     else "autocat_other"))
+                if not enz:
+                    continue
+                for j in ins.get(rx_u, {}):
+                    if j == a_u or j in p["nodes"] or pe_of(j) in _UBIQUITIN_STIDS:
+                        continue
+                    pj = proteins(j)
+                    if not pj or pj & rset:
+                        continue
+                    for rel in rx_on_paths:
+                        if j in outs.get(rel, {}):
+                            found.add((j, rel))
+        carriers.extend((pid, j, rel) for j, rel in sorted(found, key=lambda t: (ent.get(t[0], ""), t[0], t[1])))
+        for _, _, kind in autocat:
+            stats[kind] += 1
+        stats["pools"] += 1
+        stats["states"] += len(states)
+        stats["intermediates"] += len(inter)
+        stats["paths"] += len(paths)
+        stats["multi_step_pools"] += int(any(len(path) > 1 for path in paths))
+        stats["carriers"] += len({j for j, _ in found})
+    return forms, transitions, carriers
+
+
+def r_steps(participants, profiles: Dict[str, Dict[str, Any]], ubiquitin_stids=()) -> List[Tuple[str, Any, str, str, bool]]:
+    """The R-steps of a pathway at stId level (deltasignal specs/039 amendment
+    2), from :func:`get_reaction_participants` rows: for each reaction and each
+    reference entity R, the reaction is a step if exactly one input and exactly
+    one output contain R, both at stoichiometry 1, and they differ. A step is
+    enzyme-driven if a catalyst or a joining input (another input; ubiquitin
+    is a co-substrate) contains a protein and does not contain R: a catalyst
+    that is itself a form of R (RAS:GTP's intrinsic hydrolysis, curated with
+    the set p21 RAS:GTP as its own catalyst) is self-catalysis, which counts as
+    non-enzyme. Returns sorted ``(reaction, R, input, output, enzyme_driven)``."""
+    by_rx: Dict[str, Dict[str, List[Tuple[str, int]]]] = {}
+    for rx, role, pe, st in participants:
+        by_rx.setdefault(rx, {}).setdefault(role, []).append((pe, st))
+    out = []
+    for rx in sorted(by_rx):
+        roles = by_rx[rx]
+        rs: Set[Any] = set()
+        for pe, _ in roles.get("input", []):
+            rs |= set(profiles.get(pe, {}).get("proteins", ()))
+        for r in sorted(rs):
+            a = [(pe, st) for pe, st in roles.get("input", []) if r in profiles.get(pe, {}).get("proteins", ())]
+            b = [(pe, st) for pe, st in roles.get("output", []) if r in profiles.get(pe, {}).get("proteins", ())]
+            if len(a) != 1 or len(b) != 1 or a[0][1] != 1 or b[0][1] != 1 or a[0][0] == b[0][0]:
+                continue
+            helpers = [pe for pe, _ in roles.get("catalyst", [])]
+            helpers += [pe for pe, _ in roles.get("input", []) if pe != a[0][0] and pe not in ubiquitin_stids]
+            enz = any(profiles.get(pe, {}).get("proteins") and r not in profiles[pe]["proteins"] for pe in helpers)
+            out.append((rx, r, a[0][0], b[0][0], enz))
+    return out
 
 
 def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
-                 uuid_mapping: Dict[str, str], pools_file: str, transitions_file: str) -> None:
-    """Write pools.csv and pool_transitions.csv (deltasignal specs/039): each
-    protein's interconversion pool, for a consumer that solves it at steady state
-    (pi = pi P) instead of multiplying around the loop. Both files are written
-    even when empty, so a consumer can tell "no pools" from "no table"."""
-    from src.neo4j_connector import (get_interconversion_pairs, get_form_modification_counts,
-                                     get_donor_reactions)
-    pairs = get_interconversion_pairs(pathway_id, _UBIQUITIN_STIDS)
-    mods = get_form_modification_counts({x for p in pairs for x in (p[2], p[3])})
-    donors = get_donor_reactions({x for p in pairs for x in (p[0], p[1])}, _UBIQUITIN_STIDS)
+                 uuid_mapping: Dict[str, str], pools_file: str, transitions_file: str,
+                 carriers_file: str) -> None:
+    """Write pools.csv, pool_transitions.csv and pool_carriers.csv (deltasignal
+    specs/039 amendment 2): each protein's modification-cycle pool, for a
+    consumer that solves it at steady state (pi = pi P) instead of multiplying
+    around the loop. All three files are written even when empty, so a consumer
+    can tell "no pools" from "no table"."""
+    from src.neo4j_connector import (get_reaction_participants, get_form_profiles,
+                                     get_donor_reactions, get_set_descendants)
+    participants = get_reaction_participants(pathway_id)
+    ent = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
+    wanted = {pe for _, _, pe, _ in participants}
+    for s in ent.values():
+        if "::variant::" in s:
+            parent, members = s.split("::variant::", 1)
+            wanted.add(parent)
+            wanted.update(m for m in members.split("_") if m)
+        else:
+            wanted.add(s)
+    profiles = get_form_profiles(wanted)
+    steps = r_steps(participants, profiles, _UBIQUITIN_STIDS)
+    donors = get_donor_reactions({s[0] for s in steps}, _UBIQUITIN_STIDS)
+    set_members = get_set_descendants({x for s in steps for x in (s[2], s[3])})
     stats: Dict[str, int] = {}
-    forms, transitions = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, pairs, mods, donors, stats)
-    pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "is_base"]).to_csv(pools_file, index=False)
-    pd.DataFrame(transitions, columns=["pool_id", "from_uuid", "to_uuid", "reaction_uuid", "reaction_stid", "catalysed"]).to_csv(
-        transitions_file, index=False)
-    logger.info(f"Exported {len({f[0] for f in forms})} pools ({len(forms)} forms, "
-                f"{len(transitions)} transitions; {stats['ties']} oriented by tie-break, "
-                f"{stats['multi_use']} multi-use reactions dropped) to {pools_file}")
+    forms, transitions, carriers = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, steps,
+                                              profiles, donors, set_members, stats)
+    pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "role", "is_base"]).to_csv(pools_file, index=False)
+    pd.DataFrame(transitions, columns=["pool_id", "path_id", "step", "source_uuid", "target_uuid", "reaction_uuid",
+                                       "reaction_stid", "enzyme_driven"]).to_csv(transitions_file, index=False)
+    pd.DataFrame(carriers, columns=["pool_id", "carrier_uuid", "release_reaction_uuid"]).to_csv(carriers_file, index=False)
+    logger.info(
+        f"Exported {stats['pools']} pools ({stats['states']} states, {stats['intermediates']} intermediates, "
+        f"{stats['paths']} paths, {stats['multi_step_pools']} multi-step; {len(steps)} R-steps at stId level; "
+        f"{stats['long_paths_dropped']} paths over {POOL_MAX_STEPS} steps dropped, "
+        f"{stats['shared_nodes_dropped']} shared nodes dropped, {stats['ties']} oriented by tie-break, "
+        f"{stats['carriers']} carriers, {stats['carrier_loops']} carrier loops, "
+        f"{stats['merged_proteins']} co-travelling proteins merged, {stats['no_path_pools']} candidates with no path, "
+        f"{stats['off_path_states']}/{stats['off_path_intermediates']} states/intermediates off every path, "
+        f"{stats['ambiguous_copies']} ambiguous reaction copies, {stats['budget_dropped']} over the path budget; "
+        f"autocatalysis by source form {stats['autocat_source']}, by product form {stats['autocat_product']}, "
+        f"by another form {stats['autocat_other']}) to {pools_file}")
 
 
 def export_node_resolution(pathway_id: str,

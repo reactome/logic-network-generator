@@ -520,6 +520,7 @@ def generate_pathway_file(
                 result.uuid_mapping,
                 str(pathway_output_dir / "pools.csv"),
                 str(pathway_output_dir / "pool_transitions.csv"),
+                str(pathway_output_dir / "pool_carriers.csv"),
             )
         except Exception as e:
             logger.error(f"Failed to write pools.csv: {e}", exc_info=True)
