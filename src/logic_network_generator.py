@@ -3415,7 +3415,7 @@ POOL_STATS_KEYS = ("pools", "states", "intermediates", "paths", "multi_step_pool
                    "shared_nodes_dropped", "ties", "carriers", "autocat_source", "autocat_product",
                    "autocat_other", "carrier_loops", "no_path_pools", "off_path_intermediates",
                    "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins", "copy_rows",
-                   "carrier_conflicts")
+                   "carrier_conflicts", "nonregenerating_paths")
 
 
 def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
@@ -3444,7 +3444,13 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     signature the core-only forms with the fewest non-small slots are states,
     the rest intermediates. Transitions are
     simple directed paths state -> intermediates* -> another state of at most
-    ``POOL_MAX_STEPS`` steps, longer ones dropped and counted. A path's
+    ``POOL_MAX_STEPS`` steps, longer ones dropped and counted. A multi-step
+    path is kept only if every non-R entity a step consumes (a non-small input
+    other than the step's source form; ubiquitin is a donor) is output again
+    by a step of the same path, so the enzyme is regenerated (amendment 5);
+    failing paths are dropped and counted (``nonregenerating_paths``), and a
+    pool whose remaining states do not reach one another through kept paths,
+    or has fewer than two, is dropped and counted (``no_path_pools``). A path's
     identity is its node sequence plus the reaction stId at each step; the
     reaction NODES of that stId between the step's two nodes (variant and set
     copies) are the step's parallel copies and are listed one row each, so a
@@ -3561,6 +3567,25 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
 
     def build(removed: Set[str]):
         local = {k: 0 for k in POOL_STATS_KEYS}
+
+        def regenerates(path) -> bool:
+            """Every non-R entity a step of the path consumes (a non-small input
+            other than the step's source form; ubiquitin is a donor) is output
+            again by a step of the path, compared by entity id so a released
+            copy the uuids separated still counts. Small molecules are exempt
+            as cofactors (ATP in, ADP out is a modification, not a partner
+            lost)."""
+            consumed: Set[str] = set()
+            produced: Set[str] = set()
+            for a_u, _, _, _, cp in path:
+                for rx_u in cp:
+                    consumed |= {ent.get(j, "") for j in ins.get(rx_u, {})
+                                 if j != a_u and not prof(j, "small", False) and pe_of(j) not in _UBIQUITIN_STIDS}
+                    produced |= {ent.get(o, "") for o in outs.get(rx_u, {})}
+            if consumed <= produced:
+                return True
+            local["nonregenerating_paths"] += 1
+            return False
         by_r: Dict[Any, List[Tuple[str, str, str, str, bool]]] = {}
         for (r, a_u, b_u, rx_u), (rs, enz) in ustep.items():
             if a_u in removed or b_u in removed or rx_u in removed:
@@ -3626,12 +3651,22 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 if over_budget:
                     local["budget_dropped"] += 1
                     continue
+                # amendment 5: a multi-step path is an enzyme cycle only if every
+                # non-R entity a step consumes comes back out of the same path
+                paths = [p for p in paths if len(p) == 1 or regenerates(p)]
                 if not paths:
                     local["no_path_pools"] += 1
                     continue
+                # the states that remain must reach one another through the kept
+                # paths; a pool left with fewer than two such states is dropped
+                sg = nx.DiGraph()
+                sg.add_nodes_from(states)
+                sg.add_edges_from((p[0][0], p[-1][1]) for p in paths)
+                connected = max(nx.strongly_connected_components(sg), key=lambda c: (len(c), sorted(c)))
+                paths = [p for p in paths if p[0][0] in connected and p[-1][1] in connected]
                 on_path: Set[str] = {n for p in paths for st in p for n in (st[0], st[1])}
                 kept_states = states & on_path
-                if len({sig(u, r) for u in kept_states}) < 2:
+                if len(kept_states) < 2 or len({sig(u, r) for u in kept_states}) < 2:
                     local["no_path_pools"] += 1
                     continue
                 inter = (scc - states) & on_path
@@ -3814,6 +3849,7 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
         f"{stats['paths']} paths in {stats['copy_rows']} step-copy rows, {stats['multi_step_pools']} multi-step; "
         f"{len(steps)} R-steps at stId level; "
         f"{stats['long_paths_dropped']} paths over {POOL_MAX_STEPS} steps dropped, "
+        f"{stats['nonregenerating_paths']} non-regenerating multi-step paths dropped, "
         f"{stats['shared_nodes_dropped']} shared nodes dropped, {stats['ties']} oriented by tie-break, "
         f"{stats['carriers']} carriers ({stats['carrier_conflicts']} excluded as pool nodes), "
         f"{stats['carrier_loops']} carrier loops, "
