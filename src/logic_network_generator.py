@@ -3415,7 +3415,7 @@ POOL_STATS_KEYS = ("pools", "states", "intermediates", "paths", "multi_step_pool
                    "shared_nodes_dropped", "ties", "carriers", "autocat_source", "autocat_product",
                    "autocat_other", "carrier_loops", "no_path_pools", "off_path_intermediates",
                    "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins", "copy_rows",
-                   "carrier_conflicts", "nonregenerating_paths")
+                   "carrier_conflicts", "nonregenerating_paths", "oriented_by_activity", "activity_fallbacks")
 
 
 def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
@@ -3458,9 +3458,15 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     of its steps. Different reactions between the same two nodes (GEF
     exchange beside intrinsic exchange) stay different paths, since each is
     weighed on its own as enzyme-driven or not. A pool with more than
-    ``POOL_PATH_BUDGET`` paths is dropped and counted (``budget_dropped``). The base state follows amendment 1
+    ``POOL_PATH_BUDGET`` paths is dropped and counted (``budget_dropped``). The base state is the
+    resting, INACTIVE form (amendment 6): a state is active if it has a
+    ``catalyst`` or positive ``regulator`` edge into a reaction node that is
+    not one of the pool's own steps; with exactly one active state the base is
+    the other state (two states) or the non-active state furthest from it in
+    the state graph (more; a tie falls back). Otherwise amendment 1 decides
     (residues, then the donor-consuming direction, then components; undecided
-    pools fall back to the smaller stId and are counted). Pools identical for
+    pools fall back to the smaller stId and are counted). Counted as
+    ``oriented_by_activity`` and ``activity_fallbacks``. Pools identical for
     several R (the members of one set travelling together) are one pool; a node
     claimed by two DIFFERENT pools is removed from both, everything is
     recomputed, and the node is counted. Carriers are the enzyme's free-form
@@ -3495,6 +3501,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     ins: Dict[str, Dict[str, float]] = {}
     outs: Dict[str, Dict[str, float]] = {}
     cats: Dict[str, Set[str]] = {}
+    acts: Dict[str, Set[str]] = {}     # node -> reaction nodes it catalyses or positively regulates
     has_st = "stoichiometry" in pathway_logic_network.columns
     for _, e in pathway_logic_network.iterrows():
         s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
@@ -3512,6 +3519,9 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             outs.setdefault(s, {})[t] = st
         elif et == "catalyst" and t in vr:
             cats.setdefault(t, set()).add(s)
+            acts.setdefault(s, set()).add(t)
+        elif et == "regulator" and t in vr and str(e.get("pos_neg", "pos")) == "pos":
+            acts.setdefault(s, set()).add(t)
     copies: Dict[str, List[str]] = {}
     for u, r in vr.items():
         copies.setdefault(r, []).append(u)
@@ -3734,9 +3744,35 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 side = modified_side(x, y, between.get((x, y), []), between.get((y, x), []))
                 if side is not None:
                     marked[side] = marked.get(side, 0) + 1
-        base = min(states, key=lambda u: (marked.get(u, 0), prof(u, "mods"), prof(u, "comps"), ent.get(u, ""), u))
-        if not marked:
-            stats["ties"] += 1
+        # amendment 6: phi0 is the share of the ACTIVE form. A state is active if it
+        # acts downstream of the pool (a catalyst or positive regulator edge into a
+        # reaction node that is not one of the pool's own steps). With exactly one
+        # active state the base is the other one (two states) or the non-active
+        # state furthest from it in the state graph (more); otherwise, or on a
+        # tie, the residue / donor / component rule decides.
+        step_nodes = {c for path in paths for st in path for c in st[4]}
+        active = {u for u in states if acts.get(u, set()) - step_nodes}
+        base = None
+        if len(active) == 1:
+            a0 = next(iter(active))
+            if len(states) == 2:
+                base = next(u for u in states if u != a0)
+            else:
+                sg = nx.Graph()
+                sg.add_nodes_from(states)
+                sg.add_edges_from((x, y) for x, y in between)
+                dist = nx.single_source_shortest_path_length(sg, a0)
+                far = max(dist.get(u, -1) for u in states if u != a0)
+                furthest = [u for u in states if u != a0 and dist.get(u, -1) == far]
+                if len(furthest) == 1:
+                    base = furthest[0]
+        if base is not None:
+            stats["oriented_by_activity"] += 1
+        else:
+            stats["activity_fallbacks"] += 1
+            base = min(states, key=lambda u: (marked.get(u, 0), prof(u, "mods"), prof(u, "comps"), ent.get(u, ""), u))
+            if not marked:
+                stats["ties"] += 1
         for u in sorted(states | inter, key=lambda u: (ent.get(u, ""), u)):
             forms.append((pid, u, ent.get(u, ""), "state" if u in states else "intermediate", u == base))
         for path_no, path in enumerate(paths, start=1):
@@ -3850,7 +3886,8 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
         f"{len(steps)} R-steps at stId level; "
         f"{stats['long_paths_dropped']} paths over {POOL_MAX_STEPS} steps dropped, "
         f"{stats['nonregenerating_paths']} non-regenerating multi-step paths dropped, "
-        f"{stats['shared_nodes_dropped']} shared nodes dropped, {stats['ties']} oriented by tie-break, "
+        f"{stats['shared_nodes_dropped']} shared nodes dropped, {stats['oriented_by_activity']} oriented by the active "
+        f"state, {stats['activity_fallbacks']} by residues/donor/components of which {stats['ties']} by tie-break, "
         f"{stats['carriers']} carriers ({stats['carrier_conflicts']} excluded as pool nodes), "
         f"{stats['carrier_loops']} carrier loops, "
         f"{stats['merged_proteins']} co-travelling proteins merged, {stats['no_path_pools']} candidates with no path, "

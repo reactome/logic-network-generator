@@ -500,3 +500,85 @@ def test_small_molecules_are_exempt_from_regeneration():
     st = {}
     m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles, set(), {}, st)
     assert st["nonregenerating_paths"] == 1 and st["pools"] == 0
+
+
+# --- amendment 6: the base is the INACTIVE form ------------------------------------------------------------
+
+def two_state(active=(), regulator=None):
+    """S <-> S* (single steps, donor on the forward step); ``active`` states get a
+    catalyst edge into a downstream reaction node v7 (or a ``regulator`` edge of
+    the given sign)."""
+    edges = [e("s", "v1", "input"), e("v1", "sx", "output"), e("sx", "v2", "input"), e("v2", "s", "output")]
+    for a in active:
+        edges.append(e(a, "v7", "regulator" if regulator else "catalyst"))
+    edges.append(e("i1", "v7", "input"))
+    net = pd.DataFrame(edges)
+    if regulator:
+        net["pos_neg"] = [regulator if r["edge_type"] == "regulator" else "pos" for _, r in net.iterrows()]
+    _, rmap, umap = network([], ["v1", "v2", "v7"], {"s": "R-HSA-S", "sx": "R-HSA-SX", "i1": "R-HSA-I"})
+    profiles = {"R-HSA-S": prof([SUB]), "R-HSA-SX": prof([SUB], [("res", "p")], mods=1), "R-HSA-I": prof([20])}
+    steps = [("R-HSA-v1", SUB, "R-HSA-S", "R-HSA-SX", True), ("R-HSA-v2", SUB, "R-HSA-SX", "R-HSA-S", True)]
+    return net, rmap, umap, profiles, steps
+
+
+def base_and_stats(net, rmap, umap, profiles, steps, donors=frozenset({"R-HSA-v1"})):
+    st = {}
+    forms, _, _ = m.find_pools(net, rmap, umap, steps, profiles, set(donors), {}, st)
+    return next(u for _, u, _, _, b in forms if b), st
+
+
+def test_an_inhibitory_phosphorylation_makes_the_modified_state_the_base():
+    # the UNMODIFIED state catalyses downstream (CCNA:CDK2 vs CCNA:p-Y15-CDK2):
+    # it is the active form, so phi0 goes to it and the base is the modified state
+    base, st = base_and_stats(*two_state(active=("s",)))
+    assert base == U["sx"] and st["oriented_by_activity"] == 1 and st["activity_fallbacks"] == 0
+    # a positive regulator edge counts the same; a negative one does not
+    base, _ = base_and_stats(*two_state(active=("s",), regulator="pos"))
+    assert base == U["sx"]
+    base, st = base_and_stats(*two_state(active=("s",), regulator="neg"))
+    assert base == U["s"] and st["activity_fallbacks"] == 1
+
+
+def test_an_activating_phosphorylation_keeps_the_unmodified_base():
+    base, st = base_and_stats(*two_state(active=("sx",)))
+    assert base == U["s"] and st["oriented_by_activity"] == 1
+
+
+def test_both_or_neither_state_active_falls_back_to_the_residue_rule():
+    for active in ((), ("s", "sx")):
+        base, st = base_and_stats(*two_state(active=active))
+        assert base == U["s"] and st["oriented_by_activity"] == 0 and st["activity_fallbacks"] == 1 and st["ties"] == 0
+
+
+def test_a_states_own_step_does_not_make_it_active():
+    # RAS:GTP catalyses its own hydrolysis (a pool step): not "acting downstream"
+    net, rmap, umap, profiles, participants = ras_network()
+    base, st = base_and_stats(net, rmap, umap, profiles, m.r_steps(participants, profiles), {"R-HSA-vgef"})
+    assert base == U["g"] and st["activity_fallbacks"] == 1
+    # RAS:GTP also activating RAF downstream: still base GDP, now by activity
+    net = pd.concat([net, pd.DataFrame([e("t", "v7", "catalyst"), e("a2", "v7", "input")])], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v7"]], "reactome_id": ["R-HSA-v7"]})], ignore_index=True)
+    base, st = base_and_stats(net, rmap, umap, profiles, m.r_steps(participants, profiles), {"R-HSA-vgef"})
+    assert base == U["g"] and st["oriented_by_activity"] == 1
+
+
+def test_three_states_take_the_non_active_state_furthest_from_the_active_one():
+    # A <-> B <-> C in a line; C active -> base A. With A <-> C as well, B and A tie -> fallback.
+    def line(extra=()):
+        edges = [e("s", "v1", "input"), e("v1", "i1", "output"), e("i1", "v2", "input"), e("v2", "s", "output"),
+                 e("i1", "v3", "input"), e("v3", "sx", "output"), e("sx", "v4", "input"), e("v4", "i1", "output"),
+                 e("sx", "v7", "catalyst"), e("i2", "v7", "input")] + list(extra)
+        rxs = ["v1", "v2", "v3", "v4", "v7"] + (["v5", "v6"] if extra else [])
+        net, rmap, umap = network(edges, rxs, {"s": "R-HSA-A", "i1": "R-HSA-B", "sx": "R-HSA-C", "i2": "R-HSA-I"})
+        profiles = {"R-HSA-A": prof([SUB]), "R-HSA-B": prof([SUB], [("res", "p")], mods=1),
+                    "R-HSA-C": prof([SUB], [("res", "p"), ("res", "q")], mods=2), "R-HSA-I": prof([20])}
+        steps = [("R-HSA-v1", SUB, "R-HSA-A", "R-HSA-B", True), ("R-HSA-v2", SUB, "R-HSA-B", "R-HSA-A", True),
+                 ("R-HSA-v3", SUB, "R-HSA-B", "R-HSA-C", True), ("R-HSA-v4", SUB, "R-HSA-C", "R-HSA-B", True)]
+        if extra:
+            steps += [("R-HSA-v5", SUB, "R-HSA-A", "R-HSA-C", True), ("R-HSA-v6", SUB, "R-HSA-C", "R-HSA-A", True)]
+        return net, rmap, umap, profiles, steps
+    base, st = base_and_stats(*line(), donors=set())
+    assert base == U["s"] and st["oriented_by_activity"] == 1 and st["states"] == 3
+    base, st = base_and_stats(*line([e("s", "v5", "input"), e("v5", "sx", "output"),
+                                     e("sx", "v6", "input"), e("v6", "s", "output")]), donors=set())
+    assert base == U["s"] and st["activity_fallbacks"] == 1     # a tie: residues decide
