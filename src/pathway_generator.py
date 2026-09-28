@@ -12,6 +12,7 @@ from src.logic_network_generator import (
     create_pathway_logic_network,
     export_cofactors,
     export_drugs,
+    export_pools,
     export_containment,
     export_entity_reaction_proxy_mapping,
     export_node_reaction_context,
@@ -509,6 +510,20 @@ def generate_pathway_file(
             )
         except Exception as e:
             logger.error(f"Failed to write drugs.csv: {e}", exc_info=True)
+
+        # Interconversion pools (deltasignal specs/039), in their own block.
+        try:
+            export_pools(
+                pathway_id,
+                result.logic_network,
+                result.reaction_id_map,
+                result.uuid_mapping,
+                str(pathway_output_dir / "pools.csv"),
+                str(pathway_output_dir / "pool_transitions.csv"),
+                str(pathway_output_dir / "pool_carriers.csv"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to write pools.csv: {e}", exc_info=True)
 
         logger.info(f"Output directory: {pathway_output_dir}")
 
