@@ -32,7 +32,7 @@ def test_a_node_level_loop_is_one_pool_with_the_resting_form_as_base():
     edges, rmap, umap = net()
     forms, trans = m.find_pools(edges, rmap, umap, PAIRS, {A: (0, 2), B: (0, 2)}, {F})
     assert sorted((u, base) for _, u, _, base in forms) == sorted([(U["a"], True), (U["b"], False)])
-    assert sorted((f, t, rx) for _, f, t, rx, _ in trans) == sorted([(U["a"], U["b"], U["vf"]), (U["b"], U["a"], U["vr"])])
+    assert sorted((f, t, rx) for _, f, t, rx, _, _ in trans) == sorted([(U["a"], U["b"], U["vf"]), (U["b"], U["a"], U["vr"])])
     assert {p for p, *_ in forms} == {"pool1"}
 
 
@@ -78,3 +78,11 @@ def test_no_pairs_or_empty_network_give_no_pools():
     edges, rmap, umap = net()
     assert m.find_pools(edges, rmap, umap, [], {}, set()) == ([], [])
     assert m.find_pools(pd.DataFrame(columns=["source_id", "target_id", "edge_type"]), rmap, umap, PAIRS, {}, set()) == ([], [])
+
+
+def test_transitions_say_whether_they_are_catalysed():
+    edges, rmap, umap = net()
+    edges = pd.concat([edges, pd.DataFrame([{"source_id": U["a2"], "target_id": U["vf"], "edge_type": "catalyst"}])],
+                      ignore_index=True)
+    _, trans = m.find_pools(edges, rmap, umap, PAIRS, {}, {F})
+    assert {rx: c for _, _, _, rx, _, c in trans} == {U["vf"]: True, U["vr"]: False}

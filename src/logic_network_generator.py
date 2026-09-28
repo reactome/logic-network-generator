@@ -3422,7 +3422,10 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
 
     Returns (forms, transitions):
       forms:       [(pool_id, node_uuid, stable_id, is_base)]
-      transitions: [(pool_id, from_uuid, to_uuid, reaction_uuid, reaction_stid)]
+      transitions: [(pool_id, from_uuid, to_uuid, reaction_uuid, reaction_stid, catalysed)]
+    ``catalysed`` says whether the reaction node has a catalyst edge; a consumer
+    weighs an uncatalysed (intrinsic) step beside a catalysed one for the same
+    pair (specs/039 amendment 2).
     A reaction node that would be a transition more than once (it converts two
     different form pairs) is dropped, with every loop through it: its node would
     be written by two fluxes (review of specs/039, finding 2).
@@ -3446,8 +3449,11 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     vr = {str(u): str(r) for u, r in zip(reaction_id_map["uid"], reaction_id_map["reactome_id"])}
     ins: Dict[str, Set[str]] = {}
     outs: Dict[str, Set[str]] = {}
+    catalysed: Set[str] = set()
     for _, e in pathway_logic_network.iterrows():
         s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
+        if et == "catalyst" and t in vr:
+            catalysed.add(t)
         if et == "input" and t in vr:
             ins.setdefault(t, set()).add(s)
         elif et == "output" and s in vr:
@@ -3531,7 +3537,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             forms.append((pid, u, ent.get(u, ""), u == base))
         for a_u, b_u, rx, rs in sorted(trans):
             if a_u in members:
-                transitions.append((pid, a_u, b_u, rx, rs))
+                transitions.append((pid, a_u, b_u, rx, rs, rx in catalysed))
     return forms, transitions
 
 
@@ -3549,7 +3555,7 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     stats: Dict[str, int] = {}
     forms, transitions = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, pairs, mods, donors, stats)
     pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "is_base"]).to_csv(pools_file, index=False)
-    pd.DataFrame(transitions, columns=["pool_id", "from_uuid", "to_uuid", "reaction_uuid", "reaction_stid"]).to_csv(
+    pd.DataFrame(transitions, columns=["pool_id", "from_uuid", "to_uuid", "reaction_uuid", "reaction_stid", "catalysed"]).to_csv(
         transitions_file, index=False)
     logger.info(f"Exported {len({f[0] for f in forms})} pools ({len(forms)} forms, "
                 f"{len(transitions)} transitions; {stats['ties']} oriented by tie-break, "
