@@ -3411,7 +3411,7 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
 
 def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
                uuid_mapping: Dict[str, str], pairs, mod_counts: Dict[str, Tuple[int, int]],
-               donor_reactions: Optional[Set[str]] = None):
+               donor_reactions: Optional[Set[str]] = None, stats: Optional[Dict[str, int]] = None):
     """Interconversion pools at NODE level (deltasignal specs/039).
 
     A curated pair (F: A -> B, R: B -> A) is a pool transition only where the
@@ -3423,13 +3423,22 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     Returns (forms, transitions):
       forms:       [(pool_id, node_uuid, stable_id, is_base)]
       transitions: [(pool_id, from_uuid, to_uuid, reaction_uuid, reaction_stid)]
-    The base form (the unmodified, resting form) is decided per pair, then per pool:
-    the modified form is the product of the direction that consumes a group donor
-    (ATP, GTP, SAM, acetyl-CoA, NAD+, ubiquitin); failing that, the form with more
-    components (a complex against its parts), then more modified residues. The
-    pool's base is the form no pair marks as modified; ties fall back to the
-    smaller stId and are counted by the caller.
+    A reaction node that would be a transition more than once (it converts two
+    different form pairs) is dropped, with every loop through it: its node would
+    be written by two fluxes (review of specs/039, finding 2).
+
+    The base form (the unmodified, resting form) is decided per pair, then per pool
+    (specs/039 amendment 1): the modified form is the one with more modified
+    residues (as pre-registered); failing that, the product of the direction that
+    consumes a group donor (ATP, GTP, SAM, acetyl-CoA, NAD+, ubiquitin: RAS:GDP
+    and RAS:GTP carry no residue difference); failing that, the form with more
+    components. The pool's base is the form no pair marks as modified; a pool no
+    pair decides falls back to the smaller stId and is counted in
+    ``stats["ties"]``, with the dropped reactions in ``stats["multi_use"]``.
     """
+    stats = stats if stats is not None else {}
+    stats["ties"] = 0
+    stats["multi_use"] = 0
     donor_reactions = donor_reactions or set()
     if pathway_logic_network.empty or not pairs:
         return [], []
@@ -3458,6 +3467,15 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                             continue
                         trans.add((au, bu, fu, f))
                         trans.add((bu, au, ru, r))
+    uses: Dict[str, Set[Tuple[str, str]]] = {}
+    for a_u, b_u, rx, _ in trans:
+        uses.setdefault(rx, set()).add((a_u, b_u))
+    multi = {rx for rx, s in uses.items() if len(s) > 1}
+    if multi:
+        stats["multi_use"] = len(multi)
+        bad = {(a_u, b_u) for a_u, b_u, rx, _ in trans if rx in multi}
+        bad |= {(b, a) for a, b in bad}
+        trans = {t for t in trans if (t[0], t[1]) not in bad}
     if not trans:
         return [], []
     parent: Dict[str, str] = {}
@@ -3478,15 +3496,15 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
 
     def modified_side(a_u, b_u, f_stid, r_stid):
         """The node the pair marks as modified, or None when undecidable."""
+        ma, ca = mod_counts.get(ent.get(a_u, ""), (0, 0))
+        mb, cb = mod_counts.get(ent.get(b_u, ""), (0, 0))
+        if ma != mb:
+            return b_u if mb > ma else a_u
         fd, rd = f_stid in donor_reactions, r_stid in donor_reactions
         if fd != rd:
             return b_u if fd else a_u
-        ma, ca = mod_counts.get(ent.get(a_u, ""), (0, 0))
-        mb, cb = mod_counts.get(ent.get(b_u, ""), (0, 0))
         if ca != cb:
             return b_u if cb > ca else a_u
-        if ma != mb:
-            return b_u if mb > ma else a_u
         return None
     marked: Dict[str, int] = {}
     fwd = {(a_u, b_u): rs for a_u, b_u, _, rs in trans}
@@ -3507,6 +3525,8 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     for i, members in enumerate(order, start=1):
         pid = f"pool{i}"
         base = min(members, key=base_key)
+        if not any(marked.get(u, 0) for u in members):
+            stats["ties"] += 1
         for u in sorted(members):
             forms.append((pid, u, ent.get(u, ""), u == base))
         for a_u, b_u, rx, rs in sorted(trans):
@@ -3523,15 +3543,17 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     even when empty, so a consumer can tell "no pools" from "no table"."""
     from src.neo4j_connector import (get_interconversion_pairs, get_form_modification_counts,
                                      get_donor_reactions)
-    pairs = get_interconversion_pairs(pathway_id)
+    pairs = get_interconversion_pairs(pathway_id, _UBIQUITIN_STIDS)
     mods = get_form_modification_counts({x for p in pairs for x in (p[2], p[3])})
     donors = get_donor_reactions({x for p in pairs for x in (p[0], p[1])}, _UBIQUITIN_STIDS)
-    forms, transitions = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, pairs, mods, donors)
+    stats: Dict[str, int] = {}
+    forms, transitions = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, pairs, mods, donors, stats)
     pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "is_base"]).to_csv(pools_file, index=False)
     pd.DataFrame(transitions, columns=["pool_id", "from_uuid", "to_uuid", "reaction_uuid", "reaction_stid"]).to_csv(
         transitions_file, index=False)
     logger.info(f"Exported {len({f[0] for f in forms})} pools ({len(forms)} forms, "
-                f"{len(transitions)} transitions) to {pools_file}")
+                f"{len(transitions)} transitions; {stats['ties']} oriented by tie-break, "
+                f"{stats['multi_use']} multi-use reactions dropped) to {pools_file}")
 
 
 def export_node_resolution(pathway_id: str,

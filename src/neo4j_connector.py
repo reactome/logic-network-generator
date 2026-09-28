@@ -957,20 +957,37 @@ def get_donor_reactions(reaction_ids, ubiquitin_stids=()) -> Set[str]:
     return {r["rid"] for r in rows}
 
 
-def get_interconversion_pairs(pathway_id: str) -> List[Tuple[str, str, str, str]]:
+def get_interconversion_pairs(pathway_id: str, ubiquitin_stids=()) -> List[Tuple[str, str, str, str]]:
     """Curated interconversion pairs in a pathway (deltasignal specs/039):
     (forward reaction, reverse reaction, A, B) with F: A -> B and R: B -> A, both
-    events of the pathway, A and B distinct non-small-molecule entities.
-    Returned as stIds, sorted, each unordered pair once per orientation."""
+    events of the pathway, and A, B two FORMS OF ONE PROTEIN:
+
+    - each reaction converts one form into the other: its only non-small-molecule
+      input is the source form and its only non-small-molecule output is the
+      other form (ubiquitin counts as a co-substrate). That excludes binding
+      (E + S -> E:S), release, degradation, and reactions taking two forms;
+    - the two forms share a protein (a reference entity of an EWAS leaf).
+
+    Review of specs/039: without these, 78 of 102 shipped pools were enzyme
+    binding cycles, non-shared-protein pairs or degradation "reverse" steps.
+    Returned as stIds, sorted, each pair once per orientation."""
     query = """
         MATCH (p:Pathway {stId: $pid})-[:hasEvent*]->(r1:ReactionLikeEvent)-[:input]->(a:PhysicalEntity),
               (r1)-[:output]->(b:PhysicalEntity)
         MATCH (p)-[:hasEvent*]->(r2:ReactionLikeEvent)-[:input]->(b), (r2)-[:output]->(a)
         WHERE r1 <> r2 AND a <> b AND NOT a:SimpleEntity AND NOT b:SimpleEntity
+          AND size([(r1)-[:input]->(x) WHERE x <> a AND NOT x:SimpleEntity AND NOT x.stId IN $ub | x]) = 0
+          AND size([(r1)-[:output]->(y) WHERE y <> b AND NOT y:SimpleEntity AND NOT y.stId IN $ub | y]) = 0
+          AND size([(r2)-[:input]->(x) WHERE x <> b AND NOT x:SimpleEntity AND NOT x.stId IN $ub | x]) = 0
+          AND size([(r2)-[:output]->(y) WHERE y <> a AND NOT y:SimpleEntity AND NOT y.stId IN $ub | y]) = 0
+        WITH DISTINCT r1, r2, a, b,
+             [(a)-[:hasComponent|hasMember|hasCandidate*0..6]->(:EntityWithAccessionedSequence)-[:referenceEntity]->(re) | re.dbId] AS ra,
+             [(b)-[:hasComponent|hasMember|hasCandidate*0..6]->(:EntityWithAccessionedSequence)-[:referenceEntity]->(re) | re.dbId] AS rb
+        WHERE any(x IN ra WHERE x IN rb)
         RETURN DISTINCT r1.stId AS f, r2.stId AS r, a.stId AS a, b.stId AS b
     """
     try:
-        rows = get_graph().run(query, pid=pathway_id).data()
+        rows = get_graph().run(query, pid=pathway_id, ub=list(ubiquitin_stids)).data()
     except Exception:
         logger.error("Error in get_interconversion_pairs", **_traceback_kwargs())
         raise
