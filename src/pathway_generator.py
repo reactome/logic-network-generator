@@ -11,6 +11,7 @@ from src.decomposed_uid_mapping import decomposed_uid_mapping_column_types
 from src.logic_network_generator import (
     create_pathway_logic_network,
     export_cofactors,
+    export_drugs,
     export_containment,
     export_entity_reaction_proxy_mapping,
     export_node_reaction_context,
@@ -35,6 +36,8 @@ _FINGERPRINTED_ENV = (
     "LNG_HANDOFF_EDGES",
     "LNG_HANDOFF_HUB_MAX",
     "LNG_SET_MEMBERS_OR",
+    "LNG_SET_POOL",
+    "LNG_CAP_POOLS",
     "LNG_DIAGRAM_SET_MEMBER",
     # Of these three, only LNG_EMIT_ONE_SIDED is a genuine cache gap: it is
     # read in reaction_generator.decompose_by_reactions, so it changes
@@ -493,6 +496,19 @@ def generate_pathway_file(
         except Exception as e:
             logger.error(f"Failed to write node provenance files: {e}", exc_info=True)
             # Don't raise - supplementary
+
+        # Drug-derived entities (deltasignal specs/032), in their OWN block: a
+        # failed drug query must not cost containment.csv, which the default
+        # solver needs (review of PR #98). A missing drugs.csv is reported by
+        # the consumer as "no drug table", not mistaken for "no drugs".
+        try:
+            export_drugs(
+                result.logic_network,
+                result.uuid_mapping,
+                str(pathway_output_dir / "drugs.csv"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to write drugs.csv: {e}", exc_info=True)
 
         logger.info(f"Output directory: {pathway_output_dir}")
 
