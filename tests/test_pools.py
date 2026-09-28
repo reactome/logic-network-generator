@@ -5,6 +5,7 @@ intermediates, and a transition is a path state -> intermediates* -> state.
 Shapes: RAS (GEF / intrinsic / GAP bind-hydrolyse-release), a six-form
 kinase/phosphatase ring, an enzyme's own binding loop."""
 import pandas as pd
+import pytest
 
 import src.logic_network_generator as m
 
@@ -500,3 +501,164 @@ def test_small_molecules_are_exempt_from_regeneration():
     st = {}
     m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles, set(), {}, st)
     assert st["nonregenerating_paths"] == 1 and st["pools"] == 0
+
+
+# --- amendment 6: the base is the INACTIVE form ------------------------------------------------------------
+
+def two_state(active=(), regulator=None):
+    """S <-> S* (single steps, donor on the forward step); ``active`` states get a
+    catalyst edge into a downstream reaction node v7 (or a ``regulator`` edge of
+    the given sign)."""
+    edges = [e("s", "v1", "input"), e("v1", "sx", "output"), e("sx", "v2", "input"), e("v2", "s", "output")]
+    for a in active:
+        edges.append(e(a, "v7", "regulator" if regulator else "catalyst"))
+    edges.append(e("i1", "v7", "input"))
+    net = pd.DataFrame(edges)
+    if regulator:
+        net["pos_neg"] = [regulator if r["edge_type"] == "regulator" else "pos" for _, r in net.iterrows()]
+    _, rmap, umap = network([], ["v1", "v2", "v7"], {"s": "R-HSA-S", "sx": "R-HSA-SX", "i1": "R-HSA-I"})
+    profiles = {"R-HSA-S": prof([SUB]), "R-HSA-SX": prof([SUB], [("res", "p")], mods=1), "R-HSA-I": prof([20])}
+    steps = [("R-HSA-v1", SUB, "R-HSA-S", "R-HSA-SX", True), ("R-HSA-v2", SUB, "R-HSA-SX", "R-HSA-S", True)]
+    return net, rmap, umap, profiles, steps
+
+
+def base_and_stats(net, rmap, umap, profiles, steps, donors=frozenset({"R-HSA-v1"})):
+    st = {}
+    forms, _, _ = m.find_pools(net, rmap, umap, steps, profiles, set(donors), {}, st)
+    return next(u for _, u, _, _, b in forms if b), st
+
+
+def test_an_inhibitory_phosphorylation_makes_the_modified_state_the_base():
+    # the UNMODIFIED state catalyses downstream (CCNA:CDK2 vs CCNA:p-Y15-CDK2):
+    # it is the active form, so phi0 goes to it and the base is the modified state
+    base, st = base_and_stats(*two_state(active=("s",)))
+    assert base == U["sx"] and st["oriented_by_activity"] == 1 and st["activity_fallbacks"] == 0
+    # a positive regulator edge counts the same; a negative one does not
+    base, _ = base_and_stats(*two_state(active=("s",), regulator="pos"))
+    assert base == U["sx"]
+    base, st = base_and_stats(*two_state(active=("s",), regulator="neg"))
+    assert base == U["s"] and st["activity_fallbacks"] == 1
+
+
+def test_an_activating_phosphorylation_keeps_the_unmodified_base():
+    base, st = base_and_stats(*two_state(active=("sx",)))
+    assert base == U["s"] and st["oriented_by_activity"] == 1
+
+
+def test_both_or_neither_state_active_falls_back_to_the_residue_rule():
+    for active in ((), ("s", "sx")):
+        base, st = base_and_stats(*two_state(active=active))
+        assert base == U["s"] and st["oriented_by_activity"] == 0 and st["activity_fallbacks"] == 1 and st["ties"] == 0
+
+
+def test_a_states_own_step_does_not_make_it_active():
+    # RAS:GTP catalyses its own hydrolysis (a pool step): not "acting downstream"
+    net, rmap, umap, profiles, participants = ras_network()
+    base, st = base_and_stats(net, rmap, umap, profiles, m.r_steps(participants, profiles), {"R-HSA-vgef"})
+    assert base == U["g"] and st["activity_fallbacks"] == 1
+    # RAS:GTP also activating RAF downstream: still base GDP, now by activity
+    net = pd.concat([net, pd.DataFrame([e("t", "v7", "catalyst"), e("a2", "v7", "input")])], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v7"]], "reactome_id": ["R-HSA-v7"]})], ignore_index=True)
+    base, st = base_and_stats(net, rmap, umap, profiles, m.r_steps(participants, profiles), {"R-HSA-vgef"})
+    assert base == U["g"] and st["oriented_by_activity"] == 1
+
+
+def test_three_states_take_the_non_active_state_furthest_from_the_active_one():
+    # A <-> B <-> C in a line; C active -> base A. With A <-> C as well, B and A tie -> fallback.
+    def line(extra=()):
+        edges = [e("s", "v1", "input"), e("v1", "i1", "output"), e("i1", "v2", "input"), e("v2", "s", "output"),
+                 e("i1", "v3", "input"), e("v3", "sx", "output"), e("sx", "v4", "input"), e("v4", "i1", "output"),
+                 e("sx", "v7", "catalyst"), e("i2", "v7", "input")] + list(extra)
+        rxs = ["v1", "v2", "v3", "v4", "v7"] + (["v5", "v6"] if extra else [])
+        net, rmap, umap = network(edges, rxs, {"s": "R-HSA-A", "i1": "R-HSA-B", "sx": "R-HSA-C", "i2": "R-HSA-I"})
+        profiles = {"R-HSA-A": prof([SUB]), "R-HSA-B": prof([SUB], [("res", "p")], mods=1),
+                    "R-HSA-C": prof([SUB], [("res", "p"), ("res", "q")], mods=2), "R-HSA-I": prof([20])}
+        steps = [("R-HSA-v1", SUB, "R-HSA-A", "R-HSA-B", True), ("R-HSA-v2", SUB, "R-HSA-B", "R-HSA-A", True),
+                 ("R-HSA-v3", SUB, "R-HSA-B", "R-HSA-C", True), ("R-HSA-v4", SUB, "R-HSA-C", "R-HSA-B", True)]
+        if extra:
+            steps += [("R-HSA-v5", SUB, "R-HSA-A", "R-HSA-C", True), ("R-HSA-v6", SUB, "R-HSA-C", "R-HSA-A", True)]
+        return net, rmap, umap, profiles, steps
+    base, st = base_and_stats(*line(), donors=set())
+    assert base == U["s"] and st["oriented_by_activity"] == 1 and st["states"] == 3
+    base, st = base_and_stats(*line([e("s", "v5", "input"), e("v5", "sx", "output"),
+                                     e("sx", "v6", "input"), e("v6", "s", "output")]), donors=set())
+    assert base == U["s"] and st["activity_fallbacks"] == 1     # a tie: residues decide
+
+
+def test_a_member_of_a_set_valued_catalyst_acts_through_the_set_pool_node():
+    # LPIN1 <-> p-S106-LPIN1: the unphosphorylated form is a member of the
+    # "lipins" set-pool node, and that node catalyses PA dephosphorylation
+    net, rmap, umap, profiles, steps = two_state()
+    net = pd.concat([net, pd.DataFrame([e("s", "i2", "set_member"), e("i2", "v7", "catalyst")])], ignore_index=True)
+    umap[U["i2"]] = "R-HSA-LIPINS"
+    profiles["R-HSA-LIPINS"] = prof([SUB, 30])
+    base, st = base_and_stats(net, rmap, umap, profiles, steps)
+    assert base == U["sx"] and st["oriented_by_activity"] == 1
+    # a set-pool node that acts on nothing outside the pool gives no activity
+    net.loc[net["edge_type"] == "catalyst", "target_id"] = U["v1"]
+    base, st = base_and_stats(net, rmap, umap, profiles, steps)
+    assert base == U["s"] and st["activity_fallbacks"] == 1
+
+
+# --- amendment 7 (LNG_POOL_ACTIVE_VIA=made_from): the state the catalytic form is made from ------------------
+
+def cdk2_shape():
+    """CCNA:CDK2 <-> CCNA:p-Y15-CDK2 (the pool); CCNA:CDK2 -> CAK -> CCNA:p-T160-CDK2,
+    which catalyses a downstream phosphorylation (v8)."""
+    net, rmap, umap, profiles, steps = two_state()
+    extra = [e("s", "v5", "input"), e("v5", "i2", "output"), e("i2", "v8", "catalyst"), e("i3", "v8", "input")]
+    net = pd.concat([net, pd.DataFrame(extra)], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v5"], U["v8"]], "reactome_id": ["R-HSA-v5", "R-HSA-v8"]})],
+                     ignore_index=True)
+    umap[U["i2"]], umap[U["i3"]] = "R-HSA-T160", "R-HSA-ORC"
+    profiles["R-HSA-T160"] = prof([SUB], [("res", "pT160")], mods=1)
+    profiles["R-HSA-ORC"] = prof([40])
+    return net, rmap, umap, profiles, steps
+
+
+def test_made_from_flips_the_cdk2_shape_and_direct_does_not(monkeypatch):
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    base, st = base_and_stats(*cdk2_shape())
+    assert base == U["sx"] and st["oriented_by_activity"] == 1
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "direct")
+    base, st = base_and_stats(*cdk2_shape())
+    assert base == U["s"] and st["activity_fallbacks"] == 1
+    monkeypatch.delenv("LNG_POOL_ACTIVE_VIA")
+    assert base_and_stats(*cdk2_shape())[0] == U["sx"]         # the default is made_from
+    # the catalytic form reached through a set-pool node counts too
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    net, rmap, umap, profiles, steps = cdk2_shape()
+    net.loc[(net["source_id"] == U["i2"]) & (net["edge_type"] == "catalyst"), "edge_type"] = "set_member"
+    net.loc[(net["source_id"] == U["i2"]) & (net["edge_type"] == "set_member"), "target_id"] = U["i4"]
+    net = pd.concat([net, pd.DataFrame([e("i4", "v8", "catalyst")])], ignore_index=True)
+    umap[U["i4"]] = "R-HSA-CDK2S"
+    profiles["R-HSA-CDK2S"] = prof([SUB, 41])
+    assert base_and_stats(net, rmap, umap, profiles, steps)[0] == U["sx"]
+
+
+def test_made_from_does_not_flip_the_ras_shape(monkeypatch):
+    # RAS:GTP binds RAF as an INPUT; RAS:GTP:RAF catalyses nothing within two reactions
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    net, rmap, umap, profiles, participants = ras_network()
+    extra = [e("t", "v5", "input"), e("a2", "v5", "input"), e("v5", "i2", "output"),
+             e("i2", "v8", "input"), e("v8", "i3", "output")]
+    net = pd.concat([net, pd.DataFrame(extra)], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v5"], U["v8"]], "reactome_id": ["R-HSA-v5", "R-HSA-v8"]})],
+                     ignore_index=True)
+    umap[U["a2"]], umap[U["i2"]], umap[U["i3"]] = "R-HSA-RAF", "R-HSA-RASRAF", "R-HSA-PRAF"
+    profiles.update({"R-HSA-RAF": prof([50]), "R-HSA-RASRAF": prof([RAS, 50], slots=2, comps=2),
+                     "R-HSA-PRAF": prof([50], [("res", "p")], mods=1)})
+    base, st = base_and_stats(net, rmap, umap, profiles, m.r_steps(participants, profiles), {"R-HSA-vgef"})
+    assert base == U["g"] and st["activity_fallbacks"] == 1
+    # a pool step's own reaction (the GAP binding) never counts as the route
+    assert st["oriented_by_activity"] == 0
+
+
+def test_unknown_pool_active_via_is_a_startup_error(monkeypatch):
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "indirect")
+    with pytest.raises(ValueError, match="LNG_POOL_ACTIVE_VIA"):
+        m._reject_removed_env()
+    with pytest.raises(ValueError):
+        m.find_pools(*two_state()[:3], two_state()[4], two_state()[3])
+    monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
+    m._reject_removed_env()

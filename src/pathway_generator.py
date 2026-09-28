@@ -39,6 +39,7 @@ _FINGERPRINTED_ENV = (
     "LNG_SET_MEMBERS_OR",
     "LNG_SET_POOL",
     "LNG_CAP_POOLS",
+    "LNG_POOL_ACTIVE_VIA",
     "LNG_DIAGRAM_SET_MEMBER",
     # Of these three, only LNG_EMIT_ONE_SIDED is a genuine cache gap: it is
     # read in reaction_generator.decompose_by_reactions, so it changes
