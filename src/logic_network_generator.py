@@ -3475,7 +3475,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     catalyses a step of its own pool, split by whether the catalyst is the
     step's source form, its product form, or another form.
     """
-    import networkx as nx
+    import networkx as nx  # type: ignore[import-untyped]
     stats = stats if stats is not None else {}
     for k in POOL_STATS_KEYS:
         stats[k] = 0
@@ -3681,7 +3681,9 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             return y if cy > cx else x
         return None
 
-    forms, transitions, carriers = [], [], []
+    forms: List[Tuple] = []
+    transitions: List[Tuple] = []
+    carriers: List[Tuple] = []
     pools.sort(key=lambda p: min(ent.get(u, "") + u for u in p["states"]))
     for i, p in enumerate(pools, start=1):
         pid = f"pool{i}"
@@ -3702,10 +3704,10 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             stats["ties"] += 1
         for u in sorted(states | inter, key=lambda u: (ent.get(u, ""), u)):
             forms.append((pid, u, ent.get(u, ""), "state" if u in states else "intermediate", u == base))
-        for n, path in enumerate(paths, start=1):
-            for k, (a_u, b_u, rs, enz, cp) in enumerate(path, start=1):
+        for path_no, path in enumerate(paths, start=1):
+            for step_no, (a_u, b_u, rs, enz, cp) in enumerate(path, start=1):
                 for rx_u in sorted(cp):
-                    transitions.append((pid, f"{pid}_p{n}", k, a_u, b_u, rx_u, rs, enz))
+                    transitions.append((pid, f"{pid}_p{path_no}", step_no, a_u, b_u, rx_u, rs, enz))
         rx_on_paths = sorted({c for path in paths for st in path for c in st[4]})
         found: Set[Tuple[str, str]] = set()
         autocat: Set[Tuple[str, str, str]] = set()
