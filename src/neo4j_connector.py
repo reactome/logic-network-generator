@@ -932,6 +932,71 @@ def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
             for s in ids if derived(s)}
 
 
+# Group donors: a reaction consuming one ADDS a group to its substrate, so its
+# product is the modified form of an interconversion pool (specs/039). ChEBI
+# ids: ATP, GTP, S-adenosyl-L-methionine, acetyl-CoA, NAD+.
+_DONOR_CHEBI = ("30616", "37565", "15414", "59789", "15351", "57288", "15846", "57540")
+
+
+def get_donor_reactions(reaction_ids, ubiquitin_stids=()) -> Set[str]:
+    """Reactions (stIds) that consume a group donor or ubiquitin."""
+    ids = sorted({r for r in reaction_ids if r})
+    if not ids:
+        return set()
+    query = """
+        UNWIND $ids AS rid MATCH (r:ReactionLikeEvent {stId: rid})-[:input]->(i:PhysicalEntity)
+        OPTIONAL MATCH (i)-[:referenceEntity]->(re:ReferenceMolecule)
+        WITH rid, i, re WHERE re.identifier IN $chebi OR i.stId IN $ub
+        RETURN DISTINCT rid
+    """
+    try:
+        rows = get_graph().run(query, ids=ids, chebi=list(_DONOR_CHEBI), ub=list(ubiquitin_stids)).data()
+    except Exception:
+        logger.error("Error in get_donor_reactions", **_traceback_kwargs())
+        raise
+    return {r["rid"] for r in rows}
+
+
+def get_interconversion_pairs(pathway_id: str) -> List[Tuple[str, str, str, str]]:
+    """Curated interconversion pairs in a pathway (deltasignal specs/039):
+    (forward reaction, reverse reaction, A, B) with F: A -> B and R: B -> A, both
+    events of the pathway, A and B distinct non-small-molecule entities.
+    Returned as stIds, sorted, each unordered pair once per orientation."""
+    query = """
+        MATCH (p:Pathway {stId: $pid})-[:hasEvent*]->(r1:ReactionLikeEvent)-[:input]->(a:PhysicalEntity),
+              (r1)-[:output]->(b:PhysicalEntity)
+        MATCH (p)-[:hasEvent*]->(r2:ReactionLikeEvent)-[:input]->(b), (r2)-[:output]->(a)
+        WHERE r1 <> r2 AND a <> b AND NOT a:SimpleEntity AND NOT b:SimpleEntity
+        RETURN DISTINCT r1.stId AS f, r2.stId AS r, a.stId AS a, b.stId AS b
+    """
+    try:
+        rows = get_graph().run(query, pid=pathway_id).data()
+    except Exception:
+        logger.error("Error in get_interconversion_pairs", **_traceback_kwargs())
+        raise
+    return sorted((r["f"], r["r"], r["a"], r["b"]) for r in rows)
+
+
+def get_form_modification_counts(stable_ids) -> Dict[str, Tuple[int, int]]:
+    """stId -> (modified residues summed over its protein leaves, component
+    count), to pick a pool's least-modified (base) form (deltasignal specs/039)."""
+    ids = sorted({s for s in stable_ids if s})
+    if not ids:
+        return {}
+    query = """
+        UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})
+        RETURN s,
+          size([(e)-[:hasComponent|hasMember|hasCandidate*0..6]->(l:EntityWithAccessionedSequence)-[:hasModifiedResidue]->(m) | m]) AS mods,
+          size([(e)-[:hasComponent*1..6]->(c) | c]) AS comps
+    """
+    try:
+        rows = get_graph().run(query, ids=ids).data()
+    except Exception:
+        logger.error("Error in get_form_modification_counts", **_traceback_kwargs())
+        raise
+    return {r["s"]: (int(r["mods"]), int(r["comps"])) for r in rows}
+
+
 def get_reactome_release() -> Optional[int]:
     """The Reactome release number of the connected graph, or None.
 

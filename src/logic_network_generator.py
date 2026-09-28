@@ -3409,6 +3409,131 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
     logger.info(f"Exported {len(rows)} drug-derived entities to {output_file}")
 
 
+def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
+               uuid_mapping: Dict[str, str], pairs, mod_counts: Dict[str, Tuple[int, int]],
+               donor_reactions: Optional[Set[str]] = None):
+    """Interconversion pools at NODE level (deltasignal specs/039).
+
+    A curated pair (F: A -> B, R: B -> A) is a pool transition only where the
+    same A node feeds a copy of F and receives a copy of R's output, and the
+    same B node is produced by that F and consumed by that R: the loop
+    A -> F -> B -> R -> A exists in this network. Occurrences the per-position
+    uuids separated are not re-merged. Forms joined by such loops form one pool.
+
+    Returns (forms, transitions):
+      forms:       [(pool_id, node_uuid, stable_id, is_base)]
+      transitions: [(pool_id, from_uuid, to_uuid, reaction_uuid, reaction_stid)]
+    The base form (the unmodified, resting form) is decided per pair, then per pool:
+    the modified form is the product of the direction that consumes a group donor
+    (ATP, GTP, SAM, acetyl-CoA, NAD+, ubiquitin); failing that, the form with more
+    components (a complex against its parts), then more modified residues. The
+    pool's base is the form no pair marks as modified; ties fall back to the
+    smaller stId and are counted by the caller.
+    """
+    donor_reactions = donor_reactions or set()
+    if pathway_logic_network.empty or not pairs:
+        return [], []
+    ent = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
+    vr = {str(u): str(r) for u, r in zip(reaction_id_map["uid"], reaction_id_map["reactome_id"])}
+    ins: Dict[str, Set[str]] = {}
+    outs: Dict[str, Set[str]] = {}
+    for _, e in pathway_logic_network.iterrows():
+        s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
+        if et == "input" and t in vr:
+            ins.setdefault(t, set()).add(s)
+        elif et == "output" and s in vr:
+            outs.setdefault(s, set()).add(t)
+    copies: Dict[str, List[str]] = {}
+    for u, r in vr.items():
+        copies.setdefault(r, []).append(u)
+    trans = set()
+    for f, r, a, b in pairs:
+        for fu in sorted(copies.get(f, [])):
+            for ru in sorted(copies.get(r, [])):
+                for au in sorted(ins.get(fu, set()) & outs.get(ru, set())):
+                    if ent.get(au) != a:
+                        continue
+                    for bu in sorted(outs.get(fu, set()) & ins.get(ru, set())):
+                        if ent.get(bu) != b:
+                            continue
+                        trans.add((au, bu, fu, f))
+                        trans.add((bu, au, ru, r))
+    if not trans:
+        return [], []
+    parent: Dict[str, str] = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for a_u, b_u, _, _ in trans:
+        ra, rb = find(a_u), find(b_u)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    groups: Dict[str, List[str]] = {}
+    for n in sorted(parent):
+        groups.setdefault(find(n), []).append(n)
+
+    def modified_side(a_u, b_u, f_stid, r_stid):
+        """The node the pair marks as modified, or None when undecidable."""
+        fd, rd = f_stid in donor_reactions, r_stid in donor_reactions
+        if fd != rd:
+            return b_u if fd else a_u
+        ma, ca = mod_counts.get(ent.get(a_u, ""), (0, 0))
+        mb, cb = mod_counts.get(ent.get(b_u, ""), (0, 0))
+        if ca != cb:
+            return b_u if cb > ca else a_u
+        if ma != mb:
+            return b_u if mb > ma else a_u
+        return None
+    marked: Dict[str, int] = {}
+    fwd = {(a_u, b_u): rs for a_u, b_u, _, rs in trans}
+    for (a_u, b_u), fs in fwd.items():
+        rs = fwd.get((b_u, a_u))
+        if rs is None or a_u > b_u:
+            continue
+        side = modified_side(a_u, b_u, fs, rs)
+        if side is not None:
+            marked[side] = marked.get(side, 0) + 1
+
+    def base_key(u):
+        s = ent.get(u, "")
+        mods, comps = mod_counts.get(s, (0, 0))
+        return (marked.get(u, 0), mods, comps, s, u)
+    forms, transitions = [], []
+    order = sorted(groups.values(), key=lambda g: min(ent.get(u, "") + u for u in g))
+    for i, members in enumerate(order, start=1):
+        pid = f"pool{i}"
+        base = min(members, key=base_key)
+        for u in sorted(members):
+            forms.append((pid, u, ent.get(u, ""), u == base))
+        for a_u, b_u, rx, rs in sorted(trans):
+            if a_u in members:
+                transitions.append((pid, a_u, b_u, rx, rs))
+    return forms, transitions
+
+
+def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
+                 uuid_mapping: Dict[str, str], pools_file: str, transitions_file: str) -> None:
+    """Write pools.csv and pool_transitions.csv (deltasignal specs/039): each
+    protein's interconversion pool, for a consumer that solves it at steady state
+    (pi = pi P) instead of multiplying around the loop. Both files are written
+    even when empty, so a consumer can tell "no pools" from "no table"."""
+    from src.neo4j_connector import (get_interconversion_pairs, get_form_modification_counts,
+                                     get_donor_reactions)
+    pairs = get_interconversion_pairs(pathway_id)
+    mods = get_form_modification_counts({x for p in pairs for x in (p[2], p[3])})
+    donors = get_donor_reactions({x for p in pairs for x in (p[0], p[1])}, _UBIQUITIN_STIDS)
+    forms, transitions = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, pairs, mods, donors)
+    pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "is_base"]).to_csv(pools_file, index=False)
+    pd.DataFrame(transitions, columns=["pool_id", "from_uuid", "to_uuid", "reaction_uuid", "reaction_stid"]).to_csv(
+        transitions_file, index=False)
+    logger.info(f"Exported {len({f[0] for f in forms})} pools ({len(forms)} forms, "
+                f"{len(transitions)} transitions) to {pools_file}")
+
+
 def export_node_resolution(pathway_id: str,
                            pathway_logic_network: pd.DataFrame,
                            reaction_id_map: pd.DataFrame,
