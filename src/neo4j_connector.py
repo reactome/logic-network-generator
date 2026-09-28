@@ -1002,7 +1002,7 @@ def get_form_profiles(stable_ids) -> Dict[str, Dict[str, Any]]:
     - ``mods``: modified residues summed over all leaves (amendment 1's base
       rule), ``comps``: components at any depth, ``slots``: non-small-molecule
       positions (a set inside a complex is one position; a bare protein or set
-      is one).
+      is one), ``small``: the entity is a SimpleEntity.
 
     Cached per process: the 92 catalog pathways share most entities."""
     ids = sorted({s for s in stable_ids if s})
@@ -1020,7 +1020,8 @@ def get_form_profiles(stable_ids) -> Dict[str, Dict[str, Any]]:
         UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})
         RETURN s,
           size([(e)-[:hasComponent*1..6]->(c) | c]) AS comps,
-          size([(e)-[:hasComponent*0..6]->(x) WHERE NOT x:Complex AND NOT x:SimpleEntity | x]) AS slots
+          size([(e)-[:hasComponent*0..6]->(x) WHERE NOT x:Complex AND NOT x:SimpleEntity | x]) AS slots,
+          e:SimpleEntity AS small
     """
     smalls_query = """
         UNWIND $ids AS s MATCH (c:Complex {stId: s})-[:hasComponent]->(sm:SimpleEntity)
@@ -1031,12 +1032,13 @@ def get_form_profiles(stable_ids) -> Dict[str, Dict[str, Any]]:
         for i in range(0, len(missing), 200):
             chunk = missing[i:i + 200]
             prof: Dict[str, Dict[str, Any]] = {
-                s: {"proteins": set(), "fixed": set(), "sig": {}, "mods": 0, "comps": 0, "slots": 0,
+                s: {"proteins": set(), "fixed": set(), "sig": {}, "mods": 0, "comps": 0, "slots": 0, "small": False,
                     "_res": {}, "_cx": {}} for s in chunk}
             leaf_rows = get_graph().run(leaves_query, ids=chunk).data()
             for r in get_graph().run(counts_query, ids=chunk).data():
                 prof[r["s"]]["comps"] = int(r["comps"])
                 prof[r["s"]]["slots"] = int(r["slots"])
+                prof[r["s"]]["small"] = bool(r["small"])
             complexes = set()
             for r in leaf_rows:
                 if r["r"] is None:
