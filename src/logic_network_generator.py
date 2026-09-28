@@ -3410,11 +3410,11 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
 
 
 POOL_MAX_STEPS = 6          # a state -> intermediates -> state path longer than this is dropped
-POOL_PATH_BUDGET = 20000    # a pool with more uuid paths than this is dropped (a safety cap, counted)
+POOL_PATH_BUDGET = 20000    # a pool with more paths (node + reaction sequences) than this is dropped and counted
 POOL_STATS_KEYS = ("pools", "states", "intermediates", "paths", "multi_step_pools", "long_paths_dropped",
                    "shared_nodes_dropped", "ties", "carriers", "autocat_source", "autocat_product",
                    "autocat_other", "carrier_loops", "no_path_pools", "off_path_intermediates",
-                   "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins")
+                   "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins", "copy_rows")
 
 
 def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
@@ -3439,11 +3439,14 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     loop: an enzyme's E -> E:S -> E). In each signature the forms with the
     fewest non-small slots are states, the rest intermediates. Transitions are
     simple directed paths state -> intermediates* -> another state of at most
-    ``POOL_MAX_STEPS`` steps; each uuid path is one parallel transition, and
-    longer ones are dropped and counted. Because an intermediate is one node
-    however many reaction copies enter and leave it, the uuid paths through it
-    are the product of the copies per step (RAF: 48 GAP binding copies x 48
-    release copies = 2,304 two-step paths); a pool with more than
+    ``POOL_MAX_STEPS`` steps, longer ones dropped and counted. A path's
+    identity is its node sequence plus the reaction stId at each step; the
+    reaction NODES of that stId between the step's two nodes (variant and set
+    copies) are the step's parallel copies and are listed one row each, so a
+    consumer reads a step as the mean of its copies and a path as the product
+    of its steps. Different reactions between the same two nodes (GEF
+    exchange beside intrinsic exchange) stay different paths, since each is
+    weighed on its own as enzyme-driven or not. A pool with more than
     ``POOL_PATH_BUDGET`` paths is dropped and counted (``budget_dropped``). The base state follows amendment 1
     (residues, then the donor-consuming direction, then components; undecided
     pools fall back to the smaller stId and are counted). Pools identical for
@@ -3457,7 +3460,9 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     Returns (forms, transitions, carriers):
       forms:       [(pool_id, node_uuid, stable_id, role, is_base)], role state | intermediate
       transitions: [(pool_id, path_id, step, source_uuid, target_uuid, reaction_uuid, reaction_stid, enzyme_driven)]
-                   ``enzyme_driven`` is the STEP's flag; a path is enzyme-driven if any step is.
+                   one row per (path, step, copy): rows sharing (pool_id, path_id, step) have the same
+                   source, target and reaction_stid and differ in reaction_uuid. ``enzyme_driven`` is the
+                   STEP's flag; a path is enzyme-driven if any step is.
       carriers:    [(pool_id, carrier_uuid, release_reaction_uuid)]
     ``stats`` receives the counts in ``POOL_STATS_KEYS``; the autocatalysis
     counts are distinct (reaction node, catalyst) pairs where a form of the pool
@@ -3572,21 +3577,28 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 for members in by_sig.values():
                     fewest = min(prof(u, "slots") for u in members)
                     states |= {u for u in members if prof(u, "slots") == fewest}
-                adj: Dict[str, List[Tuple[str, str, str, bool]]] = {}
+                # a step is (source node, target node, reaction stId); the reaction
+                # nodes of that stId between those nodes are its parallel copies
+                copies_of: Dict[Tuple[str, str, str], List[str]] = {}
+                enz_of: Dict[Tuple[str, str, str], bool] = {}
                 for a_u, b_u, rx_u, rs, enz in sorted(by_r[r]):
                     if a_u in scc and b_u in scc:
-                        adj.setdefault(a_u, []).append((b_u, rx_u, rs, enz))
-                paths: List[Tuple[Tuple[str, str, str, str, bool], ...]] = []
+                        copies_of.setdefault((a_u, b_u, rs), []).append(rx_u)
+                        enz_of[(a_u, b_u, rs)] = enz_of.get((a_u, b_u, rs), False) or enz
+                adj: Dict[str, List[Tuple[str, str]]] = {}
+                for a_u, b_u, rs in sorted(copies_of):
+                    adj.setdefault(a_u, []).append((b_u, rs))
+                paths: List[Tuple[Tuple[str, str, str, bool, Tuple[str, ...]], ...]] = []
                 over_budget = False
 
                 def walk(u, so_far, seen):
                     nonlocal over_budget
-                    for v, rx_u, rs, enz in adj.get(u, ()):
+                    for v, rs in adj.get(u, ()):
                         if over_budget:
                             return
                         if v in seen:
                             continue
-                        new = so_far + ((u, v, rx_u, rs, enz),)
+                        new = so_far + ((u, v, rs, enz_of[(u, v, rs)], tuple(copies_of[(u, v, rs)])),)
                         if v in states:
                             paths.append(new)
                             if len(paths) > POOL_PATH_BUDGET:
@@ -3614,13 +3626,13 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 local["off_path_states"] += len(states - on_path)
                 local["off_path_intermediates"] += len(scc - states - on_path)
                 key = (frozenset(kept_states), frozenset(inter),
-                       frozenset(tuple((a_u, b_u, rx_u) for a_u, b_u, rx_u, _, _ in p) for p in paths))
+                       frozenset(tuple((a_u, b_u, rs, cp) for a_u, b_u, rs, _, cp in p) for p in paths))
                 if key in pools:
                     pools[key]["r"].add(r)
                     local["merged_proteins"] += 1
                 else:
                     pools[key] = {"r": {r}, "states": kept_states, "inter": inter, "paths": paths,
-                                  "nodes": kept_states | inter | {st[2] for p in paths for st in p}}
+                                  "nodes": kept_states | inter | {c for p in paths for st in p for c in st[4]}}
         return list(pools.values()), local
 
     removed: Set[str] = set()
@@ -3640,15 +3652,15 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     stats["shared_nodes_dropped"] = dropped_shared
 
     def path_key(p):
-        return tuple((ent.get(a, ""), a, ent.get(b, ""), b, rx) for a, b, rx, _, _ in p)
+        return tuple((ent.get(a, ""), a, ent.get(b, ""), b, rs) for a, b, rs, _, _ in p)
 
     def modified_side(x, y, xy, yx):
         """The state a pair marks as modified, or None when undecidable."""
         mx, my = prof(x, "mods"), prof(y, "mods")
         if mx != my:
             return y if my > mx else x
-        fd = any(rs in donor_reactions for p in xy for _, _, _, rs, _ in p)
-        rd = any(rs in donor_reactions for p in yx for _, _, _, rs, _ in p)
+        fd = any(rs in donor_reactions for p in xy for _, _, rs, _, _ in p)
+        rd = any(rs in donor_reactions for p in yx for _, _, rs, _, _ in p)
         if fd != rd:
             return y if fd else x
         cx, cy = prof(x, "comps"), prof(y, "comps")
@@ -3678,28 +3690,30 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
         for u in sorted(states | inter, key=lambda u: (ent.get(u, ""), u)):
             forms.append((pid, u, ent.get(u, ""), "state" if u in states else "intermediate", u == base))
         for n, path in enumerate(paths, start=1):
-            for k, (a_u, b_u, rx_u, rs, enz) in enumerate(path, start=1):
-                transitions.append((pid, f"{pid}_p{n}", k, a_u, b_u, rx_u, rs, enz))
-        rx_on_paths = sorted({st[2] for path in paths for st in path})
+            for k, (a_u, b_u, rs, enz, cp) in enumerate(path, start=1):
+                for rx_u in sorted(cp):
+                    transitions.append((pid, f"{pid}_p{n}", k, a_u, b_u, rx_u, rs, enz))
+        rx_on_paths = sorted({c for path in paths for st in path for c in st[4]})
         found: Set[Tuple[str, str]] = set()
         autocat: Set[Tuple[str, str, str]] = set()
         for path in paths:
-            for a_u, b_u, rx_u, _, enz in path:
-                for c in cats.get(rx_u, ()):
-                    if c in p["nodes"]:   # a form of the pool catalyses a step of its own pool
-                        autocat.add((rx_u, c, "autocat_source" if c == a_u else "autocat_product" if c == b_u
-                                     else "autocat_other"))
-                if not enz:
-                    continue
-                for j in ins.get(rx_u, {}):
-                    if j == a_u or j in p["nodes"] or pe_of(j) in _UBIQUITIN_STIDS:
+            for a_u, b_u, _, enz, cp in path:
+                for rx_u in cp:
+                    for c in cats.get(rx_u, ()):
+                        if c in p["nodes"]:   # a form of the pool catalyses a step of its own pool
+                            autocat.add((rx_u, c, "autocat_source" if c == a_u else "autocat_product" if c == b_u
+                                         else "autocat_other"))
+                    if not enz:
                         continue
-                    pj = proteins(j)
-                    if not pj or pj & rset:
-                        continue
-                    for rel in rx_on_paths:
-                        if j in outs.get(rel, {}):
-                            found.add((j, rel))
+                    for j in ins.get(rx_u, {}):
+                        if j == a_u or j in p["nodes"] or pe_of(j) in _UBIQUITIN_STIDS:
+                            continue
+                        pj = proteins(j)
+                        if not pj or pj & rset:
+                            continue
+                        for rel in rx_on_paths:
+                            if j in outs.get(rel, {}):
+                                found.add((j, rel))
         carriers.extend((pid, j, rel) for j, rel in sorted(found, key=lambda t: (ent.get(t[0], ""), t[0], t[1])))
         for _, _, kind in autocat:
             stats[kind] += 1
@@ -3707,6 +3721,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
         stats["states"] += len(states)
         stats["intermediates"] += len(inter)
         stats["paths"] += len(paths)
+        stats["copy_rows"] += sum(len(cp) for path in paths for *_, cp in path)
         stats["multi_step_pools"] += int(any(len(path) > 1 for path in paths))
         stats["carriers"] += len({j for j, _ in found})
     return forms, transitions, carriers
@@ -3776,7 +3791,8 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     pd.DataFrame(carriers, columns=["pool_id", "carrier_uuid", "release_reaction_uuid"]).to_csv(carriers_file, index=False)
     logger.info(
         f"Exported {stats['pools']} pools ({stats['states']} states, {stats['intermediates']} intermediates, "
-        f"{stats['paths']} paths, {stats['multi_step_pools']} multi-step; {len(steps)} R-steps at stId level; "
+        f"{stats['paths']} paths in {stats['copy_rows']} step-copy rows, {stats['multi_step_pools']} multi-step; "
+        f"{len(steps)} R-steps at stId level; "
         f"{stats['long_paths_dropped']} paths over {POOL_MAX_STEPS} steps dropped, "
         f"{stats['shared_nodes_dropped']} shared nodes dropped, {stats['ties']} oriented by tie-break, "
         f"{stats['carriers']} carriers, {stats['carrier_loops']} carrier loops, "

@@ -270,3 +270,39 @@ def test_a_stoichiometry_two_input_is_not_a_step():
     _, _, _, profiles, participants = ras_network()
     participants = [(rx, role, pe, 2 if (rx, role) == ("R-HSA-vgef", "input") else s) for rx, role, pe, s in participants]
     assert ("R-HSA-vgef", RAS) not in {(rx, r) for rx, r, *_ in m.r_steps(participants, profiles)}
+
+
+def test_copies_of_one_reaction_collapse_into_one_path_with_one_row_per_copy():
+    # RAS with the GAP binding curated for two GAP variants (two reaction NODES of
+    # one stId) and both release copies, plus an intrinsic exchange beside the GEF:
+    # copies of one stId are one step (k rows); different reactions stay apart.
+    net, rmap, umap, profiles, participants = ras_network()
+    extra = [e("t", "v7", "input"), e("a2", "v7", "input"), e("v7", "tx", "output"),
+             e("tx", "v8", "input"), e("v8", "g", "output"), e("v8", "a2", "output"),
+             e("g", "vback", "input"), e("vback", "t", "output")]
+    net = pd.concat([net, pd.DataFrame(extra)], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U["v7"], U["v8"], U["vback"]],
+                                          "reactome_id": ["R-HSA-vbind", "R-HSA-vrel", "R-HSA-vint"]})], ignore_index=True)
+    umap[U["a2"]] = "R-HSA-GAP2"
+    profiles["R-HSA-GAP2"] = prof([GAP_P])
+    participants += [("R-HSA-vint", "input", "R-HSA-G", 1), ("R-HSA-vint", "output", "R-HSA-T", 1)]
+    st = {}
+    _, trans, carriers = m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles, set(), {}, st)
+    rows = {}
+    for _, pid, step, a, b, rx, rs, enz in trans:
+        rows.setdefault((pid, step), []).append((a, b, rx, rs, enz))
+    by_shape = {}
+    for (pid, step), rs_ in rows.items():
+        assert len({(a, b, rs, enz) for a, b, _, rs, enz in rs_}) == 1     # one source, target, stId, flag per step
+        a, b, _, rs, enz = rs_[0]
+        by_shape.setdefault(pid, []).append((step, a, b, rs, enz, sorted(rx for _, _, rx, _, _ in rs_)))
+    shapes = sorted(tuple(x[1:] for x in sorted(v)) for v in by_shape.values())
+    assert shapes == sorted([
+        ((U["g"], U["t"], "R-HSA-vgef", True, [U["vgef"]]),),
+        ((U["g"], U["t"], "R-HSA-vint", False, [U["vback"]]),),           # not merged into the GEF step
+        ((U["t"], U["g"], "R-HSA-vhyd", False, [U["vhyd"]]),),
+        ((U["t"], U["tx"], "R-HSA-vbind", True, sorted([U["vbind"], U["v7"]])),
+         (U["tx"], U["g"], "R-HSA-vrel", False, sorted([U["vrel"], U["v8"]]))),
+    ])
+    assert st["paths"] == 4 and st["copy_rows"] == 7 and st["multi_step_pools"] == 1
+    assert sorted(carriers) == sorted([("pool1", U["gap"], U["vrel"]), ("pool1", U["a2"], U["v8"])])
