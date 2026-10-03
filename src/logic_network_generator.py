@@ -1960,7 +1960,7 @@ def _emit_boundary_decomposition_edges_inner(
     # alpha/beta perturbation upstream of ISGF3 was severed there (200 held-out
     # cases). The downstream-reuse rule (specs/018) applies unchanged.
     hierarchy = env_flag("LNG_BOUNDARY_HIERARCHY")   # default since deltasignal specs/030 (held-out +197, re-measured)
-    from src.neo4j_connector import get_complex_components
+    from src.neo4j_connector import get_complex_components, get_set_members
     nested_registry: Dict[tuple, str] = {}
     seen_edges: Set[tuple] = set()
     assembly_count = 0
@@ -1985,14 +1985,15 @@ def _emit_boundary_decomposition_edges_inner(
         roots = [c for c in ok if c not in targets]
         return (roots or ok)[0]
 
-    def _emit(src: str, dst: str) -> None:
+    def _emit(src: str, dst: str, kind: str = "assembly") -> None:
         nonlocal assembly_count
         if (src, dst) in seen_edges:
             return
         seen_edges.add((src, dst))
         pathway_logic_network_data.append({
-            "source_id": src, "target_id": dst, "pos_neg": "pos", "and_or": "and",
-            "edge_type": "assembly", "stoichiometry": 1,
+            "source_id": src, "target_id": dst, "pos_neg": "pos",
+            "and_or": "or" if kind == "set_member" else "and",
+            "edge_type": kind, "stoichiometry": 1,
         })
         assembly_count += 1
         if hierarchy:
@@ -2019,9 +2020,56 @@ def _emit_boundary_decomposition_edges_inner(
                     nested_built += 1
                     _decompose_hier(nested_registry[key], comp, root_uuid, depth + 1)
                 _emit(nested_registry[key], container_uuid)
+            elif _is_set(comp) and depth < 6:
+                _emit(_set_node(comp, root_uuid, depth), container_uuid)
             else:
                 for leaf in sorted(get_terminal_components(comp)):
                     _emit(_existing_upstream(leaf, root_uuid) or _leaf_uuid(leaf, root_uuid), container_uuid)
+
+    # A SET component is "any one of its members" (LNG code review F7,
+    # deltasignal specs/044). It used to be flattened into its members, each a
+    # required AND input of the complex, so losing one alternative removed the
+    # complex. It is now one node, fed by its members over `set_member` (OR)
+    # edges, and that node is the complex's input. The consumer's set-pool rule
+    # (deltasignal specs/033) decides how members combine. Members are built
+    # the way components are: a node the network already has, a nested complex,
+    # a nested set, or a leaf. Modifier-isoform sets stay atomic, as before.
+    def _set_node(set_stid: str, root_uuid: str, depth: int) -> str:
+        nonlocal nested_built
+        key = (root_uuid, set_stid)
+        if key in nested_registry:
+            return nested_registry[key]
+        set_uuid = nested_registry[key] = str(uuid.uuid4())
+        reactome_id_to_uuid[set_uuid] = set_stid
+        nested_built += 1
+        for m in sorted(get_set_members(set_stid) or {}):
+            existing = _existing_upstream(m, root_uuid)
+            if existing is not None:
+                _emit(existing, set_uuid, "set_member")
+            elif _is_complex(m) and depth < 5:
+                mkey = (root_uuid, m)
+                if mkey not in nested_registry:
+                    nested_registry[mkey] = str(uuid.uuid4())
+                    reactome_id_to_uuid[nested_registry[mkey]] = m
+                    nested_built += 1
+                    _decompose_hier(nested_registry[mkey], m, root_uuid, depth + 2)
+                _emit(nested_registry[mkey], set_uuid, "set_member")
+            elif _is_set(m) and depth < 5:
+                _emit(_set_node(m, root_uuid, depth + 1), set_uuid, "set_member")
+            else:
+                for leaf in sorted(get_terminal_components(m)):
+                    _emit(_existing_upstream(leaf, root_uuid) or _leaf_uuid(leaf, root_uuid),
+                          set_uuid, "set_member")
+        return set_uuid
+
+    def _is_set(entity_id: str) -> bool:
+        if "::variant::" in entity_id or entity_id in modifier_isoform_set_ids():
+            return False
+        try:
+            labels = get_labels(entity_id)
+        except IndexError:
+            return False
+        return any(t in labels for t in ("EntitySet", "DefinedSet", "CandidateSet", "OpenSet"))
 
     # Deterministic order under the hierarchy: with the downstream test now
     # updated as edges are emitted, which of two jointly cycle-closing joins
