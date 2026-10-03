@@ -56,8 +56,11 @@ Each pathway generates a directory under `output/`:
 
 ```
 output/<Pathway_Name>_R-HSA-<id>/
-├── logic_network.csv          # Main output: edges of the perturbation graph
-├── stid_to_uuid_mapping.csv   # UUID → Reactome stable ID
+├── logic_network.csv          # The curated network: edges from Reactome reactions
+├── boundary_edges.csv         # Derived: root/terminal complexes decomposed (same columns)
+├── stid_to_uuid_mapping.csv   # UUID → Reactome stable ID (nodes of both files)
+├── containment.csv            # What each entity contains, flattened to leaves
+├── containment_structure.csv  # What each entity is made of, one level at a time, by relation
 └── cache/
     ├── reaction_connections.csv
     ├── decomposed_uid_mapping.csv
@@ -74,10 +77,10 @@ output/<Pathway_Name>_R-HSA-<id>/
 | `target_id` | UUID of target node |
 | `pos_neg` | `pos` (activates / produces) or `neg` (negative regulator) |
 | `and_or` | `and` (required), `or` (alternative source), or empty (single producer) |
-| `edge_type` | `input`, `output`, `catalyst`, `regulator`, `assembly`, or `dissociation` |
+| `edge_type` | `input`, `output`, `catalyst`, `regulator`, `set_member`, `depletion`; in `boundary_edges.csv`, `assembly` or `dissociation` |
 | `stoichiometry` | Stoichiometric coefficient from Reactome |
 
-`assembly` and `dissociation` edges only appear at boundaries: a leaf protein assembles into a root-input complex, or a terminal-output complex dissociates into its components.
+`logic_network.csv` holds what curators curated. The generator also decomposes root-input and terminal-output complexes so a single protein can be perturbed or read: a leaf assembles into a root complex (`assembly`), a terminal complex dissociates into its components (`dissociation`). Those edges are **not curated**, so they are written to `boundary_edges.csv` (same columns), not to `logic_network.csv`. Load both for the decomposed network (DeltaSignal does); load `logic_network.csv` alone for the network as curated, where root complexes are roots again. `containment_structure.csv` gives each entity's structure one level at a time, with the relation (`component`, set `member`, or `candidate`) and stoichiometry, so a consumer can tell a required subunit from one alternative of a set.
 
 ## Validation
 

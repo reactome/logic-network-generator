@@ -33,6 +33,11 @@ class PathwayResult(NamedTuple):
     catalyst_regulator_map: pd.DataFrame
     reaction_id_map: pd.DataFrame
     entity_uuid_registry: Dict[tuple, str] = {}
+    # One flag per logic_network row: True for an edge the generator derived
+    # from complex/set STRUCTURE at a root input or terminal output (assembly,
+    # dissociation, composition), not from a curated reaction. Written to
+    # boundary_edges.csv instead of logic_network.csv (deltasignal specs/044).
+    boundary_mask: List[bool] = []
 
 
 def _get_reactome_id_from_hash(decomposed_uid_mapping: pd.DataFrame, hash_value: str) -> str:
@@ -1767,6 +1772,20 @@ def _emit_boundary_decomposition_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
 ) -> None:
+    n_before = len(pathway_logic_network_data)
+    try:
+        _emit_boundary_decomposition_edges_inner(pathway_logic_network_data, reactome_id_to_uuid)
+    finally:
+        # Every edge this pass adds is derived from structure, not curated:
+        # tag it so the export can keep it out of logic_network.csv.
+        for e in pathway_logic_network_data[n_before:]:
+            e["_boundary"] = True
+
+
+def _emit_boundary_decomposition_edges_inner(
+    pathway_logic_network_data: List[Dict[str, Any]],
+    reactome_id_to_uuid: Dict[str, str],
+) -> None:
     """Expose the members of every root-input and terminal-output complex.
 
     Under LNG_BOUNDARY_HIERARCHY=1 (the default since deltasignal specs/030) the
@@ -2788,6 +2807,7 @@ def create_pathway_logic_network(
 
     # Create final DataFrame
     pathway_logic_network = pd.DataFrame(pathway_logic_network_data, columns=list(columns.keys()))
+    boundary_mask = [bool(e.get("_boundary")) for e in pathway_logic_network_data]
     # Coerce stoichiometry to nullable Int64 — emission sites use a mix of
     # int (`1`) and float (`1.0`) literals, which makes pandas infer float64
     # for the column and serialize as `1.0` in the CSV. Force integer so the
@@ -2821,6 +2841,7 @@ def create_pathway_logic_network(
         catalyst_regulator_map=catalyst_regulator_uuid_map,
         reaction_id_map=reaction_id_map,
         entity_uuid_registry=entity_uuid_registry,
+        boundary_mask=boundary_mask,
     )
 
 def find_root_inputs(pathway_logic_network: pd.DataFrame) -> List[Any]:
@@ -3308,6 +3329,65 @@ def export_containment(reactome_id_to_uuid: Dict[str, str],
     composite = sum(1 for v in leaves_by_stid.values() if len(v) > 1)
     logger.info(f"Containment: {len(rows)} rows, {composite} composite entities "
                 f"of {len(leaves_by_stid)} distinct")
+
+
+_STRUCTURE_RELATION = {"hasComponent": "component", "hasMember": "member",
+                       "hasCandidate": "candidate"}
+
+
+def export_containment_structure(reactome_id_to_uuid: Dict[str, str],
+                                 output_file: str) -> None:
+    """Write containment_structure.csv: what each entity is made of, ONE level
+    at a time, with the kind of relation (deltasignal specs/044).
+
+    containment.csv flattens to leaves, so it cannot say whether a protein is a
+    required component of a complex or one alternative of a set inside it; a
+    consumer reading it would make every alternative required (LNG code review
+    2026-10-02, F7). This file is Reactome's own structure, unflattened and
+    with no generator rule applied (modifier sets are walked like any other):
+
+        - parent_stable_id, parent_type: the container and its class
+          (Complex, DefinedSet, CandidateSet, OpenSet, Polymer, ...)
+        - child_stable_id
+        - relation: component (Complex hasComponent), member (set hasMember),
+          candidate (CandidateSet hasCandidate)
+        - stoichiometry: for a component; empty for set membership
+        - reactome_release
+
+    Every entity in the network and everything below it is walked.
+    """
+    from src.neo4j_connector import get_graph, get_reactome_release
+    release = get_reactome_release()
+    graph = get_graph()
+    rows = []
+    seen: Set[str] = set()
+    frontier = sorted({str(v) for v in reactome_id_to_uuid.values() if v})
+    while frontier:
+        seen.update(frontier)
+        found = graph.run(
+            """UNWIND $ids AS id
+               MATCH (p:PhysicalEntity {stId: id})-[r:hasComponent|hasMember|hasCandidate]->(c:PhysicalEntity)
+               RETURN p.stId AS parent, [l IN labels(p) WHERE l IN ['Complex','DefinedSet','CandidateSet',
+                      'OpenSet','EntitySet','Polymer']] AS ptype,
+                      c.stId AS child, type(r) AS rel, r.stoichiometry AS stoich""",
+            ids=frontier).data()
+        nxt: Set[str] = set()
+        for r in found:
+            ptype = [t for t in r["ptype"] if t != "EntitySet"] or r["ptype"] or [""]
+            relation = _STRUCTURE_RELATION[r["rel"]]
+            rows.append({"parent_stable_id": r["parent"], "parent_type": ptype[0],
+                         "child_stable_id": r["child"], "relation": relation,
+                         "stoichiometry": r["stoich"] if relation == "component" else None,
+                         "reactome_release": release})
+            if r["child"] not in seen:
+                nxt.add(r["child"])
+        frontier = sorted(nxt)
+    df = pd.DataFrame(rows, columns=["parent_stable_id", "parent_type", "child_stable_id",
+                                     "relation", "stoichiometry", "reactome_release"])
+    df = df.drop_duplicates().sort_values(["parent_stable_id", "relation", "child_stable_id"])
+    df["stoichiometry"] = df["stoichiometry"].astype("Int64")
+    df.to_csv(output_file, index=False)
+    logger.info(f"Containment structure: {len(df)} rows over {len(seen)} entities")
 
 
 def export_cofactors(pathway_logic_network: pd.DataFrame,
