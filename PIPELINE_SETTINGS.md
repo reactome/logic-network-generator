@@ -67,23 +67,22 @@ what NOT to touch. Overriding is for A/B benchmarking only.
 | `LNG_COMPLEX_AS_NODE` | `1` | a Complex is one node (the key connectivity fix) |
 | `LNG_SET_EXPAND` | `1` | expand EntitySets to members at matching granularity |
 | `LNG_DIAGRAM_CONNECTIVITY` | `1` | union diagram-drawn reaction pairs into connectivity |
-| `LNG_DIAGRAM_BRIDGE` | `1` | add (don't merge) diagram bridge edges |
+| `LNG_DIAGRAM_BRIDGE` | `0` | legacy additive diagram bridges (measured harmful; off) |
+| `LNG_BOUNDARY_HIERARCHY` | `1` | decompose a root complex one `hasComponent` level at a time (deltasignal specs/030) |
+| `LNG_SET_POOL` | `1` | one OR node per set-valued catalyst or regulator (deltasignal specs/033) |
+| `LNG_POOL_ACTIVE_VIA` | `made_from` | how a pool's active form is found (deltasignal specs/039) |
 | `LNG_CATALYST_BUNDLE` | `0` | legacy; subsumed by `LNG_COMPLEX_AS_NODE` |
 | `LNG_HANDOFF_EDGES` | `0` | precedingEvent hand-off bridges (net-negative, off) |
 
-**Solver (DeltaSignal):**
+A switch takes exactly `0` or `1`; any other value, or an `LNG_*` name the
+generator does not read (a typo), stops the run at startup. The full list and
+defaults are `BOOL_FLAGS` in `src/env_flags.py`.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `DS_INHIBITION_MODE` | `divide` | de-repression-capable inhibition |
-| `DS_AND_MODE` | `hill_log` | continuous log-fold AND aggregation |
-| `DS_OR_MODE` | `mean` | OR alternatives each carry weight |
-| `DS_ASSEMBLY_LIMITING` | `1` | a complex can't exceed its scarcest subunit |
-| `DS_HILL_LOG_ZMAX` | `10.0` | AND saturation point |
-| `DS_SCC_SOLVE` | `1` | SCC-condensation solve (handles feedback loops) |
-
-(There are more `DS_*` switches for other inhibition/AND modes, loop handling,
-etc. — all default to the validated config. If you didn't set it, it's right.)
+**Solver (DeltaSignal):** the defaults live in the deltasignal repo's
+CLAUDE.md ("Solver Configuration"), which CI keeps in step with the code; they
+are not repeated here, because this copy went stale (it gave `DS_AND_MODE`
+`hill_log` and `DS_ASSEMBLY_LIMITING` `1`; the defaults are `hill_sat` and `0`).
+If you didn't set a `DS_*` variable, it is at the validated default.
 
 ## 4. Running the solver
 

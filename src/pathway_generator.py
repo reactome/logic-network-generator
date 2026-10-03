@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+from src.env_flags import env_flag
 from pathlib import Path
 from typing import Any, Dict
 
@@ -211,6 +212,15 @@ def _write_cache_fingerprint(
 
 
 
+# Every file a pathway bundle is made of. Cleared before a regeneration.
+BUNDLE_FILES = (
+    "logic_network.csv", "stid_to_uuid_mapping.csv", "entity_reaction_proxy_mapping.csv",
+    "nodes.csv", "node_reaction_context.csv", "node_resolution.csv", "node_exclusions.csv",
+    "cofactors.csv", "containment.csv", "drugs.csv",
+    "pools.csv", "pool_transitions.csv", "pool_carriers.csv",
+)
+
+
 def generate_pathway_file(
     pathway_id: str,
     pathway_name: str,
@@ -267,6 +277,12 @@ def generate_pathway_file(
         )
     pathway_output_dir = base_output_dir / folder_name
     pathway_output_dir.mkdir(exist_ok=True)
+    # Regenerating into an existing directory must not leave a previous run's
+    # bundle files behind: a file this run fails to write would otherwise
+    # survive with node ids that no longer exist (code review 2026-10-02).
+    # The cache/ subdirectory is handled by its own fingerprint check.
+    for stale in BUNDLE_FILES:
+        (pathway_output_dir / stale).unlink(missing_ok=True)
 
     # Create cache subdirectory for intermediate files
     cache_dir = pathway_output_dir / "cache"
@@ -373,7 +389,7 @@ def generate_pathway_file(
             diagram_shared_product_pairs,
         )
         diagram_bridge_pairs = None
-        if os.environ.get("LNG_DIAGRAM_BRIDGE", "0") == "1":
+        if env_flag("LNG_DIAGRAM_BRIDGE"):
             connectivity = reaction_connections
             diagram_bridge_pairs = diagram_shared_product_pairs(pathway_id)
         else:
@@ -398,8 +414,8 @@ def generate_pathway_file(
         # catalog produced mixed and/or clusters. This produces them. The two
         # therefore have to be enabled and measured TOGETHER, and neither alone.
         set_member_pairs = None
-        if (os.environ.get("LNG_DIAGRAM_SET_MEMBER", "0") == "1"
-                and os.environ.get("LNG_DIAGRAM_CONNECTIVITY", "1") != "0"):
+        if (env_flag("LNG_DIAGRAM_SET_MEMBER")
+                and env_flag("LNG_DIAGRAM_CONNECTIVITY")):
             try:
                 set_member_pairs = diagram_set_member_pairs(pathway_id)
             except Exception:
@@ -433,9 +449,9 @@ def generate_pathway_file(
                 str(uuid_to_reactome_file)
             )
             logger.info(f"Successfully exported stable ID to UUID mapping: {uuid_to_reactome_file}")
-        except IOError as e:
+        except Exception as e:
             logger.error(f"Failed to write stable ID to UUID mapping file {uuid_to_reactome_file}: {e}")
-            # Don't raise - this is supplementary
+            raise
 
         # Export entity→reaction proxy mapping. Curated species (often Complexes)
         # that were expanded into virtual variants lose their own stId from the
@@ -454,7 +470,7 @@ def generate_pathway_file(
             logger.info(f"Successfully exported entity-reaction proxy mapping: {proxy_mapping_file}")
         except Exception as e:
             logger.error(f"Failed to write entity-reaction proxy mapping file {proxy_mapping_file}: {e}")
-            # Don't raise - this is supplementary
+            raise
 
         # Schema-backed provenance files (schema/logic_network.linkml.yaml):
         # nodes.csv (node_kind, diagram_entity_id, member_leaves, set provenance)
@@ -496,8 +512,12 @@ def generate_pathway_file(
                 str(pathway_output_dir / "containment.csv"),
             )
         except Exception as e:
+            # These are not supplementary: containment.csv, cofactors.csv and
+            # node_resolution.csv feed the consumer's default model. Swallowing
+            # this let the orphan guard's ValueError skip every file after it
+            # while the pathway counted as built (LNG code review 2026-10-02).
             logger.error(f"Failed to write node provenance files: {e}", exc_info=True)
-            # Don't raise - supplementary
+            raise
 
         # Drug-derived entities (deltasignal specs/032), in their OWN block: a
         # failed drug query must not cost containment.csv, which the default
@@ -511,6 +531,7 @@ def generate_pathway_file(
             )
         except Exception as e:
             logger.error(f"Failed to write drugs.csv: {e}", exc_info=True)
+            raise
 
         # Interconversion pools (deltasignal specs/039), in their own block.
         try:
@@ -525,6 +546,7 @@ def generate_pathway_file(
             )
         except Exception as e:
             logger.error(f"Failed to write pools.csv: {e}", exc_info=True)
+            raise
 
         logger.info(f"Output directory: {pathway_output_dir}")
 

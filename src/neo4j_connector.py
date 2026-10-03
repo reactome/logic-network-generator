@@ -1,4 +1,5 @@
 import os
+from src.env_flags import env_flag
 
 from src.credential_redaction import scrub
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
@@ -105,7 +106,7 @@ def _traceback_kwargs() -> Dict[str, Any]:
     debugging, off by default so nothing credential-bearing reaches
     debug_log.txt (mode 0664) or stdout.
     """
-    return {"exc_info": os.getenv("LNG_DEBUG_TRACEBACKS") == "1"}
+    return {"exc_info": env_flag("LNG_DEBUG_TRACEBACKS")}
 
 
 # Module-level caches for bulk pre-fetched data
