@@ -18,6 +18,7 @@ See reactome/logic-network-generator#39.
 """
 import json
 import os
+from src.env_flags import env_flag
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -212,7 +213,7 @@ def augment_reaction_connections(pathway_id: str,
     event_status='Diagram Shared Product' for traceability. No-op (returns input
     unchanged) when disabled or no diagram is available.
     """
-    if os.environ.get("LNG_DIAGRAM_CONNECTIVITY", "1") == "0":
+    if not env_flag("LNG_DIAGRAM_CONNECTIVITY"):
         return reaction_connections
 
     pairs = diagram_shared_product_pairs(pathway_id)

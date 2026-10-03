@@ -1,4 +1,5 @@
 import os
+from src.env_flags import env_flag, validate_env
 import uuid
 from collections import Counter
 from typing import Dict, List, Any, NamedTuple, Optional, Set, Tuple
@@ -504,6 +505,7 @@ def _reject_removed_env() -> None:
     for name, why in sorted(_REMOVED_ENV.items()):
         if name in os.environ:
             raise ValueError(f"{name} was removed: {why}")
+    validate_env(removed=_REMOVED_ENV)
     pool_active_via()
 
 
@@ -800,7 +802,7 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
         # (all plain stId), so a complex produced by one reaction and
         # catalysing/regulating another unifies instead of siloing into
         # disconnected ::variant:: nodes. See plan luminous-percolating-llama.
-        if os.environ.get("LNG_COMPLEX_AS_NODE", "1") != "0":
+        if env_flag("LNG_COMPLEX_AS_NODE"):
             return {str(entity_id)}
         # Set-variant node: OUTERMOST complex stId + a FLAT sorted list of the
         # variant's FULL terminal membership. We enumerate the complex's true
@@ -835,7 +837,7 @@ def _map_annotated_entity_to_nodes(entity_id: str, member_set: Set[str]) -> Set[
         # intersection came up empty and the set fell back to a bare, producer-less
         # node. Aligning the two granularities lets the set expand to its members
         # (sets should never survive as nodes — see docs/DESIGN_DECISIONS.md).
-        if os.environ.get("LNG_SET_EXPAND", "1") == "0":
+        if not env_flag("LNG_SET_EXPAND"):
             # Old behavior (leaf-granularity intersection) for A/B comparison.
             present = member_set & get_terminal_components(entity_id)
         else:
@@ -891,7 +893,7 @@ def _resolve_vr_entities(
             stoich_cache[key] = get_reaction_io_stoichiometry(reaction_id, io)
         return stoich_cache[key]
 
-    cap_pools = os.environ.get("LNG_CAP_POOLS", "0") == "1"
+    cap_pools = env_flag("LNG_CAP_POOLS")
 
     def _resolve_io(reaction_id: str, io: str, members: Set[str]) -> tuple:
         # Node identity comes from the reaction's annotated entities; the
@@ -1352,7 +1354,10 @@ def _emit_substrate_depletion_edges(
                 if subst_stids:
                     ubiquitin_subst_by_rstid[rxn] = (subst_genes, subst_stids)
         except Exception as exc:
-            logger.warning(f"Ubiquitin topology lookup failed: {exc}")
+            # Raise: carrying on dropped every ubiquitin depletion edge from
+            # logic_network.csv with only a warning (code review 2026-10-02).
+            logger.error(f"Ubiquitin topology lookup failed: {exc}")
+            raise
 
     # Build network stid → list of UUIDs index from pathway_logic_network_data,
     # so we can target the substrate's NETWORK NODES (not just the leaf
@@ -1922,7 +1927,7 @@ def _emit_boundary_decomposition_edges(
     # a second, causal encoding of something already available structurally.
     #
     # Default ON pending the measurement that decides it.
-    boundary_expansion = os.environ.get("LNG_BOUNDARY_EXPANSION", "1") == "1"
+    boundary_expansion = env_flag("LNG_BOUNDARY_EXPANSION")
     # LNG_BOUNDARY_HIERARCHY=1 (deltasignal specs/030): decompose a root complex
     # ONE hasComponent level at a time instead of straight to its base leaves.
     # A component that already exists as a node -- e.g. ISGF3 [cytosol], which
@@ -1935,7 +1940,7 @@ def _emit_boundary_decomposition_edges(
     # root ISGF3:KPNA1:KPNB1 is translocated to the nucleus, and every IFN
     # alpha/beta perturbation upstream of ISGF3 was severed there (200 held-out
     # cases). The downstream-reuse rule (specs/018) applies unchanged.
-    hierarchy = os.environ.get("LNG_BOUNDARY_HIERARCHY", "1") == "1"   # default since deltasignal specs/030 (held-out +197, re-measured)
+    hierarchy = env_flag("LNG_BOUNDARY_HIERARCHY")   # default since deltasignal specs/030 (held-out +197, re-measured)
     from src.neo4j_connector import get_complex_components
     nested_registry: Dict[tuple, str] = {}
     seen_edges: Set[tuple] = set()
@@ -2068,7 +2073,7 @@ def _emit_boundary_decomposition_edges(
 
     # Composition hierarchy (LNG_COMPOSITION_EDGES). Runs after boundary
     # expansion so dissociation sinks are known and excluded as sources.
-    if os.environ.get("LNG_COMPOSITION_EDGES", "0") == "1":
+    if env_flag("LNG_COMPOSITION_EDGES"):
         _emit_composition_edges(pathway_logic_network_data, reactome_id_to_uuid)
 
 
@@ -2134,19 +2139,19 @@ def append_regulators(
         # neg) to its plain stId so it matches the produced/consumed occurrence's
         # node id and unifies instead of siloing. Subsumes the older opt-in
         # LNG_CATALYST_BUNDLE (pos-only).
-        complex_as_node = os.environ.get("LNG_COMPLEX_AS_NODE", "1") != "0"
-        bundle_on = os.environ.get("LNG_CATALYST_BUNDLE", "0") == "1"
+        complex_as_node = env_flag("LNG_COMPLEX_AS_NODE")
+        bundle_on = env_flag("LNG_CATALYST_BUNDLE")
         variant_decomposition = (pos_neg == "neg") and not complex_as_node
         bundle_complex = complex_as_node or ((pos_neg == "pos") and bundle_on)
         # Emit set-derived positive regulator members as OR alternatives
         # (see the and_or comment below). Opt-in while it is being A/B'd.
-        set_members_or = os.environ.get("LNG_SET_MEMBERS_OR", "0") == "1"
+        set_members_or = env_flag("LNG_SET_MEMBERS_OR")
         # deltasignal specs/033: a bare EntitySet regulator becomes ONE pool node
         # (the set itself) fed by its members, instead of every member wired
         # onto every reaction copy as a separate required (or blocking) term.
         # Default ON since specs/033's arms (held-out +6, tuning +10, exp +3 with
         # DS_SET_POOL_MODE=product); "0" restores the member fan-out.
-        set_pool = os.environ.get("LNG_SET_POOL", "1") == "1"
+        set_pool = env_flag("LNG_SET_POOL")
         from src.neo4j_connector import get_labels, get_set_members
 
         for _, row in map_df.iterrows():
@@ -2572,7 +2577,7 @@ def create_pathway_logic_network(
     # the consumption needs a depletion edge back onto the input, and depletion
     # is currently emitted for phosphatase reactions only. That is a separate
     # decision and is deliberately not bundled here.
-    emit_one_sided = os.environ.get("LNG_EMIT_ONE_SIDED", "1") == "1"
+    emit_one_sided = env_flag("LNG_EMIT_ONE_SIDED")
     for vr_uid, (input_ids, output_ids, input_stoich, output_stoich) in vr_entities.items():
         if not input_ids and not output_ids:
             continue  # genuinely empty: nothing to say about it
@@ -2747,7 +2752,7 @@ def create_pathway_logic_network(
     # injects roughly as much spurious coupling as real signal it recovers (same
     # reason the member-exploded network tied set-variant at ~69%). Kept for
     # future work but OFF by default. See memory project_complex_as_node_result.
-    if os.environ.get("LNG_HANDOFF_EDGES", "0") != "0":
+    if env_flag("LNG_HANDOFF_EDGES"):
         _emit_precedingevent_handoff_edges(
             pathway_logic_network_data=pathway_logic_network_data,
             reaction_connections=reaction_connections,
@@ -3281,10 +3286,10 @@ def export_containment(reactome_id_to_uuid: Dict[str, str],
     # positional copies would otherwise pay 40 times for the same answer.
     leaves_by_stid: Dict[str, Set[str]] = {}
     for stid in {str(v) for v in reactome_id_to_uuid.values() if v}:
-        try:
-            leaves = get_terminal_components(stid)
-        except Exception:  # noqa: BLE001 - a missing entity must not fail the pathway
-            leaves = set()
+        # A failed lookup raises: treating it as "contains only itself" put a
+        # wrong row in containment.csv, which the consumer's default model
+        # reads (code review 2026-10-02).
+        leaves = get_terminal_components(stid)
         leaves_by_stid[stid] = {str(x) for x in leaves} | {stid}
 
     # Keyed by STABLE ID, not uuid. Containment is a property of the entity, not
@@ -4071,15 +4076,10 @@ def export_node_resolution(pathway_id: str,
 
     # 4. THE POINT: set -> the member nodes it was split into.
     excluded: List[Dict[str, str]] = []
-    try:
-        participating = get_pathway_participating_entities(pathway_id)
-    except Exception:
-        logger.warning("could not list participating entities; set rows omitted")
-        participating = set()
-    try:
-        atomic = set(get_modifier_isoform_entity_set_ids())
-    except Exception:
-        atomic = set()
+    # Both raise on failure: an empty answer silently omitted every set row
+    # from node_resolution.csv (code review 2026-10-02).
+    participating = get_pathway_participating_entities(pathway_id)
+    atomic = set(get_modifier_isoform_entity_set_ids())
     resolve = make_neo4j_resolver(get_set_members, get_labels)
 
     for stable_id in sorted(participating):

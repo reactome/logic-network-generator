@@ -99,6 +99,7 @@ def test_flag_default_is_off(monkeypatch):
     import src.logic_network_generator as lng
     calls = []
     monkeypatch.setattr(lng, "_emit_composition_edges", lambda *a, **k: calls.append(1))
-    src = open(lng.__file__).read()
-    assert 'os.environ.get("LNG_COMPOSITION_EDGES", "0") == "1"' in src
+    from src.env_flags import env_flag
+    assert env_flag("LNG_COMPOSITION_EDGES") is False
+    assert 'env_flag("LNG_COMPOSITION_EDGES")' in open(lng.__file__).read()
     assert calls == []

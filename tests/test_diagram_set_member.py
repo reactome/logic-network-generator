@@ -155,5 +155,8 @@ def test_the_emitter_is_actually_wired_in(monkeypatch):
     gen = inspect.getsource(pg)
     assert "LNG_DIAGRAM_SET_MEMBER" in gen
     # off by default, and the documented kill switch still disables it
-    assert '"LNG_DIAGRAM_SET_MEMBER", "0"' in gen
+    from src.env_flags import env_flag
+    monkeypatch.delenv("LNG_DIAGRAM_SET_MEMBER", raising=False)
+    assert env_flag("LNG_DIAGRAM_SET_MEMBER") is False
+    assert 'env_flag("LNG_DIAGRAM_SET_MEMBER")' in gen
     assert "LNG_DIAGRAM_SET_MEMBER" in pg._FINGERPRINTED_ENV

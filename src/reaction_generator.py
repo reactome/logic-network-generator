@@ -29,6 +29,7 @@ create false links between unrelated species.
 import hashlib
 import itertools
 import os
+from src.env_flags import env_flag
 import uuid
 import warnings
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
@@ -205,24 +206,21 @@ def modifier_isoform_set_ids() -> Set[str]:
 
     Superset of _UBIQUITIN_ENTITY_SET_IDS: the full set of modifier-isoform sets
     (all ubiquitin forms incl. linkage-specific chains, plus SUMO/NEDD8/ATG8/…),
-    discovered from Neo4j by member-gene identity. Falls back to the hardcoded
-    ubiquitin seed when Neo4j is unavailable (offline / tests). Cached; safe to
+    discovered from Neo4j by member-gene identity. Cached on success; safe to
     call in hot loops.
+
+    A failed lookup raises. It used to fall back to the 6-set ubiquitin seed
+    AND cache that fallback, so one transient Neo4j error decomposed the other
+    40 modifier families for every later pathway in the build, with only a
+    warning (code review 2026-10-02).
     """
     global _modifier_set_cache
     if _modifier_set_cache is not None:
         return _modifier_set_cache
-    try:
-        from src.neo4j_connector import get_modifier_isoform_entity_set_ids
-        _modifier_set_cache = (
-            get_modifier_isoform_entity_set_ids() | _UBIQUITIN_ENTITY_SET_IDS
-        )
-    except Exception:
-        logger.warning(
-            "Modifier-isoform set discovery failed; falling back to ubiquitin seed",
-            exc_info=True,
-        )
-        _modifier_set_cache = set(_UBIQUITIN_ENTITY_SET_IDS)
+    from src.neo4j_connector import get_modifier_isoform_entity_set_ids
+    _modifier_set_cache = (
+        get_modifier_isoform_entity_set_ids() | _UBIQUITIN_ENTITY_SET_IDS
+    )
     return _modifier_set_cache
 
 
@@ -670,7 +668,7 @@ def decompose_by_reactions(reaction_ids: List[str]) -> List[Any]:
     # multiple reactome_ids in decomposed_uid_mapping (hashes are computed
     # from sorted components, not reactions).
     all_best_matches: List[tuple] = []
-    emit_one_sided = os.environ.get("LNG_EMIT_ONE_SIDED", "1") == "1"
+    emit_one_sided = env_flag("LNG_EMIT_ONE_SIDED")
     for reaction_id in reaction_ids:
         input_ids = get_reaction_input_output_ids(reaction_id, "input")
         broken_apart_input_id = [break_apart_entity(input_id) for input_id in input_ids]
