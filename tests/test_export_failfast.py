@@ -23,7 +23,8 @@ from src.logic_network_generator import PathwayResult
 
 EXPORTS = ["export_uuid_to_reactome_mapping", "export_entity_reaction_proxy_mapping",
            "export_nodes", "export_node_reaction_context", "export_node_resolution",
-           "export_cofactors", "export_containment", "export_drugs", "export_pools"]
+           "export_cofactors", "export_containment", "export_containment_structure",
+           "export_drugs", "export_pools"]
 
 
 @pytest.fixture

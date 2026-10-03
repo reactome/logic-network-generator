@@ -15,6 +15,7 @@ from src.logic_network_generator import (
     export_drugs,
     export_pools,
     export_containment,
+    export_containment_structure,
     export_entity_reaction_proxy_mapping,
     export_node_reaction_context,
     export_node_resolution,
@@ -216,7 +217,8 @@ def _write_cache_fingerprint(
 BUNDLE_FILES = (
     "logic_network.csv", "stid_to_uuid_mapping.csv", "entity_reaction_proxy_mapping.csv",
     "nodes.csv", "node_reaction_context.csv", "node_resolution.csv", "node_exclusions.csv",
-    "cofactors.csv", "containment.csv", "drugs.csv",
+    "boundary_edges.csv", "cofactors.csv", "containment.csv", "containment_structure.csv",
+    "drugs.csv",
     "pools.csv", "pool_transitions.csv", "pool_carriers.csv",
 )
 
@@ -429,11 +431,25 @@ def generate_pathway_file(
         )
 
         # Save logic network (main output file users need)
+        # logic_network.csv holds what curators curated. The edges the
+        # generator DERIVES from complex/set structure at root inputs and
+        # terminal outputs (assembly, dissociation, composition) go to
+        # boundary_edges.csv, same columns, so a consumer that wants the
+        # curated network alone can have it, and one that wants the
+        # decomposition loads both (deltasignal specs/044).
         output_file = pathway_output_dir / "logic_network.csv"
+        boundary_file = pathway_output_dir / "boundary_edges.csv"
         try:
-            result.logic_network.to_csv(output_file, index=False)
+            net = result.logic_network
+            flags = list(result.boundary_mask) or [False] * len(net)
+            if len(flags) != len(net):
+                raise ValueError(f"boundary mask has {len(flags)} flags for {len(net)} edges")
+            mask = pd.Series(flags, index=net.index, dtype=bool)
+            net[~mask].to_csv(output_file, index=False)
+            net[mask].to_csv(boundary_file, index=False)
             logger.info(f"Successfully generated logic network: {output_file}")
-            logger.info(f"Network contains {len(result.logic_network)} edges")
+            logger.info(f"Network contains {int((~mask).sum())} curated edges and "
+                        f"{int(mask.sum())} boundary edges")
         except IOError as e:
             logger.error(f"Failed to write output file {output_file}: {e}")
             raise
@@ -510,6 +526,10 @@ def generate_pathway_file(
             export_containment(
                 result.uuid_mapping,
                 str(pathway_output_dir / "containment.csv"),
+            )
+            export_containment_structure(
+                result.uuid_mapping,
+                str(pathway_output_dir / "containment_structure.csv"),
             )
         except Exception as e:
             # These are not supplementary: containment.csv, cofactors.csv and
