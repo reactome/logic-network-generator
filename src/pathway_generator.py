@@ -23,7 +23,7 @@ from src.logic_network_generator import (
     export_uuid_to_reactome_mapping,
 )
 from src.neo4j_connector import get_reaction_connections, get_reactome_release
-from src.reaction_generator import get_decomposed_uid_mapping, prime_entity_caches
+from src.reaction_generator import CAPPED_IDS, get_decomposed_uid_mapping, prime_entity_caches
 
 # Env vars that change what a generated network contains. Anything listed here
 # is part of the cache fingerprint, so flipping one invalidates stale caches
@@ -294,6 +294,12 @@ def generate_pathway_file(
     reaction_connections_file = cache_dir / "reaction_connections.csv"
     decomposed_uid_mapping_file = cache_dir / "decomposed_uid_mapping.csv"
     best_matches_file = cache_dir / "best_matches.csv"
+    # Reactions the variant cap bundled, for LNG_CAP_POOLS. Filled only while
+    # decomposing, so it is cached beside the decomposition and restored on
+    # reuse (code review F6: a cached rebuild silently lost every cap pool, and
+    # the set was never cleared, so ids leaked from one pathway to the next).
+    capped_ids_file = cache_dir / "capped_ids.txt"
+    CAPPED_IDS.clear()
 
     try:
         # Decide ONCE per pathway whether this cache dir may be reused. Without
@@ -318,13 +324,15 @@ def generate_pathway_file(
                 # Continue without caching
 
         # Load or generate decomposition and best matches
-        if cache_usable and os.path.exists(decomposed_uid_mapping_file) and os.path.exists(best_matches_file):
+        if (cache_usable and os.path.exists(decomposed_uid_mapping_file)
+                and os.path.exists(best_matches_file) and capped_ids_file.exists()):
             logger.info(f"Loading cached decomposition from {decomposed_uid_mapping_file}")
             decomposed_uid_mapping = pd.read_csv(
                 decomposed_uid_mapping_file,
                 dtype=decomposed_uid_mapping_column_types,  # type: ignore[arg-type]
             )
             best_matches = pd.read_csv(best_matches_file)
+            CAPPED_IDS.update(x for x in capped_ids_file.read_text().split() if x)
             # Reusing the cached decomposition skips get_decomposed_uid_mapping,
             # which is the only place the entity caches are cleared and primed.
             # Prime them here or this pathway inherits the previous pathway's
@@ -343,6 +351,7 @@ def generate_pathway_file(
             try:
                 decomposed_uid_mapping.to_csv(decomposed_uid_mapping_file, index=False)
                 best_matches.to_csv(best_matches_file, index=False)
+                capped_ids_file.write_text("".join(f"{x}\n" for x in sorted(CAPPED_IDS)))
                 logger.info(f"Cached decomposition to {decomposed_uid_mapping_file}")
                 # Stamp the cache we just PRODUCED with real provenance. Without
                 # a write here the mechanism only ever adopts: generate, change

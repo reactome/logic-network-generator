@@ -71,6 +71,7 @@ what NOT to touch. Overriding is for A/B benchmarking only.
 | `LNG_BOUNDARY_HIERARCHY` | `1` | decompose a root complex one `hasComponent` level at a time (deltasignal specs/030) |
 | `LNG_SET_POOL` | `1` | one OR node per set-valued catalyst or regulator (deltasignal specs/033) |
 | `LNG_POOL_ACTIVE_VIA` | `made_from` | how a pool's active form is found (deltasignal specs/039) |
+| `LNG_CAP_POOLS` | `1` | past the variant cap, one OR pool per set instead of an all-required bundle (deltasignal specs/045) |
 | `LNG_CATALYST_BUNDLE` | `0` | legacy; subsumed by `LNG_COMPLEX_AS_NODE` |
 | `LNG_HANDOFF_EDGES` | `0` | precedingEvent hand-off bridges (net-negative, off) |
 
