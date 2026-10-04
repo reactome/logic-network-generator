@@ -83,9 +83,12 @@ def test_a_leaf_another_input_also_maps_to_stays_direct(stub, monkeypatch):
 
 
 def test_off_and_no_leak_between_pathways(stub, monkeypatch):
-    monkeypatch.delenv("LNG_CAP_POOLS", raising=False)
+    monkeypatch.setenv("LNG_CAP_POOLS", "0")      # on by default since deltasignal specs/045
     resolve({A, K1, K2})
     assert m._vr_input_pools == {}
+    monkeypatch.delenv("LNG_CAP_POOLS", raising=False)
+    resolve({A, K1, K2})
+    assert m._vr_input_pools                       # the default pools
     monkeypatch.setenv("LNG_CAP_POOLS", "1")
     resolve({A, K1, K2})
     assert m._vr_input_pools

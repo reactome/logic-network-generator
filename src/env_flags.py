@@ -14,7 +14,7 @@ import os
 BOOL_FLAGS = {
     "LNG_BOUNDARY_EXPANSION": True,
     "LNG_BOUNDARY_HIERARCHY": True,
-    "LNG_CAP_POOLS": False,
+    "LNG_CAP_POOLS": True,      # default since deltasignal specs/045 (RAF experimental +14, held-out 0)
     "LNG_CATALYST_BUNDLE": False,
     "LNG_COMPLEX_AS_NODE": True,
     "LNG_COMPOSITION_EDGES": False,
