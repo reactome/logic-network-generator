@@ -3216,10 +3216,18 @@ def export_nodes(pathway_logic_network: pd.DataFrame,
                 pass
             elif "::variant::" in s:
                 kind = "set_variant"
-                from src.variant_keys import variant_parts
-                diagram, members = variant_parts(s)
-                members = [m for m in members if m.startswith("R-")]
-                sets, chosen = _derive_sets_and_chosen(diagram, set(members))
+                from src.variant_keys import is_variant_key, parse_variant_key, variant_leaves, variant_parts
+                if is_variant_key(s):
+                    # specs/046: member_leaves are the variant's terminal
+                    # leaves (what a gene resolves through); the slots and the
+                    # members chosen in them are read from the key itself.
+                    diagram, choice = parse_variant_key(s)
+                    members = sorted(m for m in variant_leaves(s) if m.startswith("R-"))
+                    sets, chosen = sorted(choice), sorted(set(choice.values()))
+                else:
+                    diagram, members = variant_parts(s)
+                    members = [m for m in members if m.startswith("R-")]
+                    sets, chosen = _derive_sets_and_chosen(diagram, set(members))
             else:
                 diagram = s
                 inc = incoming_types.get(u, set())
