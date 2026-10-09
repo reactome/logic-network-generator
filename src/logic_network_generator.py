@@ -2045,7 +2045,7 @@ def _emit_boundary_decomposition_edges_inner(
             elif _is_set(comp) and depth < 6:
                 _emit(_set_node(comp, root_uuid, depth), container_uuid)
             else:
-                for leaf in sorted(get_terminal_components(comp)):
+                for leaf in sorted(_leaves_of(comp)):
                     _emit(_existing_upstream(leaf, root_uuid) or _leaf_uuid(leaf, root_uuid), container_uuid)
 
     # A SET component is "any one of its members" (LNG code review F7,

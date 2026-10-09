@@ -60,3 +60,16 @@ def test_negative_regulator_shares_the_copy_choice():
 def test_over_the_cap_is_reported():
     choices, over = ve._choices(parts(**{"in": {"CX": 1}, "out": {"OSET": 1}}), 1)
     assert over
+
+
+def test_a_bound_member_complex_opens_its_own_slots():
+    # output set bound to an input set; the mapped member is a complex that
+    # holds a set of its own, which must be fanned out (IL-3 R-HSA-879909)
+    LABELS.update({"ISET": ["EntitySet"], "OSET2": ["EntitySet"], "MCX": ["Complex"], "INNER": ["EntitySet"]})
+    MEM.update({"ISET": ["RHOA"], "OSET2": ["MCX"], "INNER": ["X1", "X2"]})
+    COMP["MCX"] = ["INNER"]
+    SIG["MCX"] = ("RHOA",)
+    choices, over = ve._choices(parts(**{"in": {"ISET": 1}, "out": {"OSET2": 1}}), 512)
+    assert not over and sorted(c["INNER"] for c in choices) == ["X1", "X2"]
+    for c in choices:
+        assert vk.vkey("OSET2", c).startswith("MCX::variant::INNER=")

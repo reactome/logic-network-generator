@@ -152,31 +152,43 @@ def _choices(parts: dict, limit: int) -> Tuple[List[Dict[str, str]], bool]:
             if u in sig and sig[u] in mapping:
                 sig[w] = mapping[sig[u]]
         # a bound member complex may open slots of its own: fan them out
-        extra = _open_slots(outputs, sig)
-        if extra:
+        pending = [sig]
+        while pending:
+            cur = pending.pop()
+            extra = _open_slots(outputs, cur)
+            if not extra:
+                result.append(cur)
+                continue
             for more in vk.reaction_choices(extra, limit=limit + 1):
-                result.append({**sig, **more})
-        else:
-            result.append(sig)
+                pending.append({**cur, **more})
+            if len(result) + len(pending) > limit:
+                return result + pending, True
         if len(result) > limit:
             return result, True
     return result, len(result) > limit
 
 
+def _missing_slots(e: str, sig: Dict[str, str], depth: int = 0) -> Set[str]:
+    """Slots `e` needs under `sig` that `sig` does not assign, followed
+    through chosen members recursively (a bound set's chosen member complex
+    can open slots of its own)."""
+    if depth > 12:
+        return set()
+    if vk.is_set(e):
+        if e not in sig:
+            return {e}
+        return _missing_slots(sig[e], sig, depth + 1)
+    if vk.is_complex(e) and not vk.is_capped(e):
+        return {x for x in vk._complex_slots(e, sig) if x not in sig}
+    return set()
+
+
 def _open_slots(entities: Sequence[str], sig: Dict[str, str]) -> List[str]:
     """Sets still unassigned in `entities` under `sig` (to be fanned out)."""
-    missing: Set[str] = set()
+    out: Set[str] = set()
     for e in entities:
-        try:
-            vk.vkey(e, sig)
-        except KeyError:
-            if vk.is_set(e) and e not in sig:
-                missing.add(e)
-            elif vk.is_complex(e):
-                for s in vk._complex_slots(e, sig):
-                    if s not in sig:
-                        missing.add(s)
-    return sorted(missing)
+        out |= _missing_slots(e, sig)
+    return sorted(out)
 
 
 def build_variant_reactions(graph, reaction_ids: Sequence[str]
