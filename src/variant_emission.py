@@ -204,6 +204,10 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
     for rx in sorted(parts_by_rx):
         parts = parts_by_rx[rx]
         choices, over = _choices(parts, cap if cap > 0 else 10 ** 9)
+        if not choices and not over:
+            # Never drop a reaction silently: zero copies means a set with no
+            # members reached the enumeration, i.e. the structure is wrong.
+            raise ValueError(f"{rx}: the variant enumeration produced no copy")
         if over:
             STATS["reactions_over_cap"] += 1
             choices = [None]

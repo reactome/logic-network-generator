@@ -434,10 +434,13 @@ def generate_pathway_file(
                 logger.warning("Could not read diagram set-member links",
                                exc_info=True)
 
+        from src.reaction_generator import reaction_ids_from_connections
         result = create_pathway_logic_network(
             decomposed_uid_mapping, connectivity, best_matches,
             diagram_bridge_pairs=diagram_bridge_pairs,
             diagram_set_member_pairs=set_member_pairs,
+            # every reaction of the pathway, from the full fetched table
+            pathway_reaction_ids=reaction_ids_from_connections(reaction_connections),
         )
 
         # Save logic network (main output file users need)

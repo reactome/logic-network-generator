@@ -2,7 +2,7 @@ import os
 from src.env_flags import env_flag, validate_env
 import uuid
 from collections import Counter
-from typing import Dict, List, Any, NamedTuple, Optional, Set, Tuple
+from typing import Dict, List, Any, NamedTuple, Optional, Sequence, Set, Tuple
 
 import pandas as pd
 from pandas import DataFrame
@@ -2444,6 +2444,7 @@ def create_pathway_logic_network(
     best_matches: Any,
     diagram_bridge_pairs: Optional[Set[Tuple[str, str]]] = None,
     diagram_set_member_pairs: Optional[Set[Tuple[str, str]]] = None,
+    pathway_reaction_ids: Optional[Sequence[str]] = None,
 ) -> PathwayResult:
     """Create a pathway logic network from decomposed UID mappings and reaction connections.
 
@@ -2541,11 +2542,27 @@ def create_pathway_logic_network(
     variant_nodes = env_flag("LNG_VARIANT_NODES")
     graph = get_graph()
     if variant_nodes:
-        from src.reaction_generator import reaction_ids_from_connections
         from src.variant_emission import STATS as _variant_stats, build_variant_reactions
+        # The pathway's reactions are the ones the matching layer decomposed:
+        # the same set the canonical path builds copies from. The
+        # reaction_connections reaching this function is the reduced
+        # connectivity table, and building from it dropped every reaction with
+        # no preceding/following event (PIP3: 66 of 89 reactions, taking the
+        # RTK catalyst sets with them; specs/046 research, first catalog arm).
+        # Every reaction of the pathway: the full list the pathway generator
+        # fetched (pathway_reaction_ids). The connectivity table reaching this
+        # function omits reactions with no preceding/following event, and
+        # decomposed_uid_mapping's reactome_id holds entity ids; building from
+        # either dropped reactions (PIP3: 8 of 89, among them R-HSA-2316434
+        # with the RTK catalyst set). specs/046 research, first catalog arm.
+        if pathway_reaction_ids is None:
+            from src.reaction_generator import reaction_ids_from_connections
+            pathway_reaction_ids = reaction_ids_from_connections(reaction_connections)
+        _variant_rids = sorted({str(r) for r in pathway_reaction_ids if r and str(r) != "nan"})
         (reaction_id_map, _variant_vr_entities, catalyst_map,
-         negative_regulator_map, positive_regulator_map) = build_variant_reactions(
-            graph, reaction_ids_from_connections(reaction_connections))
+         negative_regulator_map, positive_regulator_map) = build_variant_reactions(graph, _variant_rids)
+        logger.info(f"Variant nodes: {len(_variant_rids)} reactions given; "
+                    f"{reaction_id_map['reactome_id'].nunique()} emitted; {len(reaction_id_map)} copies")
         logger.info(f"Variant nodes: {dict(_variant_stats)}")
     else:
         reaction_id_map = create_reaction_id_map(decomposed_uid_mapping, best_matches)

@@ -39,6 +39,7 @@ def reset_caches() -> None:
     """Forget memoised structure (tests, or a new database)."""
     _memo.clear()
     _variants_cache.clear()
+    _struct.clear()
 
 
 def _labels(s: str) -> List[str]:
@@ -48,14 +49,41 @@ def _labels(s: str) -> List[str]:
     return r
 
 
+# Structure is read from Neo4j DIRECTLY, not through the connector's entity
+# caches: once primed for a pathway, those answer "no members" for an entity
+# outside the prefetch, which gave a reaction zero copies and dropped it
+# silently (PIP3: 8 of 89 reactions; specs/046 first catalog arm).
+_STRUCT_CYPHER = """
+MATCH (e:DatabaseObject {stId: $s})
+OPTIONAL MATCH (e)-[:hasComponent]->(c)
+WITH e, collect(DISTINCT c.stId) AS comps
+OPTIONAL MATCH (e)-[:hasMember|hasCandidate]->(m)
+RETURN labels(e) AS labels, comps, collect(DISTINCT m.stId) AS members
+"""
+_struct: Dict[str, Tuple[List[str], List[str], List[str]]] = {}
+
+
+def _structure(s: str) -> Tuple[List[str], List[str], List[str]]:
+    if s not in _struct:
+        from src.neo4j_connector import get_graph
+        rows = get_graph().run(_STRUCT_CYPHER, s=s).data()
+        if not rows:
+            _struct[s] = ([], [], [])
+        else:
+            r = rows[0]
+            _struct[s] = (list(r["labels"] or []), sorted(x for x in r["comps"] if x),
+                          sorted(x for x in r["members"] if x))
+    return _struct[s]
+
+
 def _labels_uncached(s: str) -> List[str]:
     f = _lookups.get("labels")
-    if f is None:
-        from src.neo4j_connector import get_labels as f
-    try:
-        return list(f(s) or [])
-    except IndexError:
-        return []
+    if f is not None:
+        try:
+            return list(f(s) or [])
+        except IndexError:
+            return []
+    return _structure(s)[0]
 
 
 def _components(s: str) -> List[str]:
@@ -67,9 +95,9 @@ def _components(s: str) -> List[str]:
 
 def _components_uncached(s: str) -> List[str]:
     f = _lookups.get("components")
-    if f is None:
-        from src.neo4j_connector import get_complex_components as f
-    return sorted(str(x) for x in (f(s) or {}))
+    if f is not None:
+        return sorted(str(x) for x in (f(s) or {}))
+    return _structure(s)[1]
 
 
 def _members(s: str) -> List[str]:
@@ -81,9 +109,9 @@ def _members(s: str) -> List[str]:
 
 def _members_uncached(s: str) -> List[str]:
     f = _lookups.get("members")
-    if f is None:
-        from src.neo4j_connector import get_set_members as f
-    return sorted(str(x) for x in (f(s) or {}))
+    if f is not None:
+        return sorted(str(x) for x in (f(s) or {}))
+    return _structure(s)[2]
 
 
 def _atomic_sets() -> Set[str]:
@@ -101,7 +129,9 @@ def _max_variants() -> int:
 
 
 def is_set(s: str) -> bool:
-    return any(t in _labels(s) for t in SET_LABELS) and s not in _atomic_sets()
+    """A set with members (an empty curated set is a leaf, not a slot)."""
+    return (any(t in _labels(s) for t in SET_LABELS) and s not in _atomic_sets()
+            and bool(_members(s)))
 
 
 def is_complex(s: str) -> bool:
