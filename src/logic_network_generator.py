@@ -1791,6 +1791,7 @@ def _emit_boundary_decomposition_edges_inner(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
 ) -> None:
+    variant_nodes = env_flag("LNG_VARIANT_NODES")
     """Expose the members of every root-input and terminal-output complex.
 
     Under LNG_BOUNDARY_HIERARCHY=1 (the default since deltasignal specs/030) the
@@ -1938,21 +1939,33 @@ def _emit_boundary_decomposition_edges_inner(
             if not is_variant_key(entity_id):
                 return False
             entity_id = variant_parts(entity_id)[0]
+        if variant_nodes:
+            # Under variant nodes, catalyst and regulator members bring in
+            # entities the pathway's cache prefetch never covered, and the
+            # connector's primed caches report those as unlabelled leaves
+            # (PIP3: KIT complex R-HSA-205310 became a leaf, so KIT had no
+            # root). Read structure directly (specs/046).
+            from src.variant_keys import is_complex as _vk_is_complex
+            return _vk_is_complex(entity_id)
         try:
             return "Complex" in get_labels(entity_id)
         except IndexError:
             return False
 
     def _components_of(entity_id: str):
-        from src.variant_keys import is_variant_key, variant_components
+        from src.variant_keys import _components, is_variant_key, variant_components
         if is_variant_key(entity_id):
             return variant_components(entity_id)
+        if variant_nodes:
+            return _components(entity_id)
         return get_complex_components(entity_id) or {}
 
     def _leaves_of(entity_id: str):
-        from src.variant_keys import is_variant_key, variant_leaves
+        from src.variant_keys import is_variant_key, terminal_components, variant_leaves
         if is_variant_key(entity_id):
             return variant_leaves(entity_id)
+        if variant_nodes:
+            return terminal_components(entity_id)
         return get_terminal_components(entity_id)
 
     # Boundary expansion emits SYNTHETIC causal edges from a structural fact:
@@ -2064,7 +2077,12 @@ def _emit_boundary_decomposition_edges_inner(
         set_uuid = nested_registry[key] = str(uuid.uuid4())
         reactome_id_to_uuid[set_uuid] = set_stid
         nested_built += 1
-        for m in sorted(get_set_members(set_stid) or {}):
+        if variant_nodes:
+            from src.variant_keys import _members as _vk_members
+            _set_members = _vk_members(set_stid)
+        else:
+            _set_members = sorted(get_set_members(set_stid) or {})
+        for m in _set_members:
             existing = _existing_upstream(m, root_uuid)
             if existing is not None:
                 _emit(existing, set_uuid, "set_member")
@@ -2087,6 +2105,9 @@ def _emit_boundary_decomposition_edges_inner(
     def _is_set(entity_id: str) -> bool:
         if "::variant::" in entity_id or entity_id in modifier_isoform_set_ids():
             return False
+        if variant_nodes:
+            from src.variant_keys import is_set as _vk_is_set
+            return _vk_is_set(entity_id)
         try:
             labels = get_labels(entity_id)
         except IndexError:

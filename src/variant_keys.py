@@ -344,3 +344,23 @@ def variant_components(key: str) -> List[str]:
         else:
             out.append(c)
     return out
+
+
+def terminal_components(e: str, _depth: int = 0) -> Set[str]:
+    """Every leaf below `e` through components AND all set members (the
+    generator's get_terminal_components semantics: modifier-isoform sets are
+    atomic), read through this module's direct structure lookups, so it is
+    correct for entities outside a pathway's cache prefetch."""
+    if _depth > 12 or e in _atomic_sets():
+        return {e}
+    if is_set(e):
+        out: Set[str] = set()
+        for m in _members(e):
+            out |= terminal_components(m, _depth + 1)
+        return out or {e}
+    if is_complex(e):
+        out = set()
+        for c in _components(e):
+            out |= terminal_components(c, _depth + 1)
+        return out or {e}
+    return {e}
