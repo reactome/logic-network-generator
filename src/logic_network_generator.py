@@ -1248,32 +1248,46 @@ def _emit_variant_pool(base: str, member_uuids, pathway_logic_network_data: List
 def _wire_variant_pool_refs(pathway_logic_network_data: List[Dict[str, Any]],
                             reactome_id_to_uuid: Dict[str, str]) -> None:
     """Feed every ``<stId>::pool`` node a capped reaction reads (specs/046 D6)
-    from the variants of ``<stId>``: for each variant key, the nodes some
-    reaction produces, or, if none is produced, the key's other nodes (a root
-    variant, which a perturbation pins). That is the node each variant's own
-    copy would have read, so the pool's OR equals expanding (D5). A pool with
-    no variant in the network stays a root at baseline, as the plain node was."""
+    from the node each variant's own copy would have read, so the pool's OR
+    equals expanding (D5). The variants are enumerated from the entity, not
+    looked up by id prefix: a bare set's variant key is its chosen MEMBER's
+    key, which carries no ``<stId>::variant::`` prefix (vn5: RPL10/RPL22/RPL5
+    in ROBO resolved to no node at all, because the pooled set's members
+    appeared nowhere else). For each key: the nodes some reaction produces;
+    else the key's existing nodes; else a new root node for the key, which is
+    exactly what the expanded copy would have registered. An entity with more
+    variants than the cap falls back to the nodes that exist (counted)."""
+    from src import variant_keys as vk
     produced = {e["target_id"] for e in pathway_logic_network_data if e.get("edge_type") == "output"}
     fed = {e["target_id"] for e in pathway_logic_network_data if e.get("edge_type") == "variant_pool"}
-    by_base: Dict[str, Dict[str, List[str]]] = {}
+    by_key: Dict[str, List[str]] = {}
     refs: List[Tuple[str, str]] = []
-    for node_uuid, sid in reactome_id_to_uuid.items():
+    for node_uuid, sid in list(reactome_id_to_uuid.items()):
         if sid.endswith("::pool"):
             if node_uuid not in fed:
                 refs.append((node_uuid, sid[:-len("::pool")]))
             continue
-        base = sid.split("::variant::")[0]
-        by_base.setdefault(base, {}).setdefault(sid, []).append(node_uuid)
-    n_edges = n_empty = 0
+        by_key.setdefault(sid, []).append(node_uuid)
+    cap = vk._max_variants()
+    n_edges = n_new = n_over = 0
     for pool_uuid, base in sorted(refs):
+        keys = sorted({vk.vkey(base, sig) for sig in
+                       vk.reaction_choices([base], limit=(cap + 1) if cap > 0 else None)})
+        if cap > 0 and len(keys) > cap:
+            n_over += 1
+            keys = sorted(k for k in by_key if k.split("::variant::")[0] == base and k != base)
         members: List[str] = []
-        for key, nodes in sorted(by_base.get(base, {}).items()):
-            if key == base:
-                continue  # the plain node is not a variant (and in step 3 an output)
+        for key in keys:
+            nodes = by_key.get(key, [])
             made = sorted(u for u in nodes if u in produced)
-            members.extend(made or sorted(nodes))
-        if not members:
-            n_empty += 1
+            if made or nodes:
+                members.extend(made or sorted(nodes))
+            else:
+                root = str(uuid.uuid4())
+                reactome_id_to_uuid[root] = key
+                by_key[key] = [root]
+                members.append(root)
+                n_new += 1
         for m in members:
             pathway_logic_network_data.append({
                 "source_id": m, "target_id": pool_uuid, "pos_neg": "pos",
@@ -1282,7 +1296,52 @@ def _wire_variant_pool_refs(pathway_logic_network_data: List[Dict[str, Any]],
             n_edges += 1
     if refs:
         logger.info(f"Variant nodes: {len(refs)} pool references wired by {n_edges} "
-                    f"variant_pool edges; {n_empty} have no variant in the pathway")
+                    f"variant_pool edges; {n_new} variant root nodes created; "
+                    f"{n_over} entities over the cap read existing nodes only")
+
+
+def _wire_capped_outputs(pathway_logic_network_data: List[Dict[str, Any]],
+                         reactome_id_to_uuid: Dict[str, str]) -> None:
+    """A reaction past every D6 step is ONE copy writing its outputs by plain
+    stable id, while consumers read the outputs' variant keys, so nothing fed
+    them (vn5 RAF: R-HSA-5672980 -> R-HSA-5672701, 34 experimental cases cut).
+    Feed each existing node of the output's variant keys from the plain output
+    by a ``variant_split`` OR edge: every variant reads the one copy, which is
+    what the expanded copies would each have produced. A plain node is such an
+    output exactly when it is produced and the entity has variant slots."""
+    from src import variant_keys as vk
+    produced = {e["target_id"] for e in pathway_logic_network_data if e.get("edge_type") == "output"}
+    by_key: Dict[str, List[str]] = {}
+    for node_uuid, sid in reactome_id_to_uuid.items():
+        by_key.setdefault(sid, []).append(node_uuid)
+    cap = vk._max_variants()
+    n_out = n_edges = 0
+    for sid in sorted(by_key):
+        if "::" in sid:
+            continue
+        plain = [u for u in by_key[sid] if u in produced]
+        if not plain:
+            continue
+        try:
+            if not (vk.is_set(sid) or (vk.is_complex(sid) and not vk.is_capped(sid) and vk.own_slots(sid))):
+                continue
+        except Exception:
+            continue
+        keys = {vk.vkey(sid, sig) for sig in vk.reaction_choices([sid], limit=(cap + 1) if cap > 0 else None)}
+        targets = sorted(u for k in keys if k != sid for u in by_key.get(k, []))
+        if not targets:
+            continue
+        n_out += 1
+        for src in sorted(plain):
+            for t in targets:
+                pathway_logic_network_data.append({
+                    "source_id": src, "target_id": t, "pos_neg": "pos",
+                    "and_or": "or", "edge_type": "variant_split", "stoichiometry": 1,
+                })
+                n_edges += 1
+    if n_out:
+        logger.info(f"Variant nodes: {n_out} capped plain outputs feed their variants "
+                    f"by {n_edges} variant_split edges")
 
 
 def _pool_variant_depleters(pathway_logic_network_data: List[Dict[str, Any]], start: int,
@@ -3019,6 +3078,7 @@ def create_pathway_logic_network(
     )
     if variant_nodes:
         _wire_variant_pool_refs(pathway_logic_network_data, reactome_id_to_uuid)
+        _wire_capped_outputs(pathway_logic_network_data, reactome_id_to_uuid)
 
     # Boundary expansion: every root-input and terminal-output complex
     # occurrence gets synthetic assembly / dissociation edges to its member
