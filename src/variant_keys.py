@@ -308,12 +308,27 @@ def reaction_choices(participants: Sequence[str],
     yield from rec({}, sorted(roots))
 
 
+POOL_SUFFIX = "::pool"
+
+
+def is_pool_id(node_id: str) -> bool:
+    """A pool of an entity's variants (``<stId>::pool``, decision D5)."""
+    return node_id.endswith(POOL_SUFFIX)
+
+
+def pool_base(node_id: str) -> str:
+    """The entity a pool id stands for; any other id unchanged."""
+    return node_id[:-len(POOL_SUFFIX)] if is_pool_id(node_id) else node_id
+
+
 def variant_parts(node_id: str) -> Tuple[str, List[str]]:
     """(parent stId, chosen members) of a node id in EITHER format: the
     specs/046 key (``parent::variant::slot=member_...``) or the legacy
     ``parent::variant::m1_m2`` id. A plain stId gives (stId, []). Every
     consumer that needs a variant's members goes through this, so the two
-    formats cannot be misread as each other."""
+    formats cannot be misread as each other. A pool id gives (its entity, []):
+    it stands for the entity as a whole, with no chosen member."""
+    node_id = pool_base(node_id)
     if VARIANT_SEP not in node_id:
         return node_id, []
     parent, tail = node_id.split(VARIANT_SEP, 1)

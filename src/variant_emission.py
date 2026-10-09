@@ -199,7 +199,7 @@ def _open_slots(entities: Sequence[str], sig: Dict[str, str]) -> List[str]:
     return sorted(out)
 
 
-POOL_SUFFIX = "::pool"
+POOL_SUFFIX = vk.POOL_SUFFIX
 
 
 def deep_slots(p: str) -> Set[str]:

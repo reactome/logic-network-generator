@@ -1602,6 +1602,9 @@ def _node_leaves(node_id: str) -> frozenset:
     """
     if node_id in _handoff_leaf_cache:
         return _handoff_leaf_cache[node_id]
+    if node_id.endswith("::pool"):
+        _handoff_leaf_cache[node_id] = _node_leaves(node_id[:-len("::pool")])
+        return _handoff_leaf_cache[node_id]
     if "::variant::" in node_id:
         from src.variant_keys import variant_parts, variant_leaves
         if "=" in node_id:     # specs/046 key: members may be complexes
@@ -2041,6 +2044,8 @@ def _emit_boundary_decomposition_edges_inner(
         # Tolerate any other unknown stIds too (e.g., entities added by other
         # synthetic emissions) — if the lookup fails, assume it's not a complex
         # and skip decomposition rather than crashing.
+        if entity_id.endswith("::pool"):
+            return False    # specs/046: a pool is fed by its variants, never decomposed
         if "::variant::" in entity_id:
             # specs/046 variant keys of complexes are decomposed through the
             # members their copy chose; legacy variant ids are not.
@@ -2212,7 +2217,8 @@ def _emit_boundary_decomposition_edges_inner(
         return set_uuid
 
     def _is_set(entity_id: str) -> bool:
-        if "::variant::" in entity_id or entity_id in modifier_isoform_set_ids():
+        if ("::variant::" in entity_id or entity_id.endswith("::pool")
+                or entity_id in modifier_isoform_set_ids()):
             return False
         if variant_nodes:
             from src.variant_keys import is_set as _vk_is_set
@@ -3405,6 +3411,9 @@ def export_nodes(pathway_logic_network: pd.DataFrame,
             s = uuid_to_str.get(u)
             if s is None:
                 pass
+            elif s.endswith("::pool"):
+                # specs/046 D5: the entity as a whole, fed by its variants
+                kind, diagram = "variant_pool", s[:-len("::pool")]
             elif "::variant::" in s:
                 kind = "set_variant"
                 from src.variant_keys import is_variant_key, parse_variant_key, variant_leaves, variant_parts
@@ -3592,7 +3601,10 @@ def export_containment(reactome_id_to_uuid: Dict[str, str],
         # A failed lookup raises: treating it as "contains only itself" put a
         # wrong row in containment.csv, which the consumer's default model
         # reads (code review 2026-10-02).
-        if "::variant::" in stid and "=" in stid:
+        if stid.endswith("::pool"):
+            # specs/046 D5: a pool stands for its whole entity
+            leaves = get_terminal_components(stid[:-len("::pool")])
+        elif "::variant::" in stid and "=" in stid:
             # specs/046: a variant contains only what its copy CHOSE: its
             # chosen members, their leaves, and nothing of the alternatives.
             from src.variant_keys import variant_leaves, variant_parts
@@ -4287,7 +4299,7 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     ent = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
     wanted = {pe for _, _, pe, _ in participants}
     for s in ent.values():
-        if "::variant::" in s:
+        if "::variant::" in s or s.endswith("::pool"):
             from src.variant_keys import variant_parts
             parent, members = variant_parts(s)
             wanted.add(parent)
@@ -4403,7 +4415,11 @@ def export_node_resolution(pathway_id: str,
     # 2. Entity nodes: what each node directly stands for.
     stid_to_uuids: Dict[str, Set[str]] = {}
     for node_uuid, node_str in uuid_to_str.items():
-        if "::variant::" in node_str:
+        if node_str.endswith("::pool"):
+            # specs/046 D5: recorded, under a relation no readout or gene
+            # resolution reads, so resolution is unchanged by pooling
+            add(node_str[:-len("::pool")], node_uuid, "variant_pool", 0)
+        elif "::variant::" in node_str:
             parent = node_str.split("::variant::")[0]
             add(parent, node_uuid, "variant", 0)
             stid_to_uuids.setdefault(parent, set()).add(node_uuid)
@@ -4439,7 +4455,7 @@ def export_node_resolution(pathway_id: str,
             continue
         edge_rid = vr_to_reaction.get(rxn_uuid)
         edge_node_str = uuid_to_str.get(node_uuid)
-        if not edge_rid or not edge_node_str:
+        if not edge_rid or not edge_node_str or edge_node_str.endswith("::pool"):
             continue
         base = edge_node_str.split("::variant::")[0]
         add(base, node_uuid,
