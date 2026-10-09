@@ -73,3 +73,66 @@ def test_a_bound_member_complex_opens_its_own_slots():
     assert not over and sorted(c["INNER"] for c in choices) == ["X1", "X2"]
     for c in choices:
         assert vk.vkey("OSET2", c).startswith("MCX::variant::INNER=")
+
+
+# --- D6 cap fallback (specs/046 research: the IFN alpha/beta cap seam) ---
+
+CAP_LABELS = {"REG": ["Complex"], "RS1": ["EntitySet"], "RS2": ["EntitySet"], "OUT": ["EntitySet"],
+              "BIG": ["EntitySet"], "IC": ["Complex"]}
+CAP_COMP = {"REG": ["RS1", "RS2"], "IC": ["GENE", "OUT"]}
+CAP_MEM = {"RS1": ["r1", "r2", "r3"], "RS2": ["s1", "s2", "s3"], "OUT": ["o1", "o2", "o3", "o4"],
+           "BIG": [f"b{i}" for i in range(12)]}
+
+
+@pytest.fixture
+def cap_world():
+    vk._lookups.update(labels=lambda s: CAP_LABELS.get(s, ["EWAS"]),
+                       components=lambda s: CAP_COMP.get(s, []),
+                       members=lambda s: CAP_MEM.get(s, []))
+    vk.reset_caches()
+
+
+def test_step1_pools_a_regulator_whose_choice_reaches_no_output(cap_world):
+    # 9 regulator variants x 4 free output members = 36 copies, over a cap of 10.
+    p = parts(**{"in": {"GENE": 1}, "out": {"OUT": 1}, "pos": ["REG"]})
+    assert ve._choices(p, 10)[1]
+    choices, pooled, step = ve.capped_fallback(p, 10)
+    assert step == 1 and pooled == {"REG"}
+    assert sorted(c["OUT"] for c in choices) == ["o1", "o2", "o3", "o4"]
+
+
+def test_step1_keeps_a_participant_holding_an_output_slot(cap_world):
+    # IC holds OUT's slot (reaches the output) and is kept; REG is pooled.
+    p = parts(**{"in": {"IC": 1}, "out": {"OUT": 1}, "neg": ["REG"]})
+    choices, pooled, step = ve.capped_fallback(p, 5)
+    assert step == 1 and pooled == {"REG"} and len(choices) == 4
+    assert all(vk.vkey("IC", c) == f"IC::variant::OUT={c['OUT']}" for c in choices)
+
+
+def test_step2_gives_one_copy_per_output_variant(cap_world):
+    # MIX holds OUT's slot AND RS1: kept by step 1 (4 x 3 = 12 > 5), pooled by step 2.
+    CAP_LABELS["MIX"] = ["Complex"]; CAP_COMP["MIX"] = ["OUT", "RS1"]
+    try:
+        vk.reset_caches()
+        p = parts(**{"in": {"MIX": 1}, "out": {"OUT": 1}})
+        choices, pooled, step = ve.capped_fallback(p, 5)
+        assert step == 2 and pooled == {"MIX"} and len(choices) == 4
+    finally:
+        del CAP_LABELS["MIX"], CAP_COMP["MIX"]
+
+
+def test_step3_single_copy_when_outputs_alone_exceed_the_cap(cap_world):
+    p = parts(**{"in": {"GENE": 1}, "out": {"BIG": 1}, "cat": ["REG"]})
+    choices, pooled, step = ve.capped_fallback(p, 10)
+    assert step == 3 and choices == [None] and pooled == {"REG"}
+
+
+def test_emitted_copy_reads_the_pool_reference(cap_world, monkeypatch):
+    monkeypatch.setattr(vk, "_max_variants", lambda: 10)
+    monkeypatch.setattr(ve, "fetch_participants", lambda g, r: {
+        "R1": parts(**{"in": {"GENE": 1}, "out": {"OUT": 1}, "pos": ["REG"]})})
+    rid_map, vr, cat, neg, pos = ve.build_variant_reactions(None, ["R1"])
+    assert len(rid_map) == 4 and set(pos["entity_id"]) == {"REG::pool"}
+    assert {o for (_, outs, _, _) in vr.values() for o in outs} == {
+        f"o{i}" for i in range(1, 5)}       # a bare set's key is its member's key
+    assert ve.STATS["capped_step1"] == 1

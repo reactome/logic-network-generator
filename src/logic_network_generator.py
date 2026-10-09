@@ -998,7 +998,8 @@ def _decompose_regulator_entity(
     from src.neo4j_connector import get_labels, get_complex_components, get_set_members
 
     # A specs/046 variant key is one node: the copy already chose its members.
-    if "::variant::" in entity_id and "=" in entity_id:
+    # So is a pool reference from a capped reaction (wired by _wire_variant_pool_refs).
+    if ("::variant::" in entity_id and "=" in entity_id) or entity_id.endswith("::pool"):
         return [(entity_id, 1)]
     labels = get_labels(entity_id)
 
@@ -1219,6 +1220,110 @@ def _bridge_excluded_stids() -> frozenset:
     return _cofactor_stids() | _UBIQUITIN_STIDS
 
 
+def _emit_variant_pool(base: str, member_uuids, pathway_logic_network_data: List[Dict[str, Any]],
+                       reactome_id_to_uuid: Dict[str, str], pool_cache: Dict[tuple, str]) -> str:
+    """One node standing for ``base`` as a whole, fed by the given nodes of its
+    variants (deltasignal specs/046 decision D5).
+
+    The members arrive as OR inputs (``variant_pool`` edges), so the solver
+    combines them by its OR rule, ``mean``: the same answer as reading each
+    variant in its own reaction copy and OR-ing the copies. The node id is
+    ``<base>::pool``, which no readout or gene resolves to, so readout and
+    perturbation resolution are unchanged. One pool per (base, member set) per
+    pathway."""
+    key = (base, frozenset(member_uuids))
+    pool = pool_cache.get(key)
+    if pool is None:
+        pool = str(uuid.uuid4())
+        pool_cache[key] = pool
+        reactome_id_to_uuid[pool] = f"{base}::pool"
+        for m in sorted(member_uuids):
+            pathway_logic_network_data.append({
+                "source_id": m, "target_id": pool, "pos_neg": "pos",
+                "and_or": "or", "edge_type": "variant_pool", "stoichiometry": 1,
+            })
+    return pool
+
+
+def _wire_variant_pool_refs(pathway_logic_network_data: List[Dict[str, Any]],
+                            reactome_id_to_uuid: Dict[str, str]) -> None:
+    """Feed every ``<stId>::pool`` node a capped reaction reads (specs/046 D6)
+    from the variants of ``<stId>``: for each variant key, the nodes some
+    reaction produces, or, if none is produced, the key's other nodes (a root
+    variant, which a perturbation pins). That is the node each variant's own
+    copy would have read, so the pool's OR equals expanding (D5). A pool with
+    no variant in the network stays a root at baseline, as the plain node was."""
+    produced = {e["target_id"] for e in pathway_logic_network_data if e.get("edge_type") == "output"}
+    fed = {e["target_id"] for e in pathway_logic_network_data if e.get("edge_type") == "variant_pool"}
+    by_base: Dict[str, Dict[str, List[str]]] = {}
+    refs: List[Tuple[str, str]] = []
+    for node_uuid, sid in reactome_id_to_uuid.items():
+        if sid.endswith("::pool"):
+            if node_uuid not in fed:
+                refs.append((node_uuid, sid[:-len("::pool")]))
+            continue
+        base = sid.split("::variant::")[0]
+        by_base.setdefault(base, {}).setdefault(sid, []).append(node_uuid)
+    n_edges = n_empty = 0
+    for pool_uuid, base in sorted(refs):
+        members: List[str] = []
+        for key, nodes in sorted(by_base.get(base, {}).items()):
+            if key == base:
+                continue  # the plain node is not a variant (and in step 3 an output)
+            made = sorted(u for u in nodes if u in produced)
+            members.extend(made or sorted(nodes))
+        if not members:
+            n_empty += 1
+        for m in members:
+            pathway_logic_network_data.append({
+                "source_id": m, "target_id": pool_uuid, "pos_neg": "pos",
+                "and_or": "or", "edge_type": "variant_pool", "stoichiometry": 1,
+            })
+            n_edges += 1
+    if refs:
+        logger.info(f"Variant nodes: {len(refs)} pool references wired by {n_edges} "
+                    f"variant_pool edges; {n_empty} have no variant in the pathway")
+
+
+def _pool_variant_depleters(pathway_logic_network_data: List[Dict[str, Any]], start: int,
+                            reactome_id_to_uuid: Dict[str, str]) -> None:
+    """Replace depletion edges that reach ONE target from several variants of
+    ONE depleter entity with a single edge from a pool of those variants.
+
+    Depletion runs from a reaction's catalyst to its substrate node, and that
+    node is shared by every copy of the reaction. Once a catalyst set is
+    expanded, each copy's catalyst variant depleted the shared substrate on its
+    own, and the solver multiplies depletions: an n-variant catalyst acted n
+    times. Traced in TP53 (specs/046 research): TP53 produced at 2.05x read
+    2.05 / 1.87^2 = 0.59 under two variants of R-HSA-6804885, which turned 49
+    correct AKT1-knockout calls into wrong ones. The variants are alternative
+    forms of one catalyst, so its activity is their OR."""
+    tail = pathway_logic_network_data[start:]
+    groups: Dict[tuple, List[str]] = {}
+    for e in tail:
+        if e.get("edge_type") == "depletion":
+            base = reactome_id_to_uuid.get(e["source_id"], e["source_id"]).split("::variant::")[0]
+            groups.setdefault((e["target_id"], base), []).append(e["source_id"])
+    pooled = {k: v for k, v in groups.items() if len(set(v)) > 1}
+    if not pooled:
+        return
+    kept = [e for e in tail if not (
+        e.get("edge_type") == "depletion"
+        and (e["target_id"], reactome_id_to_uuid.get(e["source_id"], e["source_id"]).split("::variant::")[0]) in pooled)]
+    del pathway_logic_network_data[start:]
+    pathway_logic_network_data.extend(kept)
+    cache: Dict[tuple, str] = {}
+    for (target, base), sources in sorted(pooled.items()):
+        pool = _emit_variant_pool(base, set(sources), pathway_logic_network_data,
+                                  reactome_id_to_uuid, cache)
+        pathway_logic_network_data.append({
+            "source_id": pool, "target_id": target, "pos_neg": "neg",
+            "and_or": "and", "edge_type": "depletion", "stoichiometry": 1.0,
+        })
+    logger.info(f"Variant nodes: {len(pooled)} depletion targets read a pool of "
+                f"{sum(len(set(v)) for v in pooled.values())} catalyst variants")
+
+
 def _emit_substrate_depletion_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -1401,6 +1506,7 @@ def _emit_substrate_depletion_edges(
     seen_edges: set = set()
     n_emitted_phos = 0
     n_emitted_ub = 0
+    first_depletion = len(pathway_logic_network_data)
     # Phosphatase pass — existing behavior.
     for rxn_uuid in phosphatase_rxn_uuids:
         catalyst_uuids = by_target_catalysts.get(rxn_uuid, [])
@@ -1473,6 +1579,9 @@ def _emit_substrate_depletion_edges(
                         "stoichiometry": 1.0,
                     })
                     n_emitted_ub += 1
+    if env_flag("LNG_VARIANT_NODES"):
+        _pool_variant_depleters(pathway_logic_network_data, first_depletion,
+                                reactome_id_to_uuid)
     logger.info(
         f"Emitted {n_emitted_phos + n_emitted_ub} substrate-depletion edges "
         f"({len(phosphatase_rxn_uuids)} phosphatase reactions, "
@@ -2194,6 +2303,8 @@ def append_regulators(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
     entity_uuid_registry: Optional[Dict[tuple, str]] = None,
+    produced_by_eid: Optional[Dict[str, List[Tuple[str, str]]]] = None,
+    preceding_by_reaction: Optional[Dict[str, Set[str]]] = None,
 ) -> None:
     """Append regulatory relationships to the pathway network.
 
@@ -2219,6 +2330,23 @@ def append_regulators(
                 stid_to_existing_uuid[entity_dbId] = entity_uuid
 
     set_pool_uuids: Dict[str, str] = {}   # set stId -> its pool node (LNG_SET_POOL)
+
+    def _existing(member_id: str, reaction_id: str) -> Optional[str]:
+        """The node a regulator reads. By default the first registry entry
+        for the entity, which is registration order and can be a copy nothing
+        produces. With ``produced_by_eid`` (LNG_VARIANT_NODES, specs/046): the
+        copy a curated preceding reaction produces, else any produced copy,
+        else the default. Traced on PTEN catalysing R-HSA-199456: the first
+        entry was an unfed copy that read 10x under a PTEN knockout."""
+        if produced_by_eid:
+            cands = produced_by_eid.get(member_id)
+            if cands:
+                pre = (preceding_by_reaction or {}).get(reaction_id, ())
+                for u, prx in cands:
+                    if prx in pre:
+                        return u
+                return cands[0][0]
+        return stid_to_existing_uuid.get(member_id)
 
     regulator_configs = [
         (catalyst_map, "pos", "catalyst"),
@@ -2327,8 +2455,9 @@ def append_regulators(
                     set_pool_uuids[entity_id] = pool_uuid
                     reactome_id_to_uuid[pool_uuid] = entity_id
                     for member_id, member_stoich in terminal_members:
-                        if member_id in stid_to_existing_uuid:
-                            member_uuid = stid_to_existing_uuid[member_id]
+                        found = _existing(member_id, str(row["reaction_id"]))
+                        if found is not None:
+                            member_uuid = found
                         else:
                             member_uuid = str(uuid.uuid4())
                             stid_to_existing_uuid[member_id] = member_uuid
@@ -2356,8 +2485,9 @@ def append_regulators(
                 continue
 
             for member_id, member_stoich in terminal_members:
-                if member_id in stid_to_existing_uuid:
-                    member_uuid = stid_to_existing_uuid[member_id]
+                found = _existing(member_id, str(row["reaction_id"]))
+                if found is not None:
+                    member_uuid = found
                 else:
                     member_uuid = str(uuid.uuid4())
                     stid_to_existing_uuid[member_id] = member_uuid
@@ -2839,6 +2969,25 @@ def create_pathway_logic_network(
         from src.neo4j_connector import prefetch_entity_decomposition_data
         prefetch_entity_decomposition_data(list(cat_reg_entity_ids))
 
+    # specs/046: under variant nodes a regulator reads the copy of its entity
+    # that a curated preceding reaction produces (see append_regulators).
+    produced_by_eid: Optional[Dict[str, List[Tuple[str, str]]]] = None
+    preceding_by_reaction: Optional[Dict[str, Set[str]]] = None
+    if variant_nodes:
+        produced_by_eid = {}
+        for (eid, vr_uid, role), node_uuid in entity_uuid_registry.items():
+            if role != "output":
+                continue
+            prx = vr_to_reaction.get(str(vr_uid), "")
+            lst = produced_by_eid.setdefault(str(eid), [])
+            if all(u != node_uuid or r != prx for u, r in lst):
+                lst.append((node_uuid, prx))
+        preceding_by_reaction = {}
+        for _, conn in reaction_connections.iterrows():
+            if pd.isna(conn["preceding_reaction_id"]) or pd.isna(conn["following_reaction_id"]):
+                continue
+            preceding_by_reaction.setdefault(str(conn["following_reaction_id"]), set()).add(
+                str(conn["preceding_reaction_id"]))
     append_regulators(
         catalyst_map,
         negative_regulator_map,
@@ -2846,6 +2995,8 @@ def create_pathway_logic_network(
         pathway_logic_network_data,
         reactome_id_to_uuid,
         entity_uuid_registry=entity_uuid_registry,
+        produced_by_eid=produced_by_eid,
+        preceding_by_reaction=preceding_by_reaction,
     )
 
     # Substrate-depletion edges: for each catalytic reaction, emit edges
@@ -2860,6 +3011,8 @@ def create_pathway_logic_network(
         reactome_id_to_uuid=reactome_id_to_uuid,
         catalyst_map=catalyst_map,
     )
+    if variant_nodes:
+        _wire_variant_pool_refs(pathway_logic_network_data, reactome_id_to_uuid)
 
     # Boundary expansion: every root-input and terminal-output complex
     # occurrence gets synthetic assembly / dissociation edges to its member

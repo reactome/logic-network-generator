@@ -19,9 +19,17 @@ correspond one to one by isoform-level reference identity; a tie is broken by
 sorted rank and counted, never by list position (replaces finding F9). An
 output slot that binds to nothing fans out.
 
-Past the cap (more than LNG_MAX_VARIANTS copies) the reaction is ONE copy that
-reads every participant by its plain stable id. This is the simplest step of
-decision D6; the pooled fallback (D5/D6) is a separate step with its own arm.
+Past the cap (more than LNG_MAX_VARIANTS copies) decision D6 applies, in order:
+1. a participant none of whose slots reaches an output is read as ONE pool of
+   its variants (``<stId>::pool``, wired by the generator, combined by OR:
+   decision D5), and the reaction is enumerated over the rest;
+2. if still over, every input-side participant with a slot outside the output
+   variants is pooled, giving one copy per output variant;
+3. if still over, ONE copy reads every slot-bearing input-side participant as
+   a pool and writes its outputs by plain stable id (counted).
+The first catalog arm used only a plain-id single copy; nothing produced those
+plain ids, so a capped reaction was cut from everything upstream (IFN alpha/beta
+"Expression of IFN-induced genes": 8 perturbations x 25 readouts).
 """
 import uuid
 from collections import Counter, defaultdict
@@ -191,6 +199,51 @@ def _open_slots(entities: Sequence[str], sig: Dict[str, str]) -> List[str]:
     return sorted(out)
 
 
+POOL_SUFFIX = "::pool"
+
+
+def deep_slots(p: str) -> Set[str]:
+    """Every slot a participant can open, through chosen member complexes."""
+    out: Set[str] = set()
+    todo = list(_slots_of([p]))
+    while todo:
+        x = todo.pop()
+        if x in out:
+            continue
+        out.add(x)
+        for m in vk.flat_members(x):
+            if vk.is_complex(m) and not vk.is_capped(m):
+                todo += vk.own_slots(m)
+    return out
+
+
+def _without(parts: dict, pooled: Set[str]) -> dict:
+    return {"in": {e: n for e, n in parts["in"].items() if e not in pooled},
+            "out": parts["out"],
+            "cat": [e for e in parts["cat"] if e not in pooled],
+            "pos": [e for e in parts["pos"] if e not in pooled],
+            "neg": [e for e in parts["neg"] if e not in pooled]}
+
+
+def capped_fallback(parts: dict, limit: int) -> Tuple[List[Optional[Dict[str, str]]], Set[str], int]:
+    """(choices, pooled participants, D6 step) for a reaction over the cap."""
+    inside = list(parts["in"]) + parts["cat"] + parts["pos"] + parts["neg"]
+    outputs = list(parts["out"])
+    out_slots: Set[str] = set()
+    for o in outputs:
+        out_slots |= deep_slots(o)
+    bound = bind_output_slots(_slots_of(inside), _slots_of(outputs))
+    reach = out_slots | {u for (u, _) in bound.values()}
+    slots = {x: deep_slots(x) for x in inside}
+    step1 = {x for x in inside if slots[x] and not (slots[x] & reach)}
+    step2 = {x for x in inside if slots[x] and not (slots[x] <= reach)}
+    for step, pooled in ((1, step1), (2, step2)):
+        choices, over = _choices(_without(parts, pooled), limit)
+        if not over and choices:
+            return choices, pooled, step
+    return [None], {x for x in inside if slots[x]}, 3
+
+
 def build_variant_reactions(graph, reaction_ids: Sequence[str]
                             ) -> Tuple[pd.DataFrame, Dict[str, tuple], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """(reaction_id_map, vr_entities, catalyst_map, negative_regulator_map,
@@ -208,18 +261,27 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
             # Never drop a reaction silently: zero copies means a set with no
             # members reached the enumeration, i.e. the structure is wrong.
             raise ValueError(f"{rx}: the variant enumeration produced no copy")
+        pooled: Set[str] = set()
         if over:
             STATS["reactions_over_cap"] += 1
-            choices = [None]
+            choices, pooled, step = capped_fallback(parts, cap)
+            STATS[f"capped_step{step}"] += 1
+            STATS["pooled_participants"] += len(pooled)
         STATS["copies"] += len(choices)
         for sig in choices:
             uid = str(uuid.uuid4())
-            name = (lambda e: e) if sig is None else (lambda e, s=sig: vk.vkey(e, s))
+
+            def name(e, s=sig, pooled=pooled, output=False):
+                # pooling applies to the input side only; an output is written
+                # by its key (or plain stId in step 3)
+                if e in pooled and not output:
+                    return e + POOL_SUFFIX
+                return e if s is None else vk.vkey(e, s)
             ins, outs = Counter(), Counter()
             for e, n in parts["in"].items():
                 ins[name(e)] += n
             for e, n in parts["out"].items():
-                outs[name(e)] += n
+                outs[name(e, output=True)] += n
             rows.append({"uid": uid, "reactome_id": rx, "input_hash": None, "output_hash": None})
             vr_entities[uid] = (sorted(ins), sorted(outs), dict(ins), dict(outs))
             for lst, target in ((parts["cat"], cat_rows), (parts["neg"], neg_rows), (parts["pos"], pos_rows)):
