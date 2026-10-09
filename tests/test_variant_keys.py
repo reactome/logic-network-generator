@@ -87,3 +87,9 @@ def test_keys_do_not_depend_on_lookup_order():
 def test_malformed_key_is_an_error():
     with pytest.raises(ValueError):
         vk.parse_variant_key("CX::variant::SETRAC1")
+
+
+def test_variant_parts_reads_both_formats():
+    assert vk.variant_parts("CX::variant::SET=RAC1") == ("CX", ["RAC1"])
+    assert vk.variant_parts("CX::variant::R-HSA-1_R-HSA-2") == ("CX", ["R-HSA-1", "R-HSA-2"])
+    assert vk.variant_parts("R-HSA-9") == ("R-HSA-9", [])

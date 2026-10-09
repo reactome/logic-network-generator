@@ -659,10 +659,8 @@ def _build_reactome_to_vr_map(reaction_id_map: pd.DataFrame) -> Dict[str, List[s
 
 def _parse_variant_members(variant_id: str) -> Set[str]:
     """Terminal member stIds encoded in a ``{parent}::variant::{m1_m2}`` id."""
-    if "::variant::" not in variant_id:
-        return set()
-    tail = variant_id.split("::variant::", 1)[1]
-    return {m for m in tail.split("_") if m}
+    from src.variant_keys import variant_parts
+    return set(variant_parts(variant_id)[1])
 
 
 _variant_leafsets_cache: Dict[str, List[frozenset]] = {}
@@ -1493,7 +1491,11 @@ def _node_leaves(node_id: str) -> frozenset:
     if node_id in _handoff_leaf_cache:
         return _handoff_leaf_cache[node_id]
     if "::variant::" in node_id:
-        s = {m for m in node_id.split("::variant::")[-1].split("_") if m.startswith("R-")}
+        from src.variant_keys import variant_parts, variant_leaves
+        if "=" in node_id:     # specs/046 key: members may be complexes
+            s = {m for m in variant_leaves(node_id) if m.startswith("R-")}
+        else:
+            s = {m for m in variant_parts(node_id)[1] if m.startswith("R-")}
     else:
         try:
             from src.neo4j_connector import get_labels
@@ -3181,9 +3183,9 @@ def export_nodes(pathway_logic_network: pd.DataFrame,
                 pass
             elif "::variant::" in s:
                 kind = "set_variant"
-                diagram = s.split("::variant::")[0]
-                members = [m for m in s.split("::variant::")[-1].split("_")
-                           if m.startswith("R-")]
+                from src.variant_keys import variant_parts
+                diagram, members = variant_parts(s)
+                members = [m for m in members if m.startswith("R-")]
                 sets, chosen = _derive_sets_and_chosen(diagram, set(members))
             else:
                 diagram = s
@@ -3536,11 +3538,10 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
     # (stid_to_uuid_mapping.csv), so it is what must be listed (review of PR
     # #98). A variant is drug-derived if its parent is, or if a member it
     # CHOSE is: a variant that picks the drug out of a mixed set is the drug.
+    from src.variant_keys import variant_parts
+
     def parts(node_id: str):
-        if "::variant::" not in node_id:
-            return node_id, []
-        parent, members = node_id.split("::variant::", 1)
-        return parent, [m for m in members.split("_") if m]
+        return variant_parts(node_id)
 
     wanted = set()
     for n in node_ids:
@@ -3692,11 +3693,8 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
         copies.setdefault(r, []).append(u)
 
     def parts(u: str) -> Tuple[str, List[str]]:
-        s = ent.get(u, "")
-        if "::variant::" not in s:
-            return s, []
-        parent, members = s.split("::variant::", 1)
-        return parent, [m for m in members.split("_") if m]
+        from src.variant_keys import variant_parts
+        return variant_parts(ent.get(u, ""))
 
     def pe_of(u: str) -> str:
         return parts(u)[0]
@@ -4046,9 +4044,10 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     wanted = {pe for _, _, pe, _ in participants}
     for s in ent.values():
         if "::variant::" in s:
-            parent, members = s.split("::variant::", 1)
+            from src.variant_keys import variant_parts
+            parent, members = variant_parts(s)
             wanted.add(parent)
-            wanted.update(m for m in members.split("_") if m)
+            wanted.update(members)
         else:
             wanted.add(s)
     profiles = get_form_profiles(wanted)
@@ -4164,7 +4163,8 @@ def export_node_resolution(pathway_id: str,
             parent = node_str.split("::variant::")[0]
             add(parent, node_uuid, "variant", 0)
             stid_to_uuids.setdefault(parent, set()).add(node_uuid)
-            for member in node_str.split("::variant::")[-1].split("_"):
+            from src.variant_keys import variant_parts
+            for member in variant_parts(node_str)[1]:
                 if member.startswith("R-"):
                     add(member, node_uuid, "set_member", 1)
                     stid_to_uuids.setdefault(member, set()).add(node_uuid)

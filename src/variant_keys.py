@@ -276,3 +276,18 @@ def reaction_choices(participants: Sequence[str],
             del sigma[s]
 
     yield from rec({}, sorted(roots))
+
+
+def variant_parts(node_id: str) -> Tuple[str, List[str]]:
+    """(parent stId, chosen members) of a node id in EITHER format: the
+    specs/046 key (``parent::variant::slot=member_...``) or the legacy
+    ``parent::variant::m1_m2`` id. A plain stId gives (stId, []). Every
+    consumer that needs a variant's members goes through this, so the two
+    formats cannot be misread as each other."""
+    if VARIANT_SEP not in node_id:
+        return node_id, []
+    parent, tail = node_id.split(VARIANT_SEP, 1)
+    toks = [t for t in tail.split("_") if t]
+    if any("=" in t for t in toks):
+        return parent, sorted({t.split("=", 1)[1] for t in toks})
+    return parent, toks
