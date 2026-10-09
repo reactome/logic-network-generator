@@ -291,3 +291,26 @@ def variant_parts(node_id: str) -> Tuple[str, List[str]]:
     if any("=" in t for t in toks):
         return parent, sorted({t.split("=", 1)[1] for t in toks})
     return parent, toks
+
+
+def is_variant_key(node_id: str) -> bool:
+    """True for a specs/046 key (``parent::variant::slot=member...``)."""
+    return VARIANT_SEP in node_id and "=" in node_id.split(VARIANT_SEP, 1)[1]
+
+
+def variant_components(key: str) -> List[str]:
+    """The components of a variant, one level down: the parent's components
+    with each set slot replaced by the key of its chosen member, and each
+    component complex that holds sets by its own variant key. Used by the
+    boundary layer to decompose a root variant through what its copy chose."""
+    parent, sigma = parse_variant_key(key)
+    out: List[str] = []
+    for c in _components(parent):
+        if is_set(c):
+            m = sigma.get(c)
+            out.append(vkey(m, sigma) if m else c)
+        elif is_complex(c) and not is_capped(c) and own_slots(c):
+            out.append(vkey(c, sigma))
+        else:
+            out.append(c)
+    return out

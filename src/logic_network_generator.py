@@ -997,6 +997,9 @@ def _decompose_regulator_entity(
     """
     from src.neo4j_connector import get_labels, get_complex_components, get_set_members
 
+    # A specs/046 variant key is one node: the copy already chose its members.
+    if "::variant::" in entity_id and "=" in entity_id:
+        return [(entity_id, 1)]
     labels = get_labels(entity_id)
 
     if "Complex" in labels:
@@ -1929,11 +1932,28 @@ def _emit_boundary_decomposition_edges_inner(
         # synthetic emissions) — if the lookup fails, assume it's not a complex
         # and skip decomposition rather than crashing.
         if "::variant::" in entity_id:
-            return False
+            # specs/046 variant keys of complexes are decomposed through the
+            # members their copy chose; legacy variant ids are not.
+            from src.variant_keys import is_variant_key, variant_parts
+            if not is_variant_key(entity_id):
+                return False
+            entity_id = variant_parts(entity_id)[0]
         try:
             return "Complex" in get_labels(entity_id)
         except IndexError:
             return False
+
+    def _components_of(entity_id: str):
+        from src.variant_keys import is_variant_key, variant_components
+        if is_variant_key(entity_id):
+            return variant_components(entity_id)
+        return get_complex_components(entity_id) or {}
+
+    def _leaves_of(entity_id: str):
+        from src.variant_keys import is_variant_key, variant_leaves
+        if is_variant_key(entity_id):
+            return variant_leaves(entity_id)
+        return get_terminal_components(entity_id)
 
     # Boundary expansion emits SYNTHETIC causal edges from a structural fact:
     # assembly (leaf -> root complex, so a subunit can be perturbed) and
@@ -2007,7 +2027,7 @@ def _emit_boundary_decomposition_edges_inner(
 
     def _decompose_hier(container_uuid: str, container_stid: str, root_uuid: str, depth: int) -> None:
         nonlocal nested_built
-        for comp in sorted(get_complex_components(container_stid) or {}):
+        for comp in sorted(_components_of(container_stid)):
             existing = _existing_upstream(comp, root_uuid)
             if existing is not None:
                 _emit(existing, container_uuid)          # a species the network already has
@@ -2090,7 +2110,7 @@ def _emit_boundary_decomposition_edges_inner(
         if hierarchy:
             _decompose_hier(complex_uuid, stid, complex_uuid, 0)
             continue
-        leaves = get_terminal_components(stid)
+        leaves = _leaves_of(stid)
         if leaves == {str(stid)}:  # nothing below the complex to expose
             continue
         for leaf in leaves:
@@ -2113,7 +2133,7 @@ def _emit_boundary_decomposition_edges_inner(
         stid = reactome_id_to_uuid.get(complex_uuid) or ""
         if not stid or not _is_complex(stid):
             continue
-        leaves = get_terminal_components(stid)
+        leaves = _leaves_of(stid)
         if leaves == {str(stid)}:
             continue
         for leaf in leaves:
@@ -2515,11 +2535,23 @@ def create_pathway_logic_network(
     _calculate_reaction_statistics(reaction_connections)
     
     # Create mappings and connections
-    reaction_id_map = create_reaction_id_map(decomposed_uid_mapping, best_matches)
+    # deltasignal specs/046: under LNG_VARIANT_NODES the reaction copies and
+    # their entities come from variant keys (src/variant_emission.py), with
+    # catalysts and regulators expanded per copy. Phases 1-3 below are shared.
+    variant_nodes = env_flag("LNG_VARIANT_NODES")
     graph = get_graph()
-    catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
-    negative_regulator_map = get_negative_regulators_for_reaction(reaction_id_map, graph)
-    positive_regulator_map = get_positive_regulators_for_reaction(reaction_id_map, graph)
+    if variant_nodes:
+        from src.reaction_generator import reaction_ids_from_connections
+        from src.variant_emission import STATS as _variant_stats, build_variant_reactions
+        (reaction_id_map, _variant_vr_entities, catalyst_map,
+         negative_regulator_map, positive_regulator_map) = build_variant_reactions(
+            graph, reaction_ids_from_connections(reaction_connections))
+        logger.info(f"Variant nodes: {dict(_variant_stats)}")
+    else:
+        reaction_id_map = create_reaction_id_map(decomposed_uid_mapping, best_matches)
+        catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
+        negative_regulator_map = get_negative_regulators_for_reaction(reaction_id_map, graph)
+        positive_regulator_map = get_positive_regulators_for_reaction(reaction_id_map, graph)
 
     # Print regulator statistics
     _print_regulator_statistics(positive_regulator_map, negative_regulator_map, catalyst_map)
@@ -2533,7 +2565,8 @@ def create_pathway_logic_network(
     logger.debug(f"Built UID index with {len(uid_index)} entries")
 
     # Resolve VR entities and build reactome-to-VR map
-    vr_entities = _resolve_vr_entities(reaction_id_map, uid_index)
+    vr_entities = (_variant_vr_entities if variant_nodes
+                   else _resolve_vr_entities(reaction_id_map, uid_index))
     reactome_to_vr = _build_reactome_to_vr_map(reaction_id_map)
 
     logger.debug(f"Processing {len(vr_entities)} virtual reactions in 3 phases")
@@ -3360,7 +3393,13 @@ def export_containment(reactome_id_to_uuid: Dict[str, str],
         # A failed lookup raises: treating it as "contains only itself" put a
         # wrong row in containment.csv, which the consumer's default model
         # reads (code review 2026-10-02).
-        leaves = get_terminal_components(stid)
+        if "::variant::" in stid and "=" in stid:
+            # specs/046: a variant contains only what its copy CHOSE: its
+            # chosen members, their leaves, and nothing of the alternatives.
+            from src.variant_keys import variant_leaves, variant_parts
+            leaves = set(variant_parts(stid)[1]) | variant_leaves(stid)
+        else:
+            leaves = get_terminal_components(stid)
         leaves_by_stid[stid] = {str(x) for x in leaves} | {stid}
 
     # Keyed by STABLE ID, not uuid. Containment is a property of the entity, not
@@ -3411,7 +3450,13 @@ def export_containment_structure(reactome_id_to_uuid: Dict[str, str],
     graph = get_graph()
     rows = []
     seen: Set[str] = set()
-    frontier = sorted({str(v) for v in reactome_id_to_uuid.values() if v})
+    from src.variant_keys import variant_parts
+    frontier = set()
+    for v in reactome_id_to_uuid.values():
+        if v:
+            parent, chosen = variant_parts(str(v))
+            frontier |= {parent, *chosen}
+    frontier = sorted(frontier)
     while frontier:
         seen.update(frontier)
         found = graph.run(

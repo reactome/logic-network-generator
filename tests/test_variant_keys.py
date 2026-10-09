@@ -93,3 +93,8 @@ def test_variant_parts_reads_both_formats():
     assert vk.variant_parts("CX::variant::SET=RAC1") == ("CX", ["RAC1"])
     assert vk.variant_parts("CX::variant::R-HSA-1_R-HSA-2") == ("CX", ["R-HSA-1", "R-HSA-2"])
     assert vk.variant_parts("R-HSA-9") == ("R-HSA-9", [])
+
+
+def test_variant_components_replace_slots_by_chosen_members():
+    assert vk.variant_components("CX::variant::SET=RAC1") == ["GDP", "RAC1"]
+    assert vk.is_variant_key("CX::variant::SET=RAC1") and not vk.is_variant_key("CX::variant::A_B")
