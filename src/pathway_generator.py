@@ -13,6 +13,7 @@ from src.logic_network_generator import (
     create_pathway_logic_network,
     export_cofactors,
     export_drugs,
+    export_pathogens,
     export_pools,
     export_containment,
     export_containment_structure,
@@ -42,6 +43,9 @@ _FINGERPRINTED_ENV = (
     "LNG_SET_POOL",
     "LNG_CAP_POOLS",
     "LNG_POOL_ACTIVE_VIA",
+    "LNG_POOL_JOIN_MEMBERS",
+    "LNG_POOL_REGEN",
+    "LNG_BIND_STOICH",
     "LNG_VARIANT_NODES",
     "LNG_DIAGRAM_SET_MEMBER",
     # Of these three, only LNG_EMIT_ONE_SIDED is a genuine cache gap: it is
@@ -219,7 +223,7 @@ BUNDLE_FILES = (
     "logic_network.csv", "stid_to_uuid_mapping.csv", "entity_reaction_proxy_mapping.csv",
     "nodes.csv", "node_reaction_context.csv", "node_resolution.csv", "node_exclusions.csv",
     "boundary_edges.csv", "cofactors.csv", "containment.csv", "containment_structure.csv",
-    "drugs.csv",
+    "drugs.csv", "pathogens.csv",
     "pools.csv", "pool_transitions.csv", "pool_carriers.csv",
 )
 
@@ -564,6 +568,17 @@ def generate_pathway_file(
             )
         except Exception as e:
             logger.error(f"Failed to write drugs.csv: {e}", exc_info=True)
+            raise
+
+        # Pathogen-derived entities (deltasignal specs/048), likewise on their own.
+        try:
+            export_pathogens(
+                result.logic_network,
+                result.uuid_mapping,
+                str(pathway_output_dir / "pathogens.csv"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to write pathogens.csv: {e}", exc_info=True)
             raise
 
         # Interconversion pools (deltasignal specs/039), in their own block.

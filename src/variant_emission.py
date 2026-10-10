@@ -38,6 +38,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 import pandas as pd
 
 from src import variant_keys as vk
+from src.env_flags import env_flag
 
 # `participant` is the curated catalyst/regulator the row came from (a bare
 # set's copies name its MEMBERS in entity_id), read by depleter pooling.
@@ -103,10 +104,31 @@ def _reference_signature(member: str) -> Tuple[str, ...]:
         return _sig_cache[member]
     from src.neo4j_connector import get_reference_entity_id
     from src.reaction_generator import get_terminal_components
-    leaves = sorted(get_terminal_components(member)) if vk.is_complex(member) else [member]
+    if vk.is_complex(member) and env_flag("LNG_BIND_STOICH"):
+        leaves = _leaf_multiset(member)
+    else:
+        leaves = sorted(get_terminal_components(member)) if vk.is_complex(member) else [member]
     sig = tuple(sorted(str(get_reference_entity_id(x) or x) for x in leaves))
     _sig_cache[member] = sig
     return sig
+
+
+def _leaf_multiset(entity: str, depth: int = 0) -> List[str]:
+    """The leaves of a complex with their stoichiometry, as a multiset
+    (deltasignal specs/048 B3). ``get_terminal_components`` returns a set, so a
+    homodimer (MAPK1 dimer, R-HSA-5675354) had the signature of its monomer
+    (MAPK1, R-HSA-59282), and "Cytosolic DUSPs dephosphorylate MAPKs"
+    (R-HSA-5675376) bound p-MAPK1 to the MAPK1 DIMER and the p-MAPK1 dimer to
+    the monomer, by sorted rank. A set inside a complex contributes its
+    leaves once each, as before."""
+    from src.neo4j_connector import get_complex_components
+    from src.reaction_generator import get_terminal_components
+    if depth > 10 or not vk.is_complex(entity):
+        return sorted(get_terminal_components(entity)) or [entity]
+    out: List[str] = []
+    for comp, st in sorted(get_complex_components(entity).items()):
+        out.extend(_leaf_multiset(comp, depth + 1) * int(st or 1))
+    return sorted(out) or [entity]
 
 
 def bind_output_slots(input_side: Set[str], output_slots: Set[str]) -> Dict[str, Tuple[str, Dict[str, str]]]:
