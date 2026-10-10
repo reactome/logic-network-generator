@@ -512,7 +512,6 @@ def _reject_removed_env() -> None:
             raise ValueError(f"{name} was removed: {why}")
     validate_env(removed=_REMOVED_ENV)
     pool_active_via()
-    pool_regen()
 
 
 _POOL_ACTIVE_VIA = ("direct", "made_from")
@@ -531,24 +530,6 @@ def pool_active_via() -> str:
     value = os.environ.get("LNG_POOL_ACTIVE_VIA", "made_from")
     if value not in _POOL_ACTIVE_VIA:
         raise ValueError(f"LNG_POOL_ACTIVE_VIA must be one of {_POOL_ACTIVE_VIA}, got {value!r}")
-    return value
-
-
-_POOL_REGEN = ("entity", "protein")
-
-
-def pool_regen() -> str:
-    """LNG_POOL_REGEN (deltasignal specs/048 lever B2): how a multi-step pool
-    path proves it regenerates what it consumes (specs/039 amendment 5).
-    ``entity`` (default): every consumed non-R, non-small input is output again
-    by a step of the path, compared by stable id. ``protein``: every protein a
-    consumed input carries is output again, in any form, so a partner released
-    under another stable id (RAS:GTP:activated RAF dimers, R-HSA-5672718 in and
-    R-HSA-5672712 out) or modified (MAP2K in, p-2S MAP2K out) still counts.
-    Any other value is an error at startup."""
-    value = os.environ.get("LNG_POOL_REGEN", "entity")
-    if value not in _POOL_REGEN:
-        raise ValueError(f"LNG_POOL_REGEN must be one of {_POOL_REGEN}, got {value!r}")
     return value
 
 
@@ -4084,10 +4065,6 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     acts: Dict[str, Set[str]] = {}     # node -> reaction nodes it catalyses or positively regulates
     set_pools_of: Dict[str, Set[str]] = {}   # member node -> the set-pool nodes it feeds (specs/033)
     feeds: Dict[str, Set[str]] = {}          # node -> reaction nodes it is an input of
-    pool_members: Dict[str, Set[str]] = {}   # pool node -> the member nodes feeding it (specs/048 B1)
-    split_to: Dict[str, Set[str]] = {}       # plain output node -> the variants it is split to (specs/048 B1)
-    join_members = env_flag("LNG_POOL_JOIN_MEMBERS")
-    regen_by_protein = pool_regen() == "protein"
     active_via = pool_active_via()
     has_st = "stoichiometry" in pathway_logic_network.columns
     for _, e in pathway_logic_network.iterrows():
@@ -4111,10 +4088,6 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             acts.setdefault(s, set()).add(t)
         elif et == "set_member":
             set_pools_of.setdefault(s, set()).add(t)
-        if et in ("set_member", "variant_pool"):
-            pool_members.setdefault(t, set()).add(s)
-        elif et == "variant_split":
-            split_to.setdefault(s, set()).add(t)
         if et == "input" and t in vr:
             feeds.setdefault(s, set()).add(t)
     copies: Dict[str, List[str]] = {}
@@ -4157,24 +4130,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     for rx, r, a, b, enz in steps:
         for rx_u in sorted(copies.get(rx, [])):
             cin = [u for u, st in ins.get(rx_u, {}).items() if st == 1 and maps(u, a) and r in proteins(u)]
-            if join_members:
-                # specs/048 B1: a step reading a pool node (variant_pool or
-                # set_member target) starts from the pool's members that carry
-                # R, so a cycle closed through the pool (MAPK3 released by
-                # DUSPs re-entering R-HSA-169291::pool) is visible here as it
-                # is to the solver.
-                cin = sorted({m for u in cin for m in (
-                    [m for m in sorted(pool_members[u]) if r in proteins(m)]
-                    if u in pool_members else [u])})
             cout = [u for u, st in outs.get(rx_u, {}).items() if st == 1 and maps(u, b) and r in proteins(u)]
-            if join_members:
-                # and a step writing a plain node that variant_split edges hand
-                # to its variants (a capped reaction's output) ends at those
-                # variants that carry R: R-HSA-5672980 releases R-HSA-169289,
-                # split to p-MAPK1 and p-MAPK3.
-                cout = sorted({m for u in cout for m in (
-                    [m for m in sorted(split_to[u]) if r in proteins(m)]
-                    if u in split_to else [u])})
             if len(cin) != 1 or len(cout) != 1:
                 if len(cin) > 1 or len(cout) > 1:
                     stats["ambiguous_copies"] += 1
@@ -4198,16 +4154,9 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             produced: Set[str] = set()
             for a_u, _, _, _, cp in path:
                 for rx_u in cp:
-                    eaten = [j for j in ins.get(rx_u, {})
-                             if j != a_u and not prof(j, "small", False) and pe_of(j) not in _UBIQUITIN_STIDS
-                             and not (a_u in pool_members.get(j, ()))]
-                    if regen_by_protein:
-                        # specs/048 B2: by the proteins carried, in any form
-                        consumed |= {p for j in eaten for p in proteins(j)}
-                        produced |= {p for o in outs.get(rx_u, {}) for p in proteins(o)}
-                    else:
-                        consumed |= {ent.get(j, "") for j in eaten}
-                        produced |= {ent.get(o, "") for o in outs.get(rx_u, {})}
+                    consumed |= {ent.get(j, "") for j in ins.get(rx_u, {})
+                                 if j != a_u and not prof(j, "small", False) and pe_of(j) not in _UBIQUITIN_STIDS}
+                    produced |= {ent.get(o, "") for o in outs.get(rx_u, {})}
             if consumed <= produced:
                 return True
             local["nonregenerating_paths"] += 1

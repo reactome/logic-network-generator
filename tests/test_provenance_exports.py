@@ -376,3 +376,65 @@ def test_get_drug_entities_queries_uncached_ids_and_keeps_misses(monkeypatch):
     assert calls == [["C", "R-RXN"]]
     assert neo4j_connector.get_drug_entities({"C", "R-RXN"}) == got
     assert len(calls) == 1                         # second call served from the cache
+
+
+# --- pathogens.csv (deltasignal specs/048) ------------------------------------
+
+def test_export_pathogens_shares_the_drug_listing(tmp_path, monkeypatch):
+    # Same variant resolution as drugs.csv: a variant that CHOSE a viral member
+    # is listed under its exact node id.
+    monkeypatch.setattr(neo4j_connector, "get_pathogen_entities",
+                        lambda stids: {"R-COV-M": {"schema_class": "EWAS", "name": "M [plasma membrane]"}})
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    vm, vp = "R-HSA-S::variant::R-COV-M", "R-HSA-S::variant::R-HSA-P"
+    out = tmp_path / "pathogens.csv"
+    m.export_pathogens(pd.DataFrame([{"source_id": "u-1", "target_id": "u-2"}]), {vm: "u-1", vp: "u-2"}, str(out))
+    df = pd.read_csv(out)
+    assert list(df.columns) == ["stable_id", "schema_class", "name", "reactome_release"]
+    assert list(df.stable_id) == [vm]
+
+
+def test_pathogen_rule_species_leaf_complex_any_set_every(monkeypatch):
+    # V is viral (taxon 2697049); H is human; X has two species, one human (not
+    # pathogen-derived); A has no species (a small molecule: not). N:M:PDPK1 =
+    # complex(V, H) is; S_all = set{V, V2} is; S_mixed = set{V, H} is not;
+    # C2 = complex(H, S_mixed) is not.
+    cache = {
+        "V": (["2697049"], [], "EWAS", "M"), "V2": (["2697049"], [], "EWAS", "N"),
+        "H": (["9606"], [], "EWAS", "PDPK1"), "X": (["9606", "11320"], [], "EWAS", "x"),
+        "A": ([], [], "SimpleEntity", "ATP"),
+        "NMP": (["9606", "2697049"], [("hasComponent", "V"), ("hasComponent", "H")], "Complex", "N:M:PDPK1"),
+        "S_all": ([], [("hasCandidate", "V"), ("hasCandidate", "V2")], "CandidateSet", "s"),
+        "S_mixed": ([], [("hasMember", "V"), ("hasMember", "H")], "DefinedSet", "s"),
+        "C2": ([], [("hasComponent", "H"), ("hasComponent", "S_mixed")], "Complex", "c"),
+    }
+    monkeypatch.setattr(neo4j_connector, "_pathogen_structure_cache", dict(cache))
+
+    def boom():
+        raise AssertionError("fully cached: no query expected")
+    monkeypatch.setattr(neo4j_connector, "get_graph", boom)
+    got = neo4j_connector.get_pathogen_entities(cache)
+    assert set(got) == {"V", "V2", "NMP", "S_all"}
+    assert got["NMP"] == {"schema_class": "Complex", "name": "N:M:PDPK1"}
+
+
+def test_get_pathogen_entities_queries_uncached_ids_and_keeps_misses(monkeypatch):
+    monkeypatch.setattr(neo4j_connector, "_pathogen_structure_cache", {})
+    calls = []
+
+    class G:
+        def run(self, q, **kw):
+            calls.append(sorted(kw["ids"]))
+
+            class R:
+                def data(_):
+                    return [{"x": "C", "c": "Complex", "d": "N:M:PDPK1", "tax": ["9606", "2697049"],
+                             "kids": [["hasComponent", "V"], ["hasComponent", "H"]]},
+                            {"x": "V", "c": "EWAS", "d": "M", "tax": ["2697049"], "kids": [None]},
+                            {"x": "H", "c": "EWAS", "d": "PDPK1", "tax": ["9606"], "kids": []}]
+            return R()
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
+    got = neo4j_connector.get_pathogen_entities({"C", "R-RXN"})
+    assert got == {"C": {"schema_class": "Complex", "name": "N:M:PDPK1"}}
+    assert neo4j_connector.get_pathogen_entities({"C", "R-RXN"}) == got
+    assert calls == [["C", "R-RXN"]]

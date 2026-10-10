@@ -14,7 +14,7 @@ import os
 BOOL_FLAGS = {
     "LNG_BOUNDARY_EXPANSION": True,
     "LNG_BOUNDARY_HIERARCHY": True,
-    "LNG_BIND_STOICH": False,    # deltasignal specs/048 lever B3
+    "LNG_BIND_STOICH": False,    # deltasignal specs/048: homodimer binding
     "LNG_CAP_POOLS": True,      # default since deltasignal specs/045 (RAF experimental +14, held-out 0)
     "LNG_CATALYST_BUNDLE": False,
     "LNG_COMPLEX_AS_NODE": True,
@@ -25,7 +25,6 @@ BOOL_FLAGS = {
     "LNG_DIAGRAM_SET_MEMBER": False,
     "LNG_EMIT_ONE_SIDED": True,
     "LNG_HANDOFF_EDGES": False,
-    "LNG_POOL_JOIN_MEMBERS": False,   # deltasignal specs/048 lever B1
     "LNG_SET_EXPAND": True,
     "LNG_SET_MEMBERS_OR": False,
     "LNG_SET_POOL": True,
@@ -39,7 +38,6 @@ OTHER_FLAGS = frozenset({
     "LNG_HANDOFF_HUB_MAX",        # _int_env
     "LNG_MAX_VARIANTS",           # _int_env
     "LNG_POOL_ACTIVE_VIA",        # pool_active_via()
-    "LNG_POOL_REGEN",             # pool_regen()
     "LNG_PYTHON",                 # catalog.sh: the interpreter, not a switch
 })
 

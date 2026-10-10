@@ -4,6 +4,8 @@ import pytest
 import src.variant_emission as ve
 import src.variant_keys as vk
 
+REAL_SIGNATURE = ve._reference_signature      # the autouse stub replaces it per test
+
 LABELS = {"CX": ["Complex"], "SET": ["EntitySet"], "OSET": ["EntitySet"], "GDP": ["SimpleEntity"],
           "DIMER": ["Complex"], "CAT": ["Complex"], "TIE": ["EntitySet"], "OTIE": ["EntitySet"]}
 COMP = {"CX": ["GDP", "SET"], "DIMER": ["SET", "SET"], "CAT": ["SET", "GDP"]}
@@ -153,3 +155,43 @@ def test_step1_does_not_pool_a_participant_sharing_a_slot_with_a_kept_one(cap_wo
         for d, ks in ((CAP_LABELS, "ABST"), (CAP_COMP, "AB"), (CAP_MEM, "ST")):
             for k in ks:
                 d.pop(k, None)
+
+
+# R-HSA-5675376 with its real ids, whose sorted order is what crossed the pairing.
+PM, PD, M, D = "R-HSA-109853", "R-HSA-109855", "R-HSA-59282", "R-HSA-5675354"
+
+
+def _dusp_lookups(monkeypatch):
+    """p-T,Y MAPK monomers and dimers -> MAPK monomers and dimers. PM = p-MAPK1,
+    PD = p-MAPK1 dimer (PM x2); M = MAPK1, D = MAPK1 dimer (M x2)."""
+    import src.neo4j_connector as nc
+    import src.reaction_generator as rg
+    labels = {"IN": ["EntitySet"], "OUT": ["EntitySet"], PD: ["Complex"], D: ["Complex"]}
+    vk._lookups.update(labels=lambda s: labels.get(s, ["EWAS"]), components=lambda s: [],
+                       members=lambda s: {"IN": [PD, PM], "OUT": [D, M]}.get(s, []))
+    vk.reset_caches()
+    monkeypatch.setattr(ve, "_reference_signature", REAL_SIGNATURE)
+    monkeypatch.setattr(nc, "get_reference_entity_id", lambda x: {PM: "MAPK1", M: "MAPK1"}.get(x))
+    monkeypatch.setattr(nc, "get_complex_components", lambda x: {PD: {PM: 2}, D: {M: 2}}.get(x, {}))
+    monkeypatch.setattr(rg, "get_terminal_components", lambda x: {PD: {PM}, D: {M}}.get(x, {x}))
+
+
+def test_homodimer_binds_to_homodimer_not_monomer(monkeypatch):
+    """specs/048: the signature keeps a complex's leaf multiset. Without it the
+    dimer reads as its monomer and the tie is broken by sorted rank, which
+    paired p-MAPK1 with the MAPK1 DIMER."""
+    _dusp_lookups(monkeypatch)
+    monkeypatch.setenv("LNG_BIND_STOICH", "1")
+    assert ve._reference_signature(PD) == ("MAPK1", "MAPK1")
+    assert ve._reference_signature(PM) == ("MAPK1",)
+    (slot, mapping), = ve.bind_output_slots({"IN"}, {"OUT"}).values()
+    assert slot == "IN" and mapping == {PM: M, PD: D}
+    assert ve.STATS.get("slot_binding_ties", 0) == 0
+
+
+def test_homodimer_binding_off_reproduces_the_crossed_pairing(monkeypatch):
+    _dusp_lookups(monkeypatch)
+    monkeypatch.setenv("LNG_BIND_STOICH", "0")
+    (slot, mapping), = ve.bind_output_slots({"IN"}, {"OUT"}).values()
+    assert mapping == {PM: D, PD: M}
+    assert ve.STATS["slot_binding_ties"] == 1
