@@ -409,6 +409,7 @@ def test_pathogen_rule_species_leaf_complex_any_set_every(monkeypatch):
         "C2": ([], [("hasComponent", "H"), ("hasComponent", "S_mixed")], "Complex", "c"),
     }
     monkeypatch.setattr(neo4j_connector, "_pathogen_structure_cache", dict(cache))
+    monkeypatch.setenv("LNG_PATHOGEN_PROTEIN", "0")   # the species rule alone; protein-only is tested below
 
     def boom():
         raise AssertionError("fully cached: no query expected")
@@ -420,6 +421,7 @@ def test_pathogen_rule_species_leaf_complex_any_set_every(monkeypatch):
 
 def test_get_pathogen_entities_queries_uncached_ids_and_keeps_misses(monkeypatch):
     monkeypatch.setattr(neo4j_connector, "_pathogen_structure_cache", {})
+    monkeypatch.setattr(neo4j_connector, "_pathogen_ref_cache", {})
     calls = []
 
     class G:
@@ -430,7 +432,8 @@ def test_get_pathogen_entities_queries_uncached_ids_and_keeps_misses(monkeypatch
                 def data(_):
                     return [{"x": "C", "c": "Complex", "d": "N:M:PDPK1", "tax": ["9606", "2697049"],
                              "kids": [["hasComponent", "V"], ["hasComponent", "H"]]},
-                            {"x": "V", "c": "EWAS", "d": "M", "tax": ["2697049"], "kids": [None]},
+                            {"x": "V", "c": "EWAS", "d": "M", "tax": ["2697049"], "kids": [None],
+                             "ref": "ReferenceGeneProduct"},
                             {"x": "H", "c": "EWAS", "d": "PDPK1", "tax": ["9606"], "kids": []}]
             return R()
     monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
