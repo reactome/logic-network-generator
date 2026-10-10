@@ -936,6 +936,10 @@ def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
 HUMAN_TAXON = "9606"
 # stId -> (species taxIds, [(relationship type, child stId)], schema class, display name)
 _pathogen_structure_cache: Dict[str, Tuple[List[str], List[Tuple[str, str]], str, str]] = {}
+# stId -> schema class of its referenceEntity ("" when it has none), for LNG_PATHOGEN_PROTEIN
+_pathogen_ref_cache: Dict[str, str] = {}
+# A protein leaf: an EWAS on a ReferenceGeneProduct (ReferenceIsoform is its subclass).
+PROTEIN_REFERENCE_CLASSES = frozenset({"ReferenceGeneProduct", "ReferenceIsoform"})
 
 
 def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
@@ -951,7 +955,13 @@ def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
       - a complex is, when ANY component is;
       - a set is, only when EVERY member is.
     A leaf with no species (most small molecules) is not.
+
+    Under ``LNG_PATHOGEN_PROTEIN=1`` (specs/048 amendment 2) a leaf counts only
+    when it is also a PROTEIN. Viral RNAs (GenomeEncodedEntity, no reference
+    entity) are then not pathogen-derived: in DDX58/IFIH1 they are the ligand
+    the pathway senses, and every signalling complex there carries one.
     """
+    protein_only = env_flag("LNG_PATHOGEN_PROTEIN")
     ids = sorted({s for s in stable_ids if s})
     missing = [s for s in ids if s not in _pathogen_structure_cache]
     if missing:
@@ -960,8 +970,10 @@ def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
             MATCH (n:PhysicalEntity {stId: s})-[:hasComponent|hasMember|hasCandidate*0..10]->(x)
             WITH DISTINCT x
             OPTIONAL MATCH (x)-[:species]->(sp)
+            OPTIONAL MATCH (x)-[:referenceEntity]->(re)
             OPTIONAL MATCH (x)-[r:hasComponent|hasMember|hasCandidate]->(y)
             RETURN x.stId AS x, x.schemaClass AS c, x.displayName AS d,
+                   re.schemaClass AS ref,
                    collect(DISTINCT toString(sp.taxId)) AS tax,
                    collect(DISTINCT CASE WHEN y IS NULL THEN NULL ELSE [type(r), y.stId] END) AS kids
         """
@@ -975,6 +987,7 @@ def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
                 _pathogen_structure_cache[r["x"]] = (
                     [t for t in r["tax"] if t], [tuple(k) for k in r["kids"] if k and k[1]],
                     r.get("c") or "", r.get("d") or "")
+                _pathogen_ref_cache[r["x"]] = r.get("ref") or ""
         for s in missing:
             _pathogen_structure_cache.setdefault(s, ([], [], "", ""))
 
@@ -994,7 +1007,8 @@ def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
         elif members:
             out = all(derived(y, depth + 1) for y in members)
         else:
-            out = bool(tax) and HUMAN_TAXON not in tax
+            out = bool(tax) and HUMAN_TAXON not in tax and (
+                not protein_only or _pathogen_ref_cache.get(s, "") in PROTEIN_REFERENCE_CLASSES)
         memo[s] = out
         return out
 

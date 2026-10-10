@@ -438,3 +438,52 @@ def test_get_pathogen_entities_queries_uncached_ids_and_keeps_misses(monkeypatch
     assert got == {"C": {"schema_class": "Complex", "name": "N:M:PDPK1"}}
     assert neo4j_connector.get_pathogen_entities({"C", "R-RXN"}) == got
     assert calls == [["C", "R-RXN"]]
+
+
+def test_pathogen_protein_only_drops_viral_rna_and_its_complexes(monkeypatch):
+    # specs/048 amendment 2, with the real classes: R = viral dsRNA
+    # (GenomeEncodedEntity, no reference entity), P = viral protein (EWAS on a
+    # ReferenceGeneProduct), I = viral isoform, H = host. LIG = set{R} is the
+    # "DDX58 ligand"; SIG = complex(H, LIG) is a RIG-I signalling complex;
+    # NMP = complex(P, H) is N:M:PDPK1; MIX = complex(R, P, H).
+    cache = {
+        "R": (["11320"], [], "GenomeEncodedEntity", "dsRNA"),
+        "P": (["2697049"], [], "EntityWithAccessionedSequence", "M"),
+        "I": (["2697049"], [], "EntityWithAccessionedSequence", "nsp13"),
+        "H": (["9606"], [], "EntityWithAccessionedSequence", "DDX58"),
+        "LIG": ([], [("hasMember", "R")], "DefinedSet", "DDX58 ligand"),
+        "SIG": ([], [("hasComponent", "H"), ("hasComponent", "LIG")], "Complex", "dsRNA:DDX58"),
+        "NMP": ([], [("hasComponent", "P"), ("hasComponent", "H")], "Complex", "N:M:PDPK1"),
+        "MIX": ([], [("hasComponent", "R"), ("hasComponent", "P"), ("hasComponent", "H")], "Complex", "mix"),
+    }
+    refs = {"R": "", "P": "ReferenceGeneProduct", "I": "ReferenceIsoform", "H": "ReferenceGeneProduct"}
+    monkeypatch.setattr(neo4j_connector, "_pathogen_structure_cache", dict(cache))
+    monkeypatch.setattr(neo4j_connector, "_pathogen_ref_cache", dict(refs))
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: (_ for _ in ()).throw(AssertionError("cached")))
+    monkeypatch.setenv("LNG_PATHOGEN_PROTEIN", "0")
+    assert set(neo4j_connector.get_pathogen_entities(cache)) == {"R", "P", "I", "LIG", "SIG", "NMP", "MIX"}
+    monkeypatch.setenv("LNG_PATHOGEN_PROTEIN", "1")
+    assert set(neo4j_connector.get_pathogen_entities(cache)) == {"P", "I", "NMP", "MIX"}
+
+
+def test_pathogen_query_records_reference_class(monkeypatch):
+    monkeypatch.setattr(neo4j_connector, "_pathogen_structure_cache", {})
+    monkeypatch.setattr(neo4j_connector, "_pathogen_ref_cache", {})
+
+    class G:
+        def run(self, q, **kw):
+            assert "referenceEntity" in q
+
+            class R:
+                def data(_):
+                    return [{"x": "C", "c": "Complex", "d": "dsRNA:DDX58", "ref": None, "tax": [],
+                             "kids": [["hasComponent", "R"], ["hasComponent", "H"]]},
+                            {"x": "R", "c": "GenomeEncodedEntity", "d": "dsRNA", "ref": None,
+                             "tax": ["11320"], "kids": []},
+                            {"x": "H", "c": "EWAS", "d": "DDX58", "ref": "ReferenceGeneProduct",
+                             "tax": ["9606"], "kids": []}]
+            return R()
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
+    monkeypatch.setenv("LNG_PATHOGEN_PROTEIN", "1")
+    assert neo4j_connector.get_pathogen_entities({"C"}) == {}
+    assert neo4j_connector._pathogen_ref_cache == {"C": "", "R": "", "H": "ReferenceGeneProduct"}

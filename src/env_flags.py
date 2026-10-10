@@ -25,6 +25,7 @@ BOOL_FLAGS = {
     "LNG_DIAGRAM_SET_MEMBER": False,
     "LNG_EMIT_ONE_SIDED": True,
     "LNG_HANDOFF_EDGES": False,
+    "LNG_PATHOGEN_PROTEIN": False,  # deltasignal specs/048 amendment 2: pathogens.csv lists protein-carrying entities only
     "LNG_SET_EXPAND": True,
     "LNG_SET_MEMBERS_OR": False,
     "LNG_SET_POOL": True,

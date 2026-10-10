@@ -44,6 +44,7 @@ _FINGERPRINTED_ENV = (
     "LNG_CAP_POOLS",
     "LNG_POOL_ACTIVE_VIA",
     "LNG_BIND_STOICH",
+    "LNG_PATHOGEN_PROTEIN",
     "LNG_VARIANT_NODES",
     "LNG_DIAGRAM_SET_MEMBER",
     # Of these three, only LNG_EMIT_ONE_SIDED is a genuine cache gap: it is
