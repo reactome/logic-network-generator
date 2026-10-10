@@ -1274,8 +1274,18 @@ def _wire_variant_pool_refs(pathway_logic_network_data: List[Dict[str, Any]],
         keys = sorted({vk.vkey(base, sig) for sig in
                        vk.reaction_choices([base], limit=(cap + 1) if cap > 0 else None)})
         if cap > 0 and len(keys) > cap:
+            # Too many variants to enumerate: read the variant nodes that exist.
+            # A bare set's variants are its MEMBERS' keys (a member's own stId
+            # or its variant key), never "<set>::variant::..." (review of vn6:
+            # RAS GEFs, 645 variants, was a pool with no input at all).
             n_over += 1
-            keys = sorted(k for k in by_key if k.split("::variant::")[0] == base and k != base)
+            owners = {base} | (set(vk.flat_members(base)) if vk.is_set(base) else set())
+            keys = sorted(k for k in by_key
+                          if k != base and not k.endswith("::pool")
+                          and vk.variant_parts(k)[0] in owners)
+            if not keys and vk.is_set(base):
+                # none exists: one root per member, by its plain stId
+                keys = sorted(set(vk.flat_members(base)))
         members: List[str] = []
         for key in keys:
             nodes = by_key.get(key, [])
@@ -1301,16 +1311,36 @@ def _wire_variant_pool_refs(pathway_logic_network_data: List[Dict[str, Any]],
 
 
 def _wire_capped_outputs(pathway_logic_network_data: List[Dict[str, Any]],
-                         reactome_id_to_uuid: Dict[str, str]) -> None:
+                         reactome_id_to_uuid: Dict[str, str],
+                         following_by_reaction: Optional[Dict[str, Set[str]]] = None,
+                         vr_to_reaction: Optional[Dict[str, str]] = None) -> None:
     """A reaction past every D6 step is ONE copy writing its outputs by plain
     stable id, while consumers read the outputs' variant keys, so nothing fed
     them (vn5 RAF: R-HSA-5672980 -> R-HSA-5672701, 34 experimental cases cut).
     Feed each existing node of the output's variant keys from the plain output
     by a ``variant_split`` OR edge: every variant reads the one copy, which is
     what the expanded copies would each have produced. A plain node is such an
-    output exactly when it is produced and the entity has variant slots."""
+    output exactly when it is produced and the entity has variant slots.
+
+    Only variant nodes nothing else produces are fed, and only where a
+    consumer is a curated following reaction of the producer (identity across
+    connected pairs, decision D1). Feeding every node of every key diluted
+    already-produced nodes and reached unrelated occurrences of a member
+    protein (review of vn6: 14 such edges, one onto a 33-producer node)."""
     from src import variant_keys as vk
     produced = {e["target_id"] for e in pathway_logic_network_data if e.get("edge_type") == "output"}
+    producer_rx: Dict[str, Set[str]] = {}
+    consumer_rx: Dict[str, Set[str]] = {}
+    vr_to_reaction = vr_to_reaction or {}
+    for e in pathway_logic_network_data:
+        et = e.get("edge_type")
+        if et == "output":
+            rx = e.get("edge_reaction_id") or vr_to_reaction.get(str(e["source_id"]), "")
+            producer_rx.setdefault(e["target_id"], set()).add(str(rx))
+        elif et in ("input", "catalyst", "regulator"):
+            rx = e.get("edge_reaction_id") or vr_to_reaction.get(str(e["target_id"]), "")
+            consumer_rx.setdefault(e["source_id"], set()).add(str(rx))
+    following_by_reaction = following_by_reaction or {}
     by_key: Dict[str, List[str]] = {}
     for node_uuid, sid in reactome_id_to_uuid.items():
         by_key.setdefault(sid, []).append(node_uuid)
@@ -1328,17 +1358,20 @@ def _wire_capped_outputs(pathway_logic_network_data: List[Dict[str, Any]],
         except Exception:
             continue
         keys = {vk.vkey(sid, sig) for sig in vk.reaction_choices([sid], limit=(cap + 1) if cap > 0 else None)}
-        targets = sorted(u for k in keys if k != sid for u in by_key.get(k, []))
-        if not targets:
-            continue
-        n_out += 1
+        candidates = sorted(u for k in keys if k != sid for u in by_key.get(k, []) if u not in produced)
+        made = False
         for src in sorted(plain):
+            follows = set().union(*[following_by_reaction.get(r, set()) for r in producer_rx.get(src, ())]) \
+                if producer_rx.get(src) else set()
+            targets = [t for t in candidates if consumer_rx.get(t, set()) & follows]
+            made = made or bool(targets)
             for t in targets:
                 pathway_logic_network_data.append({
                     "source_id": src, "target_id": t, "pos_neg": "pos",
                     "and_or": "or", "edge_type": "variant_split", "stoichiometry": 1,
                 })
                 n_edges += 1
+        n_out += made
     if n_out:
         logger.info(f"Variant nodes: {n_out} capped plain outputs feed their variants "
                     f"by {n_edges} variant_split edges")
@@ -1358,19 +1391,25 @@ def _pool_variant_depleters(pathway_logic_network_data: List[Dict[str, Any]], st
     correct AKT1-knockout calls into wrong ones. The variants are alternative
     forms of one catalyst, so its activity is their OR."""
     tail = pathway_logic_network_data[start:]
+
+    def base_of(e: Dict[str, Any]) -> str:
+        # the curated catalyst it came from; else the id's parent stId
+        return e.get("_origin") or \
+            reactome_id_to_uuid.get(e["source_id"], e["source_id"]).split("::variant::")[0]
+
     groups: Dict[tuple, List[str]] = {}
     for e in tail:
         if e.get("edge_type") == "depletion":
-            base = reactome_id_to_uuid.get(e["source_id"], e["source_id"]).split("::variant::")[0]
-            groups.setdefault((e["target_id"], base), []).append(e["source_id"])
+            groups.setdefault((e["target_id"], base_of(e)), []).append(e["source_id"])
     pooled = {k: v for k, v in groups.items() if len(set(v)) > 1}
-    if not pooled:
-        return
     kept = [e for e in tail if not (
-        e.get("edge_type") == "depletion"
-        and (e["target_id"], reactome_id_to_uuid.get(e["source_id"], e["source_id"]).split("::variant::")[0]) in pooled)]
+        e.get("edge_type") == "depletion" and (e["target_id"], base_of(e)) in pooled)]
+    for e in kept:
+        e.pop("_origin", None)
     del pathway_logic_network_data[start:]
     pathway_logic_network_data.extend(kept)
+    if not pooled:
+        return
     cache: Dict[tuple, str] = {}
     for (target, base), sources in sorted(pooled.items()):
         pool = _emit_variant_pool(base, set(sources), pathway_logic_network_data,
@@ -1566,6 +1605,18 @@ def _emit_substrate_depletion_edges(
     n_emitted_phos = 0
     n_emitted_ub = 0
     first_depletion = len(pathway_logic_network_data)
+    # specs/046: which curated catalyst each (reaction copy, catalyst node)
+    # came from, so the variants of ONE catalyst are pooled even when, as for
+    # a bare set, their ids share no prefix (review of vn6: 6 DUSP members of
+    # one set each depleted the MAPK3 dimer).
+    origin_of: Dict[Tuple[str, str], str] = {}
+    if env_flag("LNG_VARIANT_NODES") and "participant" in catalyst_map.columns:
+        for _, row in catalyst_map.iterrows():
+            origin_of[(str(row["reaction_uuid"]), str(row["entity_id"]))] = str(row["participant"])
+
+    def _origin(rxn_uuid: str, cat_uuid: str) -> Dict[str, str]:
+        o = origin_of.get((rxn_uuid, reactome_id_to_uuid.get(cat_uuid, "")))
+        return {"_origin": o} if o else {}
     # Phosphatase pass — existing behavior.
     for rxn_uuid in phosphatase_rxn_uuids:
         catalyst_uuids = by_target_catalysts.get(rxn_uuid, [])
@@ -1601,6 +1652,7 @@ def _emit_substrate_depletion_edges(
                     "and_or": "and",
                     "edge_type": "depletion",
                     "stoichiometry": 1.0,
+                    **_origin(rxn_uuid, cat_uuid),
                 })
                 n_emitted_phos += 1
 
@@ -1636,6 +1688,7 @@ def _emit_substrate_depletion_edges(
                         "and_or": "and",
                         "edge_type": "depletion",
                         "stoichiometry": 1.0,
+                        **_origin(ru, cat_uuid),
                     })
                     n_emitted_ub += 1
     if env_flag("LNG_VARIANT_NODES"):
@@ -1962,7 +2015,6 @@ def _emit_boundary_decomposition_edges_inner(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
 ) -> None:
-    variant_nodes = env_flag("LNG_VARIANT_NODES")
     """Expose the members of every root-input and terminal-output complex.
 
     Under LNG_BOUNDARY_HIERARCHY=1 (the default since deltasignal specs/030) the
@@ -2007,6 +2059,7 @@ def _emit_boundary_decomposition_edges_inner(
       how affected each member is *at that location* (read the sink; aggregate
       across a member's sinks for an overall figure) without any cross-talk.
     """
+    variant_nodes = env_flag("LNG_VARIANT_NODES")
     from src.neo4j_connector import get_labels
 
     # Positional roots / terminals from the current edge list, IGNORING
@@ -3078,7 +3131,13 @@ def create_pathway_logic_network(
     )
     if variant_nodes:
         _wire_variant_pool_refs(pathway_logic_network_data, reactome_id_to_uuid)
-        _wire_capped_outputs(pathway_logic_network_data, reactome_id_to_uuid)
+        following_by_reaction: Dict[str, Set[str]] = {}
+        for _, conn in reaction_connections.iterrows():
+            if pd.notna(conn["preceding_reaction_id"]) and pd.notna(conn["following_reaction_id"]):
+                following_by_reaction.setdefault(str(conn["preceding_reaction_id"]), set()).add(
+                    str(conn["following_reaction_id"]))
+        _wire_capped_outputs(pathway_logic_network_data, reactome_id_to_uuid,
+                             following_by_reaction, vr_to_reaction)
 
     # Boundary expansion: every root-input and terminal-output complex
     # occurrence gets synthetic assembly / dissociation edges to its member

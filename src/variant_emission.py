@@ -39,7 +39,9 @@ import pandas as pd
 
 from src import variant_keys as vk
 
-_CAT_REG_COLUMNS = ["reaction_id", "entity_id", "edge_type", "uuid", "reaction_uuid"]
+# `participant` is the curated catalyst/regulator the row came from (a bare
+# set's copies name its MEMBERS in entity_id), read by depleter pooling.
+_CAT_REG_COLUMNS = ["reaction_id", "entity_id", "edge_type", "uuid", "reaction_uuid", "participant"]
 
 STATS: Counter = Counter()
 
@@ -235,7 +237,17 @@ def capped_fallback(parts: dict, limit: int) -> Tuple[List[Optional[Dict[str, st
     bound = bind_output_slots(_slots_of(inside), _slots_of(outputs))
     reach = out_slots | {u for (u, _) in bound.values()}
     slots = {x: deep_slots(x) for x in inside}
+    # Step 1 pools only participants that share no slot with a kept one:
+    # pooling A while a kept B fixes A's slot S would let each copy read every
+    # S variant of A (decision D2, one choice per set per reaction; review of
+    # vn6). Shrink to a fixed point.
     step1 = {x for x in inside if slots[x] and not (slots[x] & reach)}
+    while True:
+        kept_slots = set().union(*[slots[x] for x in inside if x not in step1]) if inside else set()
+        shrink = {x for x in step1 if slots[x] & kept_slots}
+        if not shrink:
+            break
+        step1 -= shrink
     step2 = {x for x in inside if slots[x] and not (slots[x] <= reach)}
     for step, pooled in ((1, step1), (2, step2)):
         choices, over = _choices(_without(parts, pooled), limit)
@@ -288,7 +300,8 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
                 for e in lst:
                     target.append({"reaction_id": rx, "entity_id": name(e),
                                    "edge_type": "catalyst" if target is cat_rows else "regulator",
-                                   "uuid": str(uuid.uuid4()), "reaction_uuid": uid})
+                                   "uuid": str(uuid.uuid4()), "reaction_uuid": uid,
+                                   "participant": e})
     rid_map = pd.DataFrame(rows, columns=["uid", "reactome_id", "input_hash", "output_hash"])
     mk = lambda r: pd.DataFrame(r, columns=_CAT_REG_COLUMNS)  # noqa: E731
     return rid_map, vr_entities, mk(cat_rows), mk(neg_rows), mk(pos_rows)

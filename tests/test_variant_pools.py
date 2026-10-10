@@ -84,17 +84,56 @@ def test_regulator_prefers_the_copy_a_preceding_reaction_produces(monkeypatch):
     assert [e["source_id"] for e in data] == ["unfed"]    # default: first registry entry (unchanged)
 
 
+def redge(s, t, et, rx, pn="pos"):
+    e = edge(s, t, et, pn); e["edge_reaction_id"] = rx; return e
+
+
 def test_a_capped_plain_output_feeds_its_variants(world):
     # vn5 RAF: one copy writes plain R; consumers read R's variant keys
-    ids = {"rx": "RX", "out": "R", "va": "R::variant::S=a", "vb": "R::variant::S=b", "g": "G"}
-    data = [edge("rx", "out", "output"), edge("va", "rx2", "input"), edge("vb", "rx3", "input")]
-    lng._wire_capped_outputs(data, ids)
+    ids = {"out": "R", "va": "R::variant::S=a", "vb": "R::variant::S=b", "vc": "R::variant::S=c"}
+    data = [redge("rx", "out", "output", "P"),
+            redge("va", "c1", "input", "F"), redge("vb", "c2", "input", "F"),
+            redge("vc", "c3", "input", "UNRELATED")]           # not a curated follower
+    lng._wire_capped_outputs(data, ids, {"P": {"F"}})
     split = sorted((e["source_id"], e["target_id"]) for e in data if e["edge_type"] == "variant_split")
     assert split == [("out", "va"), ("out", "vb")]
 
 
+def test_split_skips_a_variant_another_reaction_produces(world):
+    ids = {"out": "R", "va": "R::variant::S=a", "vb": "R::variant::S=b"}
+    data = [redge("rx", "out", "output", "P"), redge("rx9", "va", "output", "Q"),
+            redge("va", "c1", "input", "F"), redge("vb", "c2", "input", "F")]
+    lng._wire_capped_outputs(data, ids, {"P": {"F"}})
+    split = sorted(e["target_id"] for e in data if e["edge_type"] == "variant_split")
+    assert split == ["vb"]                              # va already has a producer
+
+
 def test_an_unproduced_plain_node_is_not_split(world):
     ids = {"out": "R", "va": "R::variant::S=a"}
-    data = [edge("va", "rx2", "input")]
-    lng._wire_capped_outputs(data, ids)
+    data = [redge("va", "rx2", "input", "F")]
+    lng._wire_capped_outputs(data, ids, {"P": {"F"}})
     assert not [e for e in data if e["edge_type"] == "variant_split"]
+
+
+def test_members_of_one_set_catalyst_deplete_once(world):
+    # review of vn6: six DUSP members of ONE set each depleted the MAPK3 dimer.
+    # Their ids share no prefix; the curated participant (_origin) groups them.
+    ids = {"d1": "DUSP1", "d2": "DUSP6", "o": "OTHER", "t": "MAPK3"}
+    data = [dict(edge("d1", "t", "depletion", "neg"), _origin="DUSPSET"),
+            dict(edge("d2", "t", "depletion", "neg"), _origin="DUSPSET"),
+            dict(edge("o", "t", "depletion", "neg"), _origin="OTHER")]
+    lng._pool_variant_depleters(data, 0, ids)
+    dep = [e for e in data if e["edge_type"] == "depletion"]
+    assert len(dep) == 2 and all("_origin" not in e for e in data)
+    pool = next(e["source_id"] for e in dep if e["source_id"] != "o")
+    assert ids[pool] == "DUSPSET::pool"
+
+
+def test_an_over_cap_set_pool_reads_its_members(world, monkeypatch):
+    # review of vn6: RAS GEFs (645 variants) was a pool with no input
+    monkeypatch.setattr(vk, "_max_variants", lambda: 1)
+    ids = {"p": "SET::pool", "x": "m1", "y": "m2::variant::Q=z", "other": "zz"}
+    data = []
+    lng._wire_variant_pool_refs(data, ids)
+    members = sorted(ids[e["source_id"]] for e in data if e["edge_type"] == "variant_pool")
+    assert members == ["m1", "m2::variant::Q=z"]

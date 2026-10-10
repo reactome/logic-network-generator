@@ -136,3 +136,20 @@ def test_emitted_copy_reads_the_pool_reference(cap_world, monkeypatch):
     assert {o for (_, outs, _, _) in vr.values() for o in outs} == {
         f"o{i}" for i in range(1, 5)}       # a bare set's key is its member's key
     assert ve.STATS["capped_step1"] == 1
+
+
+def test_step1_does_not_pool_a_participant_sharing_a_slot_with_a_kept_one(cap_world):
+    # review of vn6: catalyst A = {S, T} shares S with input B = {S, OUT}.
+    # Pooling A would let each copy (fixed S for B) read every S variant of A.
+    CAP_LABELS.update(A=["Complex"], B=["Complex"], S=["EntitySet"], T=["EntitySet"])
+    CAP_COMP.update(A=["S", "T"], B=["S", "OUT"])
+    CAP_MEM.update(S=["s1", "s2", "s3"], T=["t1", "t2", "t3"])
+    try:
+        vk.reset_caches()
+        p = parts(**{"in": {"B": 1}, "out": {"OUT": 1}, "cat": ["A"]})
+        choices, pooled, step = ve.capped_fallback(p, 20)
+        assert "A" not in pooled or step != 1
+    finally:
+        for d, ks in ((CAP_LABELS, "ABST"), (CAP_COMP, "AB"), (CAP_MEM, "ST")):
+            for k in ks:
+                d.pop(k, None)
