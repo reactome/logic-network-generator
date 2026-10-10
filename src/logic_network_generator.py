@@ -3901,7 +3901,34 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
 
     Output CSV columns: stable_id, schema_class, name, reactome_release.
     """
-    from src.neo4j_connector import get_drug_entities, get_reactome_release
+    from src.neo4j_connector import get_drug_entities
+    _export_derived(pathway_logic_network, reactome_id_to_uuid, output_file,
+                    get_drug_entities, "drug-derived")
+
+
+def export_pathogens(pathway_logic_network: pd.DataFrame,
+                     reactome_id_to_uuid: Dict[str, str],
+                     output_file: str) -> None:
+    """Write pathogens.csv: which entities in THIS network are pathogen-derived
+    (deltasignal specs/048), by the rule of
+    :func:`src.neo4j_connector.get_pathogen_entities`. Reactome curates
+    host-pathogen interactions inside human pathways (the SARS-CoV-2
+    N:M:PDPK1 complex inhibits AKT T308 phosphorylation in PIP3 signalling); a
+    consumer modelling an uninfected cell holds them at baseline, as it holds
+    drugs. Same columns, variant resolution and always-written rule as
+    drugs.csv.
+    """
+    from src.neo4j_connector import get_pathogen_entities
+    _export_derived(pathway_logic_network, reactome_id_to_uuid, output_file,
+                    get_pathogen_entities, "pathogen-derived")
+
+
+def _export_derived(pathway_logic_network: pd.DataFrame,
+                    reactome_id_to_uuid: Dict[str, str],
+                    output_file: str, finder, label: str) -> None:
+    """The node listing shared by drugs.csv and pathogens.csv. ``finder`` maps
+    stable ids to {stId: {"schema_class", "name"}} for the derived ones."""
+    from src.neo4j_connector import get_reactome_release
 
     node_ids: set[str] = set()
     if not pathway_logic_network.empty:
@@ -3923,20 +3950,20 @@ def export_drugs(pathway_logic_network: pd.DataFrame,
         parent, members = parts(n)
         wanted.add(parent)
         wanted.update(members)
-    drugs = get_drug_entities(wanted)
+    derived = finder(wanted)
     release = get_reactome_release()
     rows = []
     for n in sorted(node_ids):
         parent, members = parts(n)
-        hit = parent if parent in drugs else next((m for m in members if m in drugs), None)
+        hit = parent if parent in derived else next((m for m in members if m in derived), None)
         if hit is None:
             continue
-        rows.append({"stable_id": n, "schema_class": drugs[hit]["schema_class"],
-                     "name": drugs[hit]["name"],
+        rows.append({"stable_id": n, "schema_class": derived[hit]["schema_class"],
+                     "name": derived[hit]["name"],
                      "reactome_release": release if release is not None else ""})
     pd.DataFrame(rows, columns=["stable_id", "schema_class", "name", "reactome_release"]).to_csv(
         output_file, index=False)
-    logger.info(f"Exported {len(rows)} drug-derived entities to {output_file}")
+    logger.info(f"Exported {len(rows)} {label} entities to {output_file}")
 
 
 POOL_MAX_STEPS = 6          # a state -> intermediates -> state path longer than this is dropped

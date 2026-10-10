@@ -14,6 +14,7 @@ import os
 BOOL_FLAGS = {
     "LNG_BOUNDARY_EXPANSION": True,
     "LNG_BOUNDARY_HIERARCHY": True,
+    "LNG_BIND_STOICH": True,     # default since deltasignal specs/048 (homodimer binding; 0 predictions moved)
     "LNG_CAP_POOLS": True,      # default since deltasignal specs/045 (RAF experimental +14, held-out 0)
     "LNG_CATALYST_BUNDLE": False,
     "LNG_COMPLEX_AS_NODE": True,
@@ -24,6 +25,7 @@ BOOL_FLAGS = {
     "LNG_DIAGRAM_SET_MEMBER": False,
     "LNG_EMIT_ONE_SIDED": True,
     "LNG_HANDOFF_EDGES": False,
+    "LNG_PATHOGEN_PROTEIN": True,   # default since deltasignal specs/048 amendment 2 (arm pathp: exp +7, held-out +1, 0 broken)
     "LNG_SET_EXPAND": True,
     "LNG_SET_MEMBERS_OR": False,
     "LNG_SET_POOL": True,

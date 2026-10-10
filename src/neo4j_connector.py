@@ -933,6 +933,97 @@ def get_drug_entities(stable_ids) -> Dict[str, Dict[str, str]]:
             for s in ids if derived(s)}
 
 
+HUMAN_TAXON = "9606"
+# stId -> (species taxIds, [(relationship type, child stId)], schema class, display name)
+_pathogen_structure_cache: Dict[str, Tuple[List[str], List[Tuple[str, str]], str, str]] = {}
+# stId -> schema class of its referenceEntity ("" when it has none), for LNG_PATHOGEN_PROTEIN
+_pathogen_ref_cache: Dict[str, str] = {}
+# A protein leaf: an EWAS on a ReferenceGeneProduct (ReferenceIsoform is its subclass).
+PROTEIN_REFERENCE_CLASSES = frozenset({"ReferenceGeneProduct", "ReferenceIsoform"})
+
+
+def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
+    """The entities among ``stable_ids`` that are PATHOGEN-DERIVED, with their
+    schema class and display name (deltasignal specs/048).
+
+    Reactome curates host-pathogen interactions inside human pathways: the
+    SARS-CoV-2 N:M:PDPK1 complex negatively regulates "PDPK1 phosphorylates
+    AKT at T308". A benchmark describes a cell without the pathogen. Decided
+    structurally, as drugs are (:func:`get_drug_entities`):
+      - a leaf (no components, members or candidates) is, when it has a species
+        and none is Homo sapiens;
+      - a complex is, when ANY component is;
+      - a set is, only when EVERY member is.
+    A leaf with no species (most small molecules) is not.
+
+    Under ``LNG_PATHOGEN_PROTEIN=1`` (specs/048 amendment 2) a leaf counts only
+    when it is also a PROTEIN: an EWAS on a ReferenceGeneProduct or
+    ReferenceIsoform. Viral nucleic acids are then not pathogen-derived, whether
+    curated as a GenomeEncodedEntity with no reference entity (the DDX58/IFIH1
+    ligands in our catalog) or as an EWAS on a ReferenceRNASequence /
+    ReferenceDNASequence: in DDX58/IFIH1 the RNA is the ligand the pathway
+    senses, and every signalling complex there carries one.
+
+    A Polymer's ``repeatedUnit`` is read as a component, so a viral protein
+    multimer (HIV-1 Rev-multimer) counts through its unit; a Polymer has no
+    reference entity of its own.
+    """
+    protein_only = env_flag("LNG_PATHOGEN_PROTEIN")
+    ids = sorted({s for s in stable_ids if s})
+    missing = [s for s in ids if s not in _pathogen_structure_cache]
+    if missing:
+        query = """
+            UNWIND $ids AS s
+            MATCH (n:PhysicalEntity {stId: s})-[:hasComponent|hasMember|hasCandidate|repeatedUnit*0..10]->(x)
+            WITH DISTINCT x
+            OPTIONAL MATCH (x)-[:species]->(sp)
+            OPTIONAL MATCH (x)-[:referenceEntity]->(re)
+            OPTIONAL MATCH (x)-[r:hasComponent|hasMember|hasCandidate|repeatedUnit]->(y)
+            RETURN x.stId AS x, x.schemaClass AS c, x.displayName AS d,
+                   re.schemaClass AS ref,
+                   collect(DISTINCT toString(sp.taxId)) AS tax,
+                   collect(DISTINCT CASE WHEN y IS NULL THEN NULL ELSE [type(r), y.stId] END) AS kids
+        """
+        try:
+            rows = get_graph().run(query, ids=missing).data()
+        except Exception:
+            logger.error("Error in get_pathogen_entities", **_traceback_kwargs())
+            raise
+        for r in rows:
+            if r.get("x"):
+                _pathogen_structure_cache[r["x"]] = (
+                    [t for t in r["tax"] if t], [tuple(k) for k in r["kids"] if k and k[1]],
+                    r.get("c") or "", r.get("d") or "")
+                _pathogen_ref_cache[r["x"]] = r.get("ref") or ""
+        for s in missing:
+            _pathogen_structure_cache.setdefault(s, ([], [], "", ""))
+
+    memo: Dict[str, bool] = {}
+
+    def derived(s: str, depth: int = 0) -> bool:
+        if s in memo:
+            return memo[s]
+        memo[s] = False                      # a malformed self-containing entity cannot recurse
+        tax, kids, _, _ = _pathogen_structure_cache.get(s, ([], [], "", ""))
+        comps = [y for t, y in kids if t in ("hasComponent", "repeatedUnit")]
+        members = [y for t, y in kids if t in ("hasMember", "hasCandidate")]
+        if depth >= 10:
+            out = False
+        elif comps:
+            out = any(derived(y, depth + 1) for y in comps)
+        elif members:
+            out = all(derived(y, depth + 1) for y in members)
+        else:
+            out = bool(tax) and HUMAN_TAXON not in tax and (
+                not protein_only or _pathogen_ref_cache.get(s, "") in PROTEIN_REFERENCE_CLASSES)
+        memo[s] = out
+        return out
+
+    return {s: {"schema_class": _pathogen_structure_cache[s][2],
+                "name": _pathogen_structure_cache[s][3]}
+            for s in ids if derived(s)}
+
+
 # Group donors: a reaction consuming one ADDS a group to its substrate, so its
 # product is the modified form of an interconversion pool (specs/039). ChEBI
 # ids: ATP, GTP, S-adenosyl-L-methionine, acetyl-CoA, NAD+.
