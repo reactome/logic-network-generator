@@ -2,6 +2,8 @@
 
 from typing import Dict, List, Any
 import os
+
+import pytest
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -408,6 +410,13 @@ class TestInterReactionConnectivity:
 # tests/test_boundary_hierarchy.py and tests/test_boundary_leaf_reuse.py.
 @patch.dict(os.environ, {"LNG_BOUNDARY_HIERARCHY": "0"})
 class TestBoundaryLeavesReuseExistingUUIDs:
+
+    @pytest.fixture(autouse=True)
+    def _flag_off_boundary_layer(self, monkeypatch):
+        # Pins the FLAG-OFF boundary layer (mocked connector lookups); under
+        # LNG_VARIANT_NODES (default since deltasignal specs/046) the layer reads
+        # Neo4j through src/variant_keys.py, tested in tests/test_variant_*.py.
+        monkeypatch.setenv("LNG_VARIANT_NODES", "0")
     """Boundary expansion must NOT mint a fresh UUID for a leaf if that
     leaf's stId already has a UUID elsewhere in the network. Otherwise
     perturbing 'MDM2 the regulator' wouldn't propagate to 'MDM2 the

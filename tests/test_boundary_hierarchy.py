@@ -11,6 +11,16 @@ import src.neo4j_connector as nc
 import src.logic_network_generator as lng
 from src.logic_network_generator import _emit_boundary_decomposition_edges
 
+
+@pytest.fixture(autouse=True)
+def _flag_off_boundary_layer(monkeypatch):
+    # These tests pin the FLAG-OFF boundary layer, whose structure comes from
+    # the mocked connector lookups. Under LNG_VARIANT_NODES (the default since
+    # deltasignal specs/046) the layer reads structure from Neo4j through
+    # src/variant_keys.py instead; that path has its own tests
+    # (tests/test_variant_*.py).
+    monkeypatch.setenv("LNG_VARIANT_NODES", "0")
+
 K, N, I = "R-HSA-K", "R-HSA-N", "R-HSA-I"            # K = ISGF3:KPNA1:KPNB1, N = ISGF3:KPNA1, I = ISGF3
 A1, B1, S1, S2, IR = "R-HSA-KPNA1", "R-HSA-KPNB1", "R-HSA-STAT1", "R-HSA-STAT2", "R-HSA-IRF9"
 LABELS = {K: ["Complex"], N: ["Complex"], I: ["Complex"],
