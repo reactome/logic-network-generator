@@ -14,7 +14,7 @@ import os
 BOOL_FLAGS = {
     "LNG_BOUNDARY_EXPANSION": True,
     "LNG_BOUNDARY_HIERARCHY": True,
-    "LNG_BIND_STOICH": False,    # deltasignal specs/048: homodimer binding
+    "LNG_BIND_STOICH": True,     # default since deltasignal specs/048 (homodimer binding; 0 predictions moved)
     "LNG_CAP_POOLS": True,      # default since deltasignal specs/045 (RAF experimental +14, held-out 0)
     "LNG_CATALYST_BUNDLE": False,
     "LNG_COMPLEX_AS_NODE": True,
