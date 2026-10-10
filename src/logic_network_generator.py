@@ -3781,12 +3781,12 @@ def export_containment_structure(reactome_id_to_uuid: Dict[str, str],
     rows = []
     seen: Set[str] = set()
     from src.variant_keys import variant_parts
-    frontier = set()
+    roots: Set[str] = set()
     for v in reactome_id_to_uuid.values():
         if v:
             parent, chosen = variant_parts(str(v))
-            frontier |= {parent, *chosen}
-    frontier = sorted(frontier)
+            roots |= {parent, *chosen}
+    frontier: List[str] = sorted(roots)
     while frontier:
         seen.update(frontier)
         found = graph.run(

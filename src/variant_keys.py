@@ -23,14 +23,14 @@ reaction", which `reaction_choices` implements by sharing slots across all of
 a reaction's participants.
 """
 from itertools import product as _product  # noqa: F401  (kept for callers)
-from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 SET_LABELS = ("EntitySet", "DefinedSet", "CandidateSet", "OpenSet")
 VARIANT_SEP = "::variant::"
 
 # Injected lookups, so the module is testable without a database. The
 # defaults are the generator's cached Neo4j accessors.
-_lookups: Dict[str, object] = {}
+_lookups: Dict[str, Any] = {}
 # Per-process memo of structure lookups (one Neo4j round trip per entity).
 _memo: Dict[Tuple[str, str], List[str]] = {}
 
@@ -116,15 +116,17 @@ def _members_uncached(s: str) -> List[str]:
 
 def _atomic_sets() -> Set[str]:
     f = _lookups.get("atomic_sets")
-    if f is None:
-        from src.reaction_generator import modifier_isoform_set_ids as f
-    return set(f())
+    if f is not None:
+        return set(f())
+    from src.reaction_generator import modifier_isoform_set_ids
+    return set(modifier_isoform_set_ids())
 
 
 def _max_variants() -> int:
-    v = _lookups.get("max_variants")
+    v: Any = _lookups.get("max_variants")
     if v is None:
-        from src.reaction_generator import MAX_VARIANTS as v
+        from src.reaction_generator import MAX_VARIANTS
+        v = MAX_VARIANTS
     return int(v() if callable(v) else v)
 
 

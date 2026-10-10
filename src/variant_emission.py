@@ -252,7 +252,7 @@ def capped_fallback(parts: dict, limit: int) -> Tuple[List[Optional[Dict[str, st
     for step, pooled in ((1, step1), (2, step2)):
         choices, over = _choices(_without(parts, pooled), limit)
         if not over and choices:
-            return choices, pooled, step
+            return list(choices), set(pooled), step
     return [None], {x for x in inside if slots[x]}, 3
 
 
@@ -268,8 +268,9 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
     cat_rows: List[dict] = []; neg_rows: List[dict] = []; pos_rows: List[dict] = []
     for rx in sorted(parts_by_rx):
         parts = parts_by_rx[rx]
-        choices, over = _choices(parts, cap if cap > 0 else 10 ** 9)
-        if not choices and not over:
+        found, over = _choices(parts, cap if cap > 0 else 10 ** 9)
+        choices: List[Optional[Dict[str, str]]] = list(found)
+        if not found and not over:
             # Never drop a reaction silently: zero copies means a set with no
             # members reached the enumeration, i.e. the structure is wrong.
             raise ValueError(f"{rx}: the variant enumeration produced no copy")
@@ -289,7 +290,8 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
                 if e in pooled and not output:
                     return e + POOL_SUFFIX
                 return e if s is None else vk.vkey(e, s)
-            ins, outs = Counter(), Counter()
+            ins: Counter = Counter()
+            outs: Counter = Counter()
             for e, n in parts["in"].items():
                 ins[name(e)] += n
             for e, n in parts["out"].items():
