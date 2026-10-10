@@ -195,3 +195,31 @@ def test_homodimer_binding_off_reproduces_the_crossed_pairing(monkeypatch):
     (slot, mapping), = ve.bind_output_slots({"IN"}, {"OUT"}).values()
     assert mapping == {PM: D, PD: M}
     assert ve.STATS["slot_binding_ties"] == 1
+
+
+def test_leaf_multiset_multiplies_stoichiometry_through_nesting(monkeypatch):
+    """A 2x(homodimer) complex reads as four leaves, not two: stoichiometry
+    multiplies at every level, and a set inside a complex contributes its
+    alternatives once each, times its slot."""
+    import src.neo4j_connector as nc
+    import src.reaction_generator as rg
+    labels = {"TETRA": ["Complex"], "DIM": ["Complex"], "MIX": ["Complex"], "S": ["EntitySet"]}
+    vk._lookups.update(labels=lambda s: labels.get(s, ["EWAS"]))
+    vk.reset_caches()
+    comps = {"TETRA": {"DIM": 2}, "DIM": {"M": 2}, "MIX": {"S": 3, "M": 1}}
+    monkeypatch.setattr(nc, "get_complex_components", lambda x: comps.get(x, {}))
+    monkeypatch.setattr(rg, "get_terminal_components", lambda x: {"S": {"A", "B"}}.get(x, {x}))
+    assert ve._leaf_multiset("TETRA") == ["M"] * 4
+    assert ve._leaf_multiset("DIM") == ["M", "M"]
+    assert ve._leaf_multiset("MIX") == sorted(["A", "B"] * 3 + ["M"])
+
+
+def test_signature_cache_is_keyed_on_the_flag(monkeypatch):
+    """A signature cached under one LNG_BIND_STOICH value is not reused under
+    the other (the review of PR #110: the cache was keyed on the member only)."""
+    _dusp_lookups(monkeypatch)
+    monkeypatch.setenv("LNG_BIND_STOICH", "0")
+    assert ve._reference_signature(PD) == ("MAPK1",)
+    monkeypatch.setenv("LNG_BIND_STOICH", "1")
+    assert ve._reference_signature(PD) == ("MAPK1", "MAPK1")
+

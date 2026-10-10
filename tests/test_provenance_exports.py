@@ -490,3 +490,23 @@ def test_pathogen_query_records_reference_class(monkeypatch):
     monkeypatch.setenv("LNG_PATHOGEN_PROTEIN", "1")
     assert neo4j_connector.get_pathogen_entities({"C"}) == {}
     assert neo4j_connector._pathogen_ref_cache == {"C": "", "R": "", "H": "ReferenceGeneProduct"}
+
+
+def test_pathogen_polymer_counts_through_its_repeated_unit(monkeypatch):
+    # HIV-1 Rev-multimer: a Polymer (no reference entity) of a viral protein.
+    # RNA = viral RNA as an EWAS on a ReferenceRNASequence: not a protein.
+    cache = {
+        "REV": (["11676"], [], "EntityWithAccessionedSequence", "Rev"),
+        "POLY": (["11676"], [("repeatedUnit", "REV")], "Polymer", "Rev-multimer"),
+        "RNA": (["11676"], [], "EntityWithAccessionedSequence", "HIV-1 RNA"),
+        "H": (["9606"], [], "EntityWithAccessionedSequence", "XPO1"),
+        "C": ([], [("hasComponent", "POLY"), ("hasComponent", "H")], "Complex", "Rev-multimer:XPO1"),
+        "R": ([], [("hasComponent", "RNA"), ("hasComponent", "H")], "Complex", "RNA:XPO1"),
+    }
+    refs = {"REV": "ReferenceGeneProduct", "POLY": "", "RNA": "ReferenceRNASequence", "H": "ReferenceGeneProduct"}
+    monkeypatch.setattr(neo4j_connector, "_pathogen_structure_cache", dict(cache))
+    monkeypatch.setattr(neo4j_connector, "_pathogen_ref_cache", dict(refs))
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: (_ for _ in ()).throw(AssertionError("cached")))
+    monkeypatch.setenv("LNG_PATHOGEN_PROTEIN", "1")
+    assert set(neo4j_connector.get_pathogen_entities(cache)) == {"REV", "POLY", "C"}
+

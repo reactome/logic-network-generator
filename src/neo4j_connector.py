@@ -957,9 +957,16 @@ def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
     A leaf with no species (most small molecules) is not.
 
     Under ``LNG_PATHOGEN_PROTEIN=1`` (specs/048 amendment 2) a leaf counts only
-    when it is also a PROTEIN. Viral RNAs (GenomeEncodedEntity, no reference
-    entity) are then not pathogen-derived: in DDX58/IFIH1 they are the ligand
-    the pathway senses, and every signalling complex there carries one.
+    when it is also a PROTEIN: an EWAS on a ReferenceGeneProduct or
+    ReferenceIsoform. Viral nucleic acids are then not pathogen-derived, whether
+    curated as a GenomeEncodedEntity with no reference entity (the DDX58/IFIH1
+    ligands in our catalog) or as an EWAS on a ReferenceRNASequence /
+    ReferenceDNASequence: in DDX58/IFIH1 the RNA is the ligand the pathway
+    senses, and every signalling complex there carries one.
+
+    A Polymer's ``repeatedUnit`` is read as a component, so a viral protein
+    multimer (HIV-1 Rev-multimer) counts through its unit; a Polymer has no
+    reference entity of its own.
     """
     protein_only = env_flag("LNG_PATHOGEN_PROTEIN")
     ids = sorted({s for s in stable_ids if s})
@@ -967,11 +974,11 @@ def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
     if missing:
         query = """
             UNWIND $ids AS s
-            MATCH (n:PhysicalEntity {stId: s})-[:hasComponent|hasMember|hasCandidate*0..10]->(x)
+            MATCH (n:PhysicalEntity {stId: s})-[:hasComponent|hasMember|hasCandidate|repeatedUnit*0..10]->(x)
             WITH DISTINCT x
             OPTIONAL MATCH (x)-[:species]->(sp)
             OPTIONAL MATCH (x)-[:referenceEntity]->(re)
-            OPTIONAL MATCH (x)-[r:hasComponent|hasMember|hasCandidate]->(y)
+            OPTIONAL MATCH (x)-[r:hasComponent|hasMember|hasCandidate|repeatedUnit]->(y)
             RETURN x.stId AS x, x.schemaClass AS c, x.displayName AS d,
                    re.schemaClass AS ref,
                    collect(DISTINCT toString(sp.taxId)) AS tax,
@@ -998,8 +1005,8 @@ def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
             return memo[s]
         memo[s] = False                      # a malformed self-containing entity cannot recurse
         tax, kids, _, _ = _pathogen_structure_cache.get(s, ([], [], "", ""))
-        comps = [y for t, y in kids if t == "hasComponent"]
-        members = [y for t, y in kids if t != "hasComponent"]
+        comps = [y for t, y in kids if t in ("hasComponent", "repeatedUnit")]
+        members = [y for t, y in kids if t in ("hasMember", "hasCandidate")]
         if depth >= 10:
             out = False
         elif comps:

@@ -94,22 +94,23 @@ def _slots_of(participants: Sequence[str]) -> Set[str]:
     return out
 
 
-_sig_cache: Dict[str, Tuple[str, ...]] = {}
+_sig_cache: Dict[Tuple[str, bool], Tuple[str, ...]] = {}   # keyed by (member, LNG_BIND_STOICH)
 
 
 def _reference_signature(member: str) -> Tuple[str, ...]:
     """Isoform-level identity of a set member: the sorted multiset of its
     leaves' reference entities (a member complex keeps its leaf multiset)."""
-    if member in _sig_cache:
-        return _sig_cache[member]
+    stoich = env_flag("LNG_BIND_STOICH")
+    if (member, stoich) in _sig_cache:
+        return _sig_cache[(member, stoich)]
     from src.neo4j_connector import get_reference_entity_id
     from src.reaction_generator import get_terminal_components
-    if vk.is_complex(member) and env_flag("LNG_BIND_STOICH"):
+    if vk.is_complex(member) and stoich:
         leaves = _leaf_multiset(member)
     else:
         leaves = sorted(get_terminal_components(member)) if vk.is_complex(member) else [member]
     sig = tuple(sorted(str(get_reference_entity_id(x) or x) for x in leaves))
-    _sig_cache[member] = sig
+    _sig_cache[(member, stoich)] = sig
     return sig
 
 
