@@ -761,3 +761,74 @@ def test_pools_sharing_an_intermediate_both_keep_it_under_lng_pool_shared(monkey
     assert len(owners) == 2                                    # one complex, an intermediate of both
     assert {pid for pid, *_, rx, _, _ in trans if rx == U["va"]} == owners   # and both pools step through va
 
+
+
+def test_a_carrier_loop_released_through_a_variant_split_is_closed(monkeypatch):
+    # under LNG_POOL_JOIN_MEMBERS the release writes a plain node x that hands the
+    # free form on by variant_split (a capped release); x is inside the loop, and
+    # the edge the solver must drop is x -> e
+    monkeypatch.setenv("LNG_POOL_JOIN_MEMBERS", "1")
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "v3", "input"), e("v3", "x", "output"),
+             e("x", "e", "variant_split")]
+    net, rmap, umap = network(edges, ["v1", "v3"], {"e": "R-HSA-E", "se": "R-HSA-SE", "x": "R-HSA-E"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False)]
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    assert st["carrier_loops_closed"] == 1
+    assert loops == [("loop1", KIN, True, U["e"], "R-HSA-E", U["x"])]
+
+
+def test_a_carrier_loop_whose_bound_form_is_split_is_closed(monkeypatch):
+    # the binding step writes the plain complex se, split to its variant sxe
+    monkeypatch.setenv("LNG_POOL_JOIN_MEMBERS", "1")
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "sxe", "variant_split"),
+             e("sxe", "v3", "input"), e("v3", "e", "output")]
+    net, rmap, umap = network(edges, ["v1", "v3"], {"e": "R-HSA-E", "se": "R-HSA-SE", "sxe": "R-HSA-SE"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False)]
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    assert st["carrier_loops_closed"] == 1
+    assert loops == [("loop1", KIN, True, U["e"], "R-HSA-E", U["v3"])]
+
+
+def test_a_fed_loop_with_two_releases_lists_both_and_counts_the_free_form_once():
+    # E binds S and binds Q; both bound forms release E. One R, so one strongly
+    # connected set, fed because v5 makes E:Q from outside. (The cross-loop
+    # "closed if any loop is" merge needs one free form in two different sets,
+    # one per R; it is not reachable with a single-protein carrier.)
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "v3", "input"), e("v3", "e", "output"),
+             e("e", "v2", "input"), e("v2", "xy", "output"), e("xy", "v4", "input"), e("v4", "e", "output"),
+             e("v5", "xy", "output")]
+    net, rmap, umap = network(edges, ["v1", "v2", "v3", "v4", "v5"],
+                              {"e": "R-HSA-E", "se": "R-HSA-SE", "xy": "R-HSA-EQ"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2),
+                "R-HSA-EQ": prof([KIN, PHOS], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False),
+             ("R-HSA-v2", KIN, "R-HSA-E", "R-HSA-EQ", True), ("R-HSA-v4", KIN, "R-HSA-EQ", "R-HSA-E", False)]
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    # one R, so one strongly connected set {e, se, xy}: fed (v5 makes xy from outside)
+    assert st["carrier_loop_sets"] == 1 and st["carrier_loops_closed"] == 0
+    assert sorted(src for *_, src in loops) == sorted([U["v3"], U["v4"]])
+    assert st["carrier_loop_forms"] == 1
+
+
+def test_a_pool_member_input_is_exempt_from_regeneration_only_under_join_members(monkeypatch):
+    # a step reads its source s and also y, a pool node s feeds: before specs/048
+    # B1 y was a consumed partner (the path does not regenerate), and at the
+    # defaults it still is
+    net, rmap, umap, profiles, participants = ring_network()
+    net = pd.concat([net, pd.DataFrame([e("y", "v1", "input"), e("s", "y", "variant_pool")])], ignore_index=True)
+    umap[U["y"]] = "R-HSA-Y"
+    profiles["R-HSA-Y"] = prof([20])
+    steps = m.r_steps(participants, profiles)
+    monkeypatch.delenv("LNG_POOL_JOIN_MEMBERS", raising=False)
+    st = {}
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["pools"] == 0 and st["nonregenerating_paths"] >= 1
+    monkeypatch.setenv("LNG_POOL_JOIN_MEMBERS", "1")
+    st = {}
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["pools"] == 1

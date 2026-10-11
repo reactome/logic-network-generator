@@ -4216,7 +4216,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 for rx_u in cp:
                     eaten = [j for j in ins.get(rx_u, {})
                              if j != a_u and not prof(j, "small", False) and pe_of(j) not in _UBIQUITIN_STIDS
-                             and a_u not in pool_members.get(j, ())]
+                             and not (join_members and a_u in pool_members.get(j, ()))]
                     if regen_by_protein:
                         # specs/048 B2: by the proteins carried, in any form
                         consumed |= {p for j in eaten for p in proteins(j)}
@@ -4485,11 +4485,17 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 merged[scc][2].update(rx)
             else:
                 merged[scc] = (r, core, set(rx))
-        listed: Set[Tuple[str, str]] = set()
+        # one row per (free form, loop source); a pair in several loops (one per
+        # R) keeps the first loop's id and is closed if ANY of its loops is
+        rows: Dict[Tuple[str, str], List[Any]] = {}
+        conflicts: Set[str] = set()
         order = sorted(merged, key=lambda f: min(ent.get(u, "") + u for u in f))
         for i, scc in enumerate(order, start=1):
             r, core, rx = merged[scc]
-            inside = set(scc) | rx
+            # a step that writes a plain node handing on to the loop's forms by
+            # variant_split (a capped release, under LNG_POOL_JOIN_MEMBERS) is
+            # inside the loop, and so is that plain node
+            inside = set(scc) | rx | {pn for x in rx for pn in outs.get(x, {}) if split_to.get(pn, set()) & scc}
             closed = not any(into.get(u, set()) - inside for u in scc)
             stats["carrier_loop_sets"] += 1
             stats["carrier_loops_closed"] += int(closed)
@@ -4497,15 +4503,16 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 if proteins(u) != core:
                     continue
                 if u in managed or u in pool_carriers:
-                    stats["carrier_loop_conflicts"] += 1
+                    conflicts.add(u)
                     continue
-                srcs = sorted(into.get(u, set()) & inside)
-                fresh = [src for src in srcs if (u, src) not in listed]
-                if fresh:
-                    stats["carrier_loop_forms"] += 1
-                for src in fresh:
-                    listed.add((u, src))
-                    carrier_loops.append((f"loop{i}", r, closed, u, ent.get(u, ""), src))
+                for src in sorted(into.get(u, set()) & inside):
+                    if (u, src) in rows:
+                        rows[(u, src)][2] = rows[(u, src)][2] or closed
+                    else:
+                        rows[(u, src)] = [f"loop{i}", r, closed, u, ent.get(u, ""), src]
+        stats["carrier_loop_conflicts"] = len(conflicts)
+        stats["carrier_loop_forms"] = len({u for u, _ in rows})
+        carrier_loops.extend(tuple(v) for v in rows.values())
     return forms, transitions, carriers
 
 
