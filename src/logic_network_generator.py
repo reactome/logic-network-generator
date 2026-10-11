@@ -4069,10 +4069,12 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     pass, de-duplicated across R. One row per (loop, free form, loop source):
     ``(loop_id, r, closed, free_uuid, free_stid, loop_source_uuid)``. A free form
     is a loop node whose proteins are exactly the loop's core; a loop source is
-    a node inside the loop (a step reaction node, or a form of the loop) with an
-    entity-level in-edge (output, variant_split, variant_pool, set_member) into
-    that free form. The loop is closed when no form of it has such an in-edge
-    from outside the loop. A free form that a pool manages (state, intermediate,
+    a node inside the loop (a step reaction node, a form of the loop, or a plain
+    node a step writes that variant_split hands to a form) with a positive
+    in-edge into that free form (any type but input, catalyst and regulator).
+    The loop is closed when no form of it has such an in-edge from outside the
+    loop. Free forms and conflicts are counted once per node, and a (free form,
+    source) pair in several loops is closed if any of them is. A free form that a pool manages (state, intermediate,
     step node or carrier) is not listed (``carrier_loop_conflicts``).
     ``stats`` receives the counts in ``POOL_STATS_KEYS``; the autocatalysis
     counts are distinct (reaction node, catalyst) pairs where a form of the pool
@@ -4130,7 +4132,10 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             split_to.setdefault(s, set()).add(t)
         if et == "input" and t in vr:
             feeds.setdefault(s, set()).add(t)
-        if et in ("output", "variant_split", "variant_pool", "set_member"):
+        if et not in ("input", "catalyst", "regulator", "depletion") and t not in vr:
+            # every positive in-edge into an entity counts as supply: output,
+            # variant_split/variant_pool/set_member, and the flagged derived
+            # classes (diagram_bridge, composition, handoff) when present
             into.setdefault(t, set()).add(s)
     copies: Dict[str, List[str]] = {}
     for u, r in vr.items():
@@ -4488,7 +4493,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
         # one row per (free form, loop source); a pair in several loops (one per
         # R) keeps the first loop's id and is closed if ANY of its loops is
         rows: Dict[Tuple[str, str], List[Any]] = {}
-        conflicts: Set[str] = set()
+        loop_conflicts: Set[str] = set()
         order = sorted(merged, key=lambda f: min(ent.get(u, "") + u for u in f))
         for i, scc in enumerate(order, start=1):
             r, core, rx = merged[scc]
@@ -4503,14 +4508,14 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 if proteins(u) != core:
                     continue
                 if u in managed or u in pool_carriers:
-                    conflicts.add(u)
+                    loop_conflicts.add(u)
                     continue
                 for src in sorted(into.get(u, set()) & inside):
                     if (u, src) in rows:
                         rows[(u, src)][2] = rows[(u, src)][2] or closed
                     else:
                         rows[(u, src)] = [f"loop{i}", r, closed, u, ent.get(u, ""), src]
-        stats["carrier_loop_conflicts"] = len(conflicts)
+        stats["carrier_loop_conflicts"] = len(loop_conflicts)
         stats["carrier_loop_forms"] = len({u for u, _ in rows})
         carrier_loops.extend(tuple(v) for v in rows.values())
     return forms, transitions, carriers
