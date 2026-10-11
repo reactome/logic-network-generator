@@ -226,7 +226,7 @@ BUNDLE_FILES = (
     "nodes.csv", "node_reaction_context.csv", "node_resolution.csv", "node_exclusions.csv",
     "boundary_edges.csv", "cofactors.csv", "containment.csv", "containment_structure.csv",
     "drugs.csv", "pathogens.csv",
-    "pools.csv", "pool_transitions.csv", "pool_carriers.csv",
+    "pools.csv", "pool_transitions.csv", "pool_carriers.csv", "carrier_loops.csv",
 )
 
 
@@ -593,6 +593,7 @@ def generate_pathway_file(
                 str(pathway_output_dir / "pools.csv"),
                 str(pathway_output_dir / "pool_transitions.csv"),
                 str(pathway_output_dir / "pool_carriers.csv"),
+                str(pathway_output_dir / "carrier_loops.csv"),
             )
         except Exception as e:
             logger.error(f"Failed to write pools.csv: {e}", exc_info=True)

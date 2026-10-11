@@ -3991,14 +3991,16 @@ POOL_STATS_KEYS = ("pools", "states", "intermediates", "paths", "multi_step_pool
                    "shared_nodes_dropped", "ties", "carriers", "autocat_source", "autocat_product",
                    "autocat_other", "carrier_loops", "no_path_pools", "off_path_intermediates",
                    "off_path_states", "ambiguous_copies", "budget_dropped", "merged_proteins", "copy_rows",
-                   "carrier_conflicts", "nonregenerating_paths", "oriented_by_activity", "activity_fallbacks")
+                   "carrier_conflicts", "nonregenerating_paths", "oriented_by_activity", "activity_fallbacks",
+                   "carrier_loop_sets", "carrier_loops_closed", "carrier_loop_forms", "carrier_loop_conflicts")
 
 
 def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
                uuid_mapping: Dict[str, str], steps, profiles: Dict[str, Dict[str, Any]],
                donor_reactions: Optional[Set[str]] = None,
                set_members: Optional[Dict[str, Set[str]]] = None,
-               stats: Optional[Dict[str, int]] = None):
+               stats: Optional[Dict[str, int]] = None,
+               carrier_loops: Optional[List[Tuple]] = None):
     """Modification-cycle pools at NODE level (deltasignal specs/039 amendment 2).
 
     ``steps`` are the pathway's R-steps at stId level, ``(reaction, R, input
@@ -4062,6 +4064,16 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                    source, target and reaction_stid and differ in reaction_uuid. ``enzyme_driven`` is the
                    STEP's flag; a path is enzyme-driven if any step is.
       carriers:    [(pool_id, carrier_uuid, release_reaction_uuid)]
+    ``carrier_loops``, when given a list, receives the carrier loops (deltasignal
+    specs/049): each R-form set rejected above as a carrier loop on the first
+    pass, de-duplicated across R. One row per (loop, free form, loop source):
+    ``(loop_id, r, closed, free_uuid, free_stid, loop_source_uuid)``. A free form
+    is a loop node whose proteins are exactly the loop's core; a loop source is
+    a node inside the loop (a step reaction node, or a form of the loop) with an
+    entity-level in-edge (output, variant_split, variant_pool, set_member) into
+    that free form. The loop is closed when no form of it has such an in-edge
+    from outside the loop. A free form that a pool manages (state, intermediate,
+    step node or carrier) is not listed (``carrier_loop_conflicts``).
     ``stats`` receives the counts in ``POOL_STATS_KEYS``; the autocatalysis
     counts are distinct (reaction node, catalyst) pairs where a form of the pool
     catalyses a step of its own pool, split by whether the catalyst is the
@@ -4084,6 +4096,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     acts: Dict[str, Set[str]] = {}     # node -> reaction nodes it catalyses or positively regulates
     set_pools_of: Dict[str, Set[str]] = {}   # member node -> the set-pool nodes it feeds (specs/033)
     feeds: Dict[str, Set[str]] = {}          # node -> reaction nodes it is an input of
+    into: Dict[str, Set[str]] = {}           # entity node -> sources of its entity-level in-edges (specs/049)
     pool_members: Dict[str, Set[str]] = {}   # pool node -> the member nodes feeding it (specs/048 B1)
     split_to: Dict[str, Set[str]] = {}       # plain output node -> the variants it is split to (specs/048 B1)
     join_members = env_flag("LNG_POOL_JOIN_MEMBERS")
@@ -4117,6 +4130,8 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             split_to.setdefault(s, set()).add(t)
         if et == "input" and t in vr:
             feeds.setdefault(s, set()).add(t)
+        if et in ("output", "variant_split", "variant_pool", "set_member"):
+            into.setdefault(t, set()).add(s)
     copies: Dict[str, List[str]] = {}
     for u, r in vr.items():
         copies.setdefault(r, []).append(u)
@@ -4183,6 +4198,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 ustep[(r, cin[0], cout[0], rx_u)] = (rx, bool(enz))
     if not ustep:
         return [], [], []
+    first_loops: List[Tuple[Any, frozenset, frozenset, Set[str]]] = []   # (R, forms, core, step reaction nodes)
 
     def build(removed: Set[str]):
         local = {k: 0 for k in POOL_STATS_KEYS}
@@ -4200,7 +4216,7 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                 for rx_u in cp:
                     eaten = [j for j in ins.get(rx_u, {})
                              if j != a_u and not prof(j, "small", False) and pe_of(j) not in _UBIQUITIN_STIDS
-                             and not (a_u in pool_members.get(j, ()))]
+                             and a_u not in pool_members.get(j, ())]
                     if regen_by_protein:
                         # specs/048 B2: by the proteins carried, in any form
                         consumed |= {p for j in eaten for p in proteins(j)}
@@ -4235,6 +4251,9 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
                         by_sig.setdefault(sig(u, r), []).append(u)
                 if len(by_sig) < 2:
                     local["carrier_loops"] += 1
+                    if not removed:
+                        first_loops.append((r, frozenset(scc), core,
+                                            {x for a_u, b_u, x, _, _ in by_r[r] if a_u in scc and b_u in scc}))
                     continue
                 states: Set[str] = set()
                 for members in by_sig.values():
@@ -4455,6 +4474,38 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
         stats["copy_rows"] += sum(len(cp) for path in paths for *_, cp in path)
         stats["multi_step_pools"] += int(any(len(path) > 1 for path in paths))
         stats["carriers"] += len({j for j, _ in found})
+    if carrier_loops is not None:
+        # deltasignal specs/049: a carrier loop's free form reads its supply, not
+        # its own release; the consumer drops these in-edges (all of them for a
+        # closed loop, whose free form then reads baseline)
+        pool_carriers = {c for _, c, _ in carriers}
+        merged: Dict[frozenset, Tuple[Any, frozenset, Set[str]]] = {}
+        for r, scc, core, rx in first_loops:
+            if scc in merged:
+                merged[scc][2].update(rx)
+            else:
+                merged[scc] = (r, core, set(rx))
+        listed: Set[Tuple[str, str]] = set()
+        order = sorted(merged, key=lambda f: min(ent.get(u, "") + u for u in f))
+        for i, scc in enumerate(order, start=1):
+            r, core, rx = merged[scc]
+            inside = set(scc) | rx
+            closed = not any(into.get(u, set()) - inside for u in scc)
+            stats["carrier_loop_sets"] += 1
+            stats["carrier_loops_closed"] += int(closed)
+            for u in sorted(scc, key=lambda u: (ent.get(u, ""), u)):
+                if proteins(u) != core:
+                    continue
+                if u in managed or u in pool_carriers:
+                    stats["carrier_loop_conflicts"] += 1
+                    continue
+                srcs = sorted(into.get(u, set()) & inside)
+                fresh = [src for src in srcs if (u, src) not in listed]
+                if fresh:
+                    stats["carrier_loop_forms"] += 1
+                for src in fresh:
+                    listed.add((u, src))
+                    carrier_loops.append((f"loop{i}", r, closed, u, ent.get(u, ""), src))
     return forms, transitions, carriers
 
 
@@ -4491,7 +4542,7 @@ def r_steps(participants, profiles: Dict[str, Dict[str, Any]], ubiquitin_stids=(
 
 def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
                  uuid_mapping: Dict[str, str], pools_file: str, transitions_file: str,
-                 carriers_file: str) -> None:
+                 carriers_file: str, carrier_loops_file: Optional[str] = None) -> None:
     """Write pools.csv, pool_transitions.csv and pool_carriers.csv (deltasignal
     specs/039 amendment 2): each protein's modification-cycle pool, for a
     consumer that solves it at steady state (pi = pi P) instead of multiplying
@@ -4515,12 +4566,16 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     donors = get_donor_reactions({s[0] for s in steps}, _UBIQUITIN_STIDS)
     set_members = get_set_descendants({x for s in steps for x in (s[2], s[3])})
     stats: Dict[str, int] = {}
+    loops: List[Tuple] = []
     forms, transitions, carriers = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, steps,
-                                              profiles, donors, set_members, stats)
+                                              profiles, donors, set_members, stats, carrier_loops=loops)
     pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "role", "is_base"]).to_csv(pools_file, index=False)
     pd.DataFrame(transitions, columns=["pool_id", "path_id", "step", "source_uuid", "target_uuid", "reaction_uuid",
                                        "reaction_stid", "enzyme_driven"]).to_csv(transitions_file, index=False)
     pd.DataFrame(carriers, columns=["pool_id", "carrier_uuid", "release_reaction_uuid"]).to_csv(carriers_file, index=False)
+    if carrier_loops_file is not None:
+        pd.DataFrame(loops, columns=["loop_id", "r", "closed", "free_uuid", "free_stid", "loop_source_uuid"]).to_csv(
+            carrier_loops_file, index=False)
     logger.info(
         f"Exported {stats['pools']} pools ({stats['states']} states, {stats['intermediates']} intermediates, "
         f"{stats['paths']} paths in {stats['copy_rows']} step-copy rows, {stats['multi_step_pools']} multi-step; "
@@ -4530,7 +4585,9 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
         f"{stats['shared_nodes_dropped']} shared nodes dropped, {stats['oriented_by_activity']} oriented by the active "
         f"state, {stats['activity_fallbacks']} by residues/donor/components of which {stats['ties']} by tie-break, "
         f"{stats['carriers']} carriers ({stats['carrier_conflicts']} excluded as pool nodes), "
-        f"{stats['carrier_loops']} carrier loops, "
+        f"{stats['carrier_loops']} carrier loops ({stats['carrier_loop_sets']} distinct, "
+        f"{stats['carrier_loops_closed']} closed, {stats['carrier_loop_forms']} free forms listed, "
+        f"{stats['carrier_loop_conflicts']} excluded as pool nodes), "
         f"{stats['merged_proteins']} co-travelling proteins merged, {stats['no_path_pools']} candidates with no path, "
         f"{stats['off_path_states']}/{stats['off_path_intermediates']} states/intermediates off every path, "
         f"{stats['ambiguous_copies']} ambiguous reaction copies, {stats['budget_dropped']} over the path budget; "
