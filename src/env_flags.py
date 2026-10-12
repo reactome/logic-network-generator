@@ -26,6 +26,8 @@ BOOL_FLAGS = {
     "LNG_EMIT_ONE_SIDED": True,
     "LNG_HANDOFF_EDGES": False,
     "LNG_PATHOGEN_PROTEIN": True,   # default since deltasignal specs/048 amendment 2 (arm pathp: exp +7, held-out +1, 0 broken)
+    "LNG_POOL_JOIN_MEMBERS": False,   # deltasignal specs/048 lever B1
+    "LNG_POOL_SHARED": False,         # deltasignal specs/049
     "LNG_SET_EXPAND": True,
     "LNG_SET_MEMBERS_OR": False,
     "LNG_SET_POOL": True,
@@ -39,6 +41,7 @@ OTHER_FLAGS = frozenset({
     "LNG_HANDOFF_HUB_MAX",        # _int_env
     "LNG_MAX_VARIANTS",           # _int_env
     "LNG_POOL_ACTIVE_VIA",        # pool_active_via()
+    "LNG_POOL_REGEN",             # pool_regen()
     "LNG_PYTHON",                 # catalog.sh: the interpreter, not a switch
 })
 

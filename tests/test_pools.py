@@ -662,3 +662,173 @@ def test_unknown_pool_active_via_is_a_startup_error(monkeypatch):
         m.find_pools(*two_state()[:3], two_state()[4], two_state()[3])
     monkeypatch.setenv("LNG_POOL_ACTIVE_VIA", "made_from")
     m._reject_removed_env()
+
+
+# --- carrier loops (deltasignal specs/049) ------------------------------------------------------------------
+
+def enzyme_loop(synthesis=False):
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "v3", "input"), e("v3", "e", "output")]
+    rxs = ["v1", "v3"]
+    if synthesis:   # the enzyme is also made outside its loop
+        edges.append(e("v5", "e", "output"))
+        rxs.append("v5")
+    net, rmap, umap = network(edges, rxs, {"e": "R-HSA-E", "se": "R-HSA-SE"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False)]
+    return net, rmap, umap, profiles, steps
+
+
+def test_a_closed_carrier_loop_lists_its_free_form_and_the_release_into_it():
+    net, rmap, umap, profiles, steps = enzyme_loop()
+    st, loops = {}, []
+    assert m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops) == ([], [], [])
+    assert loops == [("loop1", KIN, True, U["e"], "R-HSA-E", U["v3"])]     # E:S is bound, not free
+    assert st["carrier_loop_sets"] == 1 and st["carrier_loops_closed"] == 1
+    assert st["carrier_loop_forms"] == 1 and st["carrier_loop_conflicts"] == 0
+
+
+def test_a_fed_carrier_loop_lists_only_the_in_edges_from_inside_the_loop():
+    net, rmap, umap, profiles, steps = enzyme_loop(synthesis=True)
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    assert loops == [("loop1", KIN, False, U["e"], "R-HSA-E", U["v3"])]    # synthesis (v5) is supply, kept
+    assert st["carrier_loops_closed"] == 0
+
+
+def test_a_carrier_loop_free_form_that_a_pool_manages_is_not_listed():
+    # the GAP's own loop (GAP -> RAS:GTP:GAP -> GAP); the GAP is the RAS pool's carrier
+    net, rmap, umap, profiles, participants = ras_network()
+    st, loops = {}, []
+    _, _, carriers = m.find_pools(net, rmap, umap, m.r_steps(participants, profiles), profiles,
+                                  {"R-HSA-vgef"}, {}, st, carrier_loops=loops)
+    assert carriers == [("pool1", U["gap"], U["vrel"])]
+    assert loops == [] and st["carrier_loop_sets"] == 1 and st["carrier_loop_conflicts"] == 1
+
+
+def test_carrier_loops_are_not_collected_unless_asked_and_change_nothing_else():
+    net, rmap, umap, profiles, participants = ring_network()
+    steps = m.r_steps(participants, profiles)
+    st0, st1, loops = {}, {}, []
+    assert m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st0) == \
+        m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st1, carrier_loops=loops)
+    assert {k: v for k, v in st0.items() if not k.startswith("carrier_loop")} == \
+        {k: v for k, v in st1.items() if not k.startswith("carrier_loop")}
+    # the kinase and the phosphatase loops are the pool's carriers: conflicts, not listed
+    assert loops == [] and st1["carrier_loop_conflicts"] == 2
+
+
+# --- pools that share an intermediate (deltasignal specs/049, LNG_POOL_SHARED) ------------------------------
+
+def two_pools_one_complex():
+    # S1 + S2 -> S1:S2 -> pS1 + pS2; pS1 -> S1 and pS2 -> S2 by their phosphatases.
+    # Both pools pass through the one complex node (MAPK1 and MAPK3 through a
+    # capped RAF:MAP2K:MAPKs complex).
+    S2P = 20
+    edges = [e("s", "va", "input"), e("y", "va", "input"), e("va", "xy", "output"),
+             e("xy", "vb", "input"), e("vb", "sx", "output"), e("vb", "ys", "output"),
+             e("sx", "vc", "input"), e("vc", "s", "output"), e("p", "vc", "catalyst"),
+             e("ys", "vd", "input"), e("vd", "y", "output"), e("p", "vd", "catalyst")]
+    net, rmap, umap = network(edges, ["va", "vb", "vc", "vd"],
+                              {"s": "R-HSA-S1", "sx": "R-HSA-S1P", "y": "R-HSA-S2", "ys": "R-HSA-S2P",
+                               "xy": "R-HSA-S1S2", "p": "R-HSA-P"})
+    ph = [("res", "p")]
+    profiles = {"R-HSA-S1": prof([SUB]), "R-HSA-S1P": prof([SUB], ph, mods=1),
+                "R-HSA-S2": prof([S2P]), "R-HSA-S2P": prof([S2P], ph, mods=1), "R-HSA-P": prof([PHOS]),
+                "R-HSA-S1S2": {"proteins": {SUB, S2P}, "fixed": {SUB, S2P}, "mods": 0, "comps": 2, "slots": 2,
+                               "sig": {SUB: frozenset(), S2P: frozenset()}}}
+    steps = [("R-HSA-va", SUB, "R-HSA-S1", "R-HSA-S1S2", True), ("R-HSA-va", S2P, "R-HSA-S2", "R-HSA-S1S2", True),
+             ("R-HSA-vb", SUB, "R-HSA-S1S2", "R-HSA-S1P", False), ("R-HSA-vb", S2P, "R-HSA-S1S2", "R-HSA-S2P", False),
+             ("R-HSA-vc", SUB, "R-HSA-S1P", "R-HSA-S1", True), ("R-HSA-vd", S2P, "R-HSA-S2P", "R-HSA-S2", True)]
+    return net, rmap, umap, steps, profiles
+
+
+def test_pools_sharing_an_intermediate_are_dropped_by_default(monkeypatch):
+    monkeypatch.setenv("LNG_POOL_REGEN", "protein")   # the partner comes back phosphorylated
+    monkeypatch.delenv("LNG_POOL_SHARED", raising=False)
+    st = {}
+    forms, _, _ = m.find_pools(*two_pools_one_complex(), set(), {}, st)
+    assert {u for _, u, *_ in forms} & {U["xy"]} == set()
+    assert st["shared_nodes_dropped"] > 0
+
+
+def test_pools_sharing_an_intermediate_both_keep_it_under_lng_pool_shared(monkeypatch):
+    monkeypatch.setenv("LNG_POOL_REGEN", "protein")
+    monkeypatch.setenv("LNG_POOL_SHARED", "1")
+    st = {}
+    forms, trans, _ = m.find_pools(*two_pools_one_complex(), set(), {}, st)
+    assert st["pools"] == 2 and st["shared_nodes_dropped"] == 0
+    owners = {pid for pid, u, _, role, _ in forms if u == U["xy"] and role == "intermediate"}
+    assert len(owners) == 2                                    # one complex, an intermediate of both
+    assert {pid for pid, *_, rx, _, _ in trans if rx == U["va"]} == owners   # and both pools step through va
+
+
+
+def test_a_carrier_loop_released_through_a_variant_split_is_closed(monkeypatch):
+    # under LNG_POOL_JOIN_MEMBERS the release writes a plain node x that hands the
+    # free form on by variant_split (a capped release); x is inside the loop, and
+    # the edge the solver must drop is x -> e
+    monkeypatch.setenv("LNG_POOL_JOIN_MEMBERS", "1")
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "v3", "input"), e("v3", "x", "output"),
+             e("x", "e", "variant_split")]
+    net, rmap, umap = network(edges, ["v1", "v3"], {"e": "R-HSA-E", "se": "R-HSA-SE", "x": "R-HSA-E"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False)]
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    assert st["carrier_loops_closed"] == 1
+    assert loops == [("loop1", KIN, True, U["e"], "R-HSA-E", U["x"])]
+
+
+def test_a_carrier_loop_whose_bound_form_is_split_is_closed(monkeypatch):
+    # the binding step writes the plain complex se, split to its variant sxe
+    monkeypatch.setenv("LNG_POOL_JOIN_MEMBERS", "1")
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "sxe", "variant_split"),
+             e("sxe", "v3", "input"), e("v3", "e", "output")]
+    net, rmap, umap = network(edges, ["v1", "v3"], {"e": "R-HSA-E", "se": "R-HSA-SE", "sxe": "R-HSA-SE"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False)]
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    assert st["carrier_loops_closed"] == 1
+    assert loops == [("loop1", KIN, True, U["e"], "R-HSA-E", U["v3"])]
+
+
+def test_a_fed_loop_with_two_releases_lists_both_and_counts_the_free_form_once():
+    # E binds S and binds Q; both bound forms release E. One R, so one strongly
+    # connected set, fed because v5 makes E:Q from outside. (The cross-loop
+    # "closed if any loop is" merge needs one free form in two different sets,
+    # one per R; it is not reachable with a single-protein carrier.)
+    edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "v3", "input"), e("v3", "e", "output"),
+             e("e", "v2", "input"), e("v2", "xy", "output"), e("xy", "v4", "input"), e("v4", "e", "output"),
+             e("v5", "xy", "output")]
+    net, rmap, umap = network(edges, ["v1", "v2", "v3", "v4", "v5"],
+                              {"e": "R-HSA-E", "se": "R-HSA-SE", "xy": "R-HSA-EQ"})
+    profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2),
+                "R-HSA-EQ": prof([KIN, PHOS], slots=2, comps=2)}
+    steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False),
+             ("R-HSA-v2", KIN, "R-HSA-E", "R-HSA-EQ", True), ("R-HSA-v4", KIN, "R-HSA-EQ", "R-HSA-E", False)]
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    # one R, so one strongly connected set {e, se, xy}: fed (v5 makes xy from outside)
+    assert st["carrier_loop_sets"] == 1 and st["carrier_loops_closed"] == 0
+    assert sorted(src for *_, src in loops) == sorted([U["v3"], U["v4"]])
+    assert st["carrier_loop_forms"] == 1
+
+
+def test_a_pool_member_input_is_exempt_from_regeneration_only_under_join_members(monkeypatch):
+    # a step reads its source s and also y, a pool node s feeds: before specs/048
+    # B1 y was a consumed partner (the path does not regenerate), and at the
+    # defaults it still is
+    net, rmap, umap, profiles, participants = ring_network()
+    net = pd.concat([net, pd.DataFrame([e("y", "v1", "input"), e("s", "y", "variant_pool")])], ignore_index=True)
+    umap[U["y"]] = "R-HSA-Y"
+    profiles["R-HSA-Y"] = prof([20])
+    steps = m.r_steps(participants, profiles)
+    monkeypatch.delenv("LNG_POOL_JOIN_MEMBERS", raising=False)
+    st = {}
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["pools"] == 0 and st["nonregenerating_paths"] >= 1
+    monkeypatch.setenv("LNG_POOL_JOIN_MEMBERS", "1")
+    st = {}
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st)
+    assert st["pools"] == 1
