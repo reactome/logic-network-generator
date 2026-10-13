@@ -3513,11 +3513,26 @@ def _derive_sets_and_chosen(parent_complex: str, member_leaves: Set[str]) -> tup
     return sets, chosen
 
 
+NODE_COLUMNS = ["uuid", "node_kind", "diagram_entity_id", "compartment",
+                "member_leaves", "source_sets", "chosen_members"]
+
+
 def export_nodes(pathway_logic_network: pd.DataFrame,
                  reaction_id_map: pd.DataFrame,
                  uuid_mapping: Dict[str, str],
                  output_file: str) -> None:
-    """Write nodes.csv — one row per node (see schema class ``Node``).
+    """Write nodes.csv — one row per node (see schema class ``Node``)."""
+    rows = node_rows(pathway_logic_network, reaction_id_map, uuid_mapping)
+    pd.DataFrame(rows, columns=NODE_COLUMNS).to_csv(output_file, index=False)
+    logger.info(f"Exported {len(rows)} nodes with provenance: {output_file}")
+
+
+def node_rows(pathway_logic_network: pd.DataFrame,
+              reaction_id_map: pd.DataFrame,
+              uuid_mapping: Dict[str, str]) -> List[Dict[str, Any]]:
+    """The nodes.csv rows, one per node. Shared by export_nodes and the
+    closed-twin join (deltasignal specs/053), so the join's identity is exactly
+    the exported one.
 
     Provenance is derived post-hoc from the node id string, the edge topology,
     and Neo4j: node_kind, diagram_entity_id (the stId a diagram renders — parent
@@ -3600,10 +3615,7 @@ def export_nodes(pathway_logic_network: pd.DataFrame,
             "source_sets": "|".join(sets),
             "chosen_members": "|".join(chosen),
         })
-    cols = ["uuid", "node_kind", "diagram_entity_id", "compartment",
-            "member_leaves", "source_sets", "chosen_members"]
-    pd.DataFrame(rows, columns=cols).to_csv(output_file, index=False)
-    logger.info(f"Exported {len(rows)} nodes with provenance: {output_file}")
+    return rows
 
 
 def export_node_reaction_context(entity_uuid_registry: Dict[tuple, str],

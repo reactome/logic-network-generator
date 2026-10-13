@@ -3,7 +3,7 @@ import json
 import os
 from src.env_flags import env_flag
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pandas as pd
 
@@ -227,6 +227,7 @@ BUNDLE_FILES = (
     "boundary_edges.csv", "cofactors.csv", "containment.csv", "containment_structure.csv",
     "drugs.csv", "pathogens.csv",
     "pools.csv", "pool_transitions.csv", "pool_carriers.csv", "carrier_loops.csv",
+    "closed_twin_joins.csv",
 )
 
 
@@ -448,6 +449,34 @@ def generate_pathway_file(
             # every reaction of the pathway, from the full fetched table
             pathway_reaction_ids=reaction_ids_from_connections(reaction_connections),
         )
+
+        # deltasignal specs/053: a closed recycling copy (fed only by its own
+        # release from a complex) is merged into its one fed identity twin, so
+        # a perturbation of the protein reaches the cycle. Before any table is
+        # written, so nodes, pools and carrier loops all see the joined network.
+        # The table is always written (empty when the flag is off), so a bundle
+        # is the same set of files either way; BUILD.json records the flag.
+        joined_rows: List[Dict[str, Any]] = []
+        if env_flag("LNG_CLOSED_TWIN_JOIN"):
+            from src.closed_twin_join import apply_joins, find_joins
+            from src.logic_network_generator import node_rows
+            net0 = result.logic_network
+            rows0 = node_rows(net0, result.reaction_id_map, result.uuid_mapping)
+            joins, ambiguous = find_joins(
+                zip(net0["source_id"], net0["target_id"], net0["edge_type"]), rows0)
+            flags0 = list(result.boundary_mask) or [False] * len(net0)
+            net1, flags1 = apply_joins(net0, flags0, joins)
+            registry = {k: joins.get(v, v) for k, v in (result.entity_uuid_registry or {}).items()}
+            result = result._replace(logic_network=net1, boundary_mask=flags1,
+                                     entity_uuid_registry=registry)
+            by_uuid = {str(r["uuid"]): r for r in rows0}
+            joined_rows = [{"closed_uuid": x, "twin_uuid": w,
+                            "diagram_entity_id": by_uuid[x].get("diagram_entity_id")}
+                           for x, w in sorted(joins.items())]
+            logger.info(f"Closed-twin join: {len(joins)} copies joined, {ambiguous} with "
+                        f"several fed twins left alone, {len(net0) - len(net1)} duplicate edges dropped")
+        pd.DataFrame(joined_rows, columns=["closed_uuid", "twin_uuid", "diagram_entity_id"]).to_csv(
+            pathway_output_dir / "closed_twin_joins.csv", index=False)
 
         # Save logic network (main output file users need)
         # logic_network.csv holds what curators curated. The edges the
