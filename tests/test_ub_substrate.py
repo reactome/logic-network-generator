@@ -26,7 +26,11 @@ class _Result:
 
 
 class _Graph:
+    ubx = []   # (rxn, member) rows for the Ub-X complex query
+
     def run(self, query, **kw):
+        if "(c:Complex)" in query:
+            return _Result([{"rxn": r, "member": m} for r, m in self.ubx])
         if "RETURN DISTINCT id AS rxn" in query:
             return _Result([{"rxn": RX}])
         if "-[:input]->(inp:PhysicalEntity)" in query:
@@ -95,3 +99,44 @@ def test_a_leaf_whose_gene_is_not_in_the_output_is_never_a_substrate():
     leaves = [("R-HSA-X", ["X"])]
     assert lng._ubiquitin_substrates(leaves, {"Y"}, {"R-HSA-Y"}, False) is None
     assert lng._ubiquitin_substrates(leaves, {"Y"}, {"R-HSA-Y"}, True) is None
+
+
+# --- amendment 1: Reactome's "Ub-X" complex products ------------------------
+
+SMAD_IN = [("R-HSA-SMAD2", ["SMAD2"]), ("R-HSA-SMURF2", ["SMURF2"])]
+# Ub-SMAD2 is a Complex of SMAD2 and Ub; SMURF2 is released unchanged.
+SMAD_OUT_STIDS = {"R-HSA-UbSMAD2", "R-HSA-SMAD2", "R-HSA-SMURF2"}
+SMAD_OUT_GENES = {"SMAD2", "SMURF2"}
+
+
+@pytest.mark.parametrize("ubx, expect", [
+    (set(), None),                          # registered test: SMAD2 looks passed through
+    ({"R-HSA-SMAD2"}, {"R-HSA-SMAD2"}),     # amendment 1: it is the Ub-X complex's substrate
+])
+def test_ub_x_complex_substrate(ubx, expect):
+    got = lng._ubiquitin_substrates(SMAD_IN, SMAD_OUT_GENES, SMAD_OUT_STIDS, True, ubx)
+    assert (got[1] if got else None) == expect
+
+
+def test_ubx_does_not_rescue_a_partner_outside_the_ub_complex():
+    # GRB2 sits in the output, but not in a complex that holds Ub.
+    out_genes = {g for _, gs in OUT_LEAVES for g in gs}
+    out_stids = {s for s, _ in OUT_LEAVES}
+    _, stids = lng._ubiquitin_substrates(IN_LEAVES, out_genes, out_stids, True, {"R-HSA-ubMET"})
+    assert stids == {"R-HSA-pMET"}
+
+
+def test_ubx_flag_end_to_end(monkeypatch):
+    monkeypatch.setenv("LNG_UB_SUBSTRATE_CHANGED", "1")
+    monkeypatch.setenv("LNG_UB_SUBSTRATE_UBX", "1")
+    monkeypatch.setattr(_Graph, "ubx", [(RX, "R-HSA-GRB2")])   # pretend GRB2 were in a Ub-X complex
+    assert _depletions(monkeypatch) == {("u-cat", "u-met"), ("u-cat", "u-grb2")}
+
+
+def test_ubx_is_off_by_default_and_inert_without_changed(monkeypatch):
+    from src.env_flags import BOOL_FLAGS
+    assert BOOL_FLAGS["LNG_UB_SUBSTRATE_UBX"] is False
+    monkeypatch.delenv("LNG_UB_SUBSTRATE_CHANGED", raising=False)
+    monkeypatch.setenv("LNG_UB_SUBSTRATE_UBX", "1")
+    monkeypatch.setattr(_Graph, "ubx", [(RX, "R-HSA-GRB2")])
+    assert _depletions(monkeypatch) == {("u-cat", "u-met"), ("u-cat", "u-grb2"), ("u-cat", "u-cbl")}

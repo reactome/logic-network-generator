@@ -31,7 +31,8 @@ BOOL_FLAGS = {
     "LNG_SET_EXPAND": True,
     "LNG_SET_MEMBERS_OR": False,
     "LNG_SET_POOL": True,
-    "LNG_UB_SUBSTRATE_CHANGED": False,   # deltasignal specs/057 (registered; arm pending)
+    "LNG_UB_SUBSTRATE_CHANGED": False,   # deltasignal specs/057 (arm ubs: held-out -39, not adopted)
+    "LNG_UB_SUBSTRATE_UBX": False,       # deltasignal specs/057 amendment 1 (with _CHANGED only)
     "LNG_VARIANT_NODES": True,   # default since deltasignal specs/046 (vn7: held-out +130, experimental -10 ns)
 }
 

@@ -1446,6 +1446,7 @@ def _ubiquitin_substrates(
     output_genes: Set[str],
     output_leaf_stids: Set[str],
     changed_only: bool,
+    ub_complex_members: Set[str] = frozenset(),
 ) -> Optional[Tuple[Set[str], Set[str]]]:
     """The substrate of one ubiquitination: (genes, input-leaf stIds), or None.
 
@@ -1455,6 +1456,11 @@ def _ubiquitin_substrates(
     complex ubiquitinated in place returns every partner, so by gene alone
     each partner is a "substrate". "CBL monoubiquitinates activated MET"
     returned GRB2 unchanged and still depleted free GRB2.
+
+    `ub_complex_members` (LNG_UB_SUBSTRATE_UBX, specs/057 amendment 1): the
+    direct components of output complexes that also hold Ub. Reactome writes
+    some products as a "Ub-X" complex (Ub-SMAD2 = SMAD2 + Ub), so the real
+    substrate's stId reappears; such a leaf is still the substrate.
     """
     if not output_genes:
         return None
@@ -1463,7 +1469,7 @@ def _ubiquitin_substrates(
     for leaf_stid, leaf_genes in input_leaves:
         if not leaf_stid or not leaf_genes:
             continue
-        if changed_only and leaf_stid in output_leaf_stids:
+        if changed_only and leaf_stid in output_leaf_stids and leaf_stid not in ub_complex_members:
             continue  # carried through unchanged, not modified
         common = output_genes & set(leaf_genes)
         if common:
@@ -1601,10 +1607,24 @@ def _emit_substrate_depletion_edges(
                     for gn in g:
                         out_by_rxn.setdefault(r["rxn"], set()).add(gn)
             changed_only = env_flag("LNG_UB_SUBSTRATE_CHANGED")
+            ubx_by_rxn: Dict[str, Set[str]] = {}
+            if changed_only and env_flag("LNG_UB_SUBSTRATE_UBX") and ubiq_rstids:
+                for r in get_graph().run(
+                    "UNWIND $ids AS id "
+                    "MATCH (rle:ReactionLikeEvent {stId: id})-[:output]->(o:PhysicalEntity) "
+                    "MATCH (o)-[:hasComponent|hasMember|hasCandidate*0..3]->(c:Complex)-[:hasComponent]->(ub:PhysicalEntity) "
+                    "WHERE ub.stId IN $ub_stids "
+                    "MATCH (c)-[:hasComponent]->(m:PhysicalEntity) WHERE NOT m.stId IN $ub_stids "
+                    "RETURN DISTINCT id AS rxn, m.stId AS member",
+                    ids=ubiq_rstids,
+                    ub_stids=list(_UBIQUITIN_STIDS),
+                ).data():
+                    ubx_by_rxn.setdefault(r["rxn"], set()).add(r["member"])
             for rxn in ubiq_rstids:
                 found = _ubiquitin_substrates(
                     in_by_rxn.get(rxn, []), out_by_rxn.get(rxn, set()),
-                    out_leaves_by_rxn.get(rxn, set()), changed_only)
+                    out_leaves_by_rxn.get(rxn, set()), changed_only,
+                    ubx_by_rxn.get(rxn, set()))
                 if found is not None:
                     ubiquitin_subst_by_rstid[rxn] = found
         except Exception as exc:
