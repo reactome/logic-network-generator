@@ -1441,6 +1441,37 @@ def _pool_variant_depleters(pathway_logic_network_data: List[Dict[str, Any]], st
                 f"{sum(len(set(v)) for v in pooled.values())} catalyst variants")
 
 
+def _ubiquitin_substrates(
+    input_leaves: List[Tuple[Optional[str], Optional[List[str]]]],
+    output_genes: Set[str],
+    output_leaf_stids: Set[str],
+    changed_only: bool,
+) -> Optional[Tuple[Set[str], Set[str]]]:
+    """The substrate of one ubiquitination: (genes, input-leaf stIds), or None.
+
+    A substrate is an input-leaf protein whose gene also appears in the
+    output (its modified form). Under LNG_UB_SUBSTRATE_CHANGED (deltasignal
+    specs/057) its own stId must also be absent from the output's leaves: a
+    complex ubiquitinated in place returns every partner, so by gene alone
+    each partner is a "substrate". "CBL monoubiquitinates activated MET"
+    returned GRB2 unchanged and still depleted free GRB2.
+    """
+    if not output_genes:
+        return None
+    subst_stids: Set[str] = set()
+    subst_genes: Set[str] = set()
+    for leaf_stid, leaf_genes in input_leaves:
+        if not leaf_stid or not leaf_genes:
+            continue
+        if changed_only and leaf_stid in output_leaf_stids:
+            continue  # carried through unchanged, not modified
+        common = output_genes & set(leaf_genes)
+        if common:
+            subst_stids.add(leaf_stid)
+            subst_genes.update(common)
+    return (subst_genes, subst_stids) if subst_stids else None
+
+
 def _emit_substrate_depletion_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -1553,7 +1584,7 @@ def _emit_substrate_depletion_edges(
                 "WHERE NOT o.stId IN $ub_stids "
                 "OPTIONAL MATCH (o)-[:hasComponent|hasMember|hasCandidate*0..3]->(leaf:PhysicalEntity) "
                 "OPTIONAL MATCH (leaf)-[:referenceEntity]->(re:ReferenceEntity) "
-                "RETURN id AS rxn, re.geneName AS genes",
+                "RETURN id AS rxn, leaf.stId AS leaf_stid, re.geneName AS genes",
                 ids=ubiq_rstids,
                 ub_stids=list(_UBIQUITIN_STIDS),
             ).data() if ubiq_rstids else []
@@ -1561,26 +1592,21 @@ def _emit_substrate_depletion_edges(
             for r in in_rows:
                 in_by_rxn.setdefault(r["rxn"], []).append((r["leaf_stid"], r["genes"]))
             out_by_rxn: Dict[str, Set[str]] = {}
+            out_leaves_by_rxn: Dict[str, Set[str]] = {}
             for r in out_rows:
+                if r.get("leaf_stid"):
+                    out_leaves_by_rxn.setdefault(r["rxn"], set()).add(r["leaf_stid"])
                 g = r["genes"]
                 if g:
                     for gn in g:
                         out_by_rxn.setdefault(r["rxn"], set()).add(gn)
+            changed_only = env_flag("LNG_UB_SUBSTRATE_CHANGED")
             for rxn in ubiq_rstids:
-                output_genes = out_by_rxn.get(rxn, set())
-                if not output_genes: continue
-                # The substrate: input-leaf proteins whose gene also appears
-                # in the output (modified form). Collect their leaf stids.
-                subst_stids: Set[str] = set()
-                subst_genes: Set[str] = set()
-                for leaf_stid, leaf_genes in in_by_rxn.get(rxn, []):
-                    if not leaf_stid or not leaf_genes: continue
-                    common = output_genes & set(leaf_genes)
-                    if common:
-                        subst_stids.add(leaf_stid)
-                        subst_genes.update(common)
-                if subst_stids:
-                    ubiquitin_subst_by_rstid[rxn] = (subst_genes, subst_stids)
+                found = _ubiquitin_substrates(
+                    in_by_rxn.get(rxn, []), out_by_rxn.get(rxn, set()),
+                    out_leaves_by_rxn.get(rxn, set()), changed_only)
+                if found is not None:
+                    ubiquitin_subst_by_rstid[rxn] = found
         except Exception as exc:
             # Raise: carrying on dropped every ubiquitin depletion edge from
             # logic_network.csv with only a warning (code review 2026-10-02).
