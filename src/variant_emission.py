@@ -120,8 +120,10 @@ def _leaf_multiset(entity: str, depth: int = 0) -> List[str]:
     homodimer (MAPK1 dimer, R-HSA-5675354) had the signature of its monomer
     (MAPK1, R-HSA-59282), and "Cytosolic DUSPs dephosphorylate MAPKs"
     (R-HSA-5675376) bound p-MAPK1 to the MAPK1 DIMER and the p-MAPK1 dimer to
-    the monomer, by sorted rank. A set inside a complex contributes its
-    leaves once each, as before."""
+    the monomer, by sorted rank. Every component, a set included, contributes
+    its leaves times its stoichiometry (a set slot with stoichiometry 2 lists
+    each member's leaves twice). Input and output signatures go through the
+    same rule, so binding compares like with like."""
     from src.neo4j_connector import get_complex_components
     from src.reaction_generator import get_terminal_components
     if depth > 10 or not vk.is_complex(entity):
