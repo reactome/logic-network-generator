@@ -179,6 +179,19 @@ def _choices(parts: dict, limit: int) -> Tuple[List[Dict[str, str]], bool]:
     free_outputs = [o for o in outputs if not (_slots_of([o]) and _slots_of([o]) <= set(bound))]
     base = list(vk.reaction_choices(input_side + free_outputs, limit=limit + 1))
     result: List[Dict[str, str]] = []
+    # An output with one bound slot and one shared slot stays in free_outputs, so
+    # its bound slot is enumerated and then overwritten by the binding below:
+    # |members| identical choices per real copy (deltasignal week review
+    # 2026-10-15: 2,905 duplicate reaction nodes in the canonical build). Keep
+    # the first of each identical choice, before the cap is tested.
+    seen: Set[frozenset] = set()
+
+    def keep(c: Dict[str, str]) -> None:
+        key = frozenset(c.items())
+        if key not in seen:
+            seen.add(key)
+            result.append(c)
+
     for sig in base:
         sig = dict(sig)
         for w, (u, mapping) in bound.items():
@@ -190,12 +203,14 @@ def _choices(parts: dict, limit: int) -> Tuple[List[Dict[str, str]], bool]:
             cur = pending.pop()
             extra = _open_slots(outputs, cur)
             if not extra:
-                result.append(cur)
+                keep(cur)
                 continue
             for more in vk.reaction_choices(extra, limit=limit + 1):
                 pending.append({**cur, **more})
             if len(result) + len(pending) > limit:
-                return result + pending, True
+                for c in pending:
+                    keep(c)
+                return result, len(result) > limit
         if len(result) > limit:
             return result, True
     return result, len(result) > limit

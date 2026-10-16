@@ -59,6 +59,23 @@ def test_negative_regulator_shares_the_copy_choice():
     assert len(choices) == 2          # D4: expanded, but the shared set is one variable
 
 
+def test_output_with_a_bound_and_a_shared_slot_gives_no_duplicate_copies():
+    # deltasignal week review 2026-10-15 (RAF R-HSA-5674373): the output complex
+    # has one slot bound to an input slot (OSET <- SET) and one it shares with
+    # the input (TIE). The bound slot was enumerated, then overwritten:
+    # |OSET| identical copies of each real one.
+    LABELS.update({"ICX": ["Complex"], "OCX": ["Complex"]})
+    COMP.update({"ICX": ["SET", "TIE"], "OCX": ["OSET", "TIE"]})
+    try:
+        choices, over = ve._choices(parts(**{"in": {"ICX": 1}, "out": {"OCX": 1}}), 512)
+        keys = [frozenset(c.items()) for c in choices]
+        assert not over and len(keys) == len(set(keys)) == 4
+        assert {(c["SET"], c["OSET"]) for c in choices} == {("RHOA", "pRHOA"), ("RAC1", "pRAC1")}
+    finally:
+        for k in ("ICX", "OCX"):
+            LABELS.pop(k, None); COMP.pop(k, None)
+
+
 def test_over_the_cap_is_reported():
     choices, over = ve._choices(parts(**{"in": {"CX": 1}, "out": {"OSET": 1}}), 1)
     assert over
