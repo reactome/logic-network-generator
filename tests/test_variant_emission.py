@@ -251,3 +251,19 @@ def test_priming_a_pathway_clears_set_member_signatures(monkeypatch):
     ve._sig_cache[("M1", True)] = ("stale",)
     rg.prime_entity_caches(None)
     assert ve._sig_cache == {}
+
+
+def test_priming_a_pathway_clears_derived_structure_caches(monkeypatch):
+    # specs/065 amendment 1: every memo computed from the prefetch-limited
+    # getters is per pathway.
+    import src.reaction_generator as rg
+    import src.logic_network_generator as lng
+    monkeypatch.setattr(rg, "reaction_ids_from_connections", lambda rc: ["R1"])
+    monkeypatch.setattr(rg, "prefetch_entity_data", lambda ids: None)
+    caches = (lng._variant_leafsets_cache, lng._matching_leaves_cache,
+              lng._handoff_leaf_cache, lng._sets_chosen_cache,
+              vk._memo, vk._variants_cache, vk._struct)
+    for c in caches:
+        c["stale"] = None
+    rg.prime_entity_caches(None)
+    assert all("stale" not in c for c in caches)

@@ -787,6 +787,15 @@ def prime_entity_caches(reaction_connections: pd.DataFrame) -> None:
     # would make the network depend on build order (deltasignal specs/065).
     from src.variant_emission import _sig_cache
     _sig_cache.clear()
+    # So are the structure memos built from those getters (specs/065
+    # amendment 1); caches filled by their own direct query hold database
+    # truth and are kept.
+    import src.logic_network_generator as lng
+    for c in (lng._variant_leafsets_cache, lng._matching_leaves_cache,
+              lng._handoff_leaf_cache, lng._sets_chosen_cache):
+        c.clear()
+    from src import variant_keys
+    variant_keys.reset_caches()
     clear_prefetch_cache()
     reaction_ids = reaction_ids_from_connections(reaction_connections)
     if not reaction_ids:
