@@ -782,6 +782,11 @@ def prime_entity_caches(reaction_connections: pd.DataFrame) -> None:
     reference_entity_dict.clear()
     _complex_contains_set_cache.clear()
     _direct_component_stoichiometry.clear()
+    # Set-member signatures are read from these caches, so they are
+    # per-pathway too; a signature kept from an earlier pathway's prefetch
+    # would make the network depend on build order (deltasignal specs/065).
+    from src.variant_emission import _sig_cache
+    _sig_cache.clear()
     clear_prefetch_cache()
     reaction_ids = reaction_ids_from_connections(reaction_connections)
     if not reaction_ids:

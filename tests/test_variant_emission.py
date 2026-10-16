@@ -240,3 +240,14 @@ def test_signature_cache_is_keyed_on_the_flag(monkeypatch):
     monkeypatch.setenv("LNG_BIND_STOICH", "1")
     assert ve._reference_signature(PD) == ("MAPK1", "MAPK1")
 
+
+
+def test_priming_a_pathway_clears_set_member_signatures(monkeypatch):
+    # deltasignal specs/065: a signature cached from an earlier pathway's
+    # prefetch must not survive into the next pathway of a catalog build.
+    import src.reaction_generator as rg
+    monkeypatch.setattr(rg, "reaction_ids_from_connections", lambda rc: ["R1"])
+    monkeypatch.setattr(rg, "prefetch_entity_data", lambda ids: None)
+    ve._sig_cache[("M1", True)] = ("stale",)
+    rg.prime_entity_caches(None)
+    assert ve._sig_cache == {}
