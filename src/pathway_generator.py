@@ -50,6 +50,7 @@ _FINGERPRINTED_ENV = (
     "LNG_PATHOGEN_PROTEIN",
     "LNG_VARIANT_NODES",
     "LNG_DIAGRAM_SET_MEMBER",
+    "LNG_SPECIALIZATION_BRIDGE",
     # Of these three, only LNG_EMIT_ONE_SIDED is a genuine cache gap: it is
     # read in reaction_generator.decompose_by_reactions, so it changes
     # best_matches.csv / decomposed_uid_mapping.csv, which ARE cached.
@@ -448,6 +449,27 @@ def generate_pathway_file(
             # every reaction of the pathway, from the full fetched table
             pathway_reaction_ids=reaction_ids_from_connections(reaction_connections),
         )
+
+        # deltasignal specs/067: join a specific complex to the generic one it
+        # instantiates, copy to copy, where the curators order the two
+        # reactions by precedingEvent. Default off.
+        from src.specialization import (
+            apply_specialization_bridges, specialization_bridge_mode, specialization_bridges,
+        )
+        spec_mode = specialization_bridge_mode()
+        if spec_mode != "off":
+            from src.logic_network_generator import node_rows
+            rows = node_rows(result.logic_network, result.reaction_id_map, result.uuid_mapping)
+            spec_pairs, spec_edges = specialization_bridges(pathway_id, rows)
+            n_before = len(result.logic_network)
+            net, spec_mask = apply_specialization_bridges(
+                result.logic_network,
+                list(result.boundary_mask) or [False] * n_before,
+                spec_edges, spec_mode)
+            result = result._replace(logic_network=net, boundary_mask=spec_mask)
+            logger.info(
+                f"Specialization bridges ({spec_mode}): {len(spec_pairs)} linked pairs, "
+                f"{len(spec_edges)} copy edges; network {n_before} -> {len(net)} edges")
 
         # Save logic network (main output file users need)
         # logic_network.csv holds what curators curated. The edges the
