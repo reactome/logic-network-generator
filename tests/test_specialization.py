@@ -169,3 +169,30 @@ def test_flag_is_registered_and_fingerprinted():
     import src.pathway_generator as pg
     assert "LNG_SPECIALIZATION_BRIDGE" in OTHER_FLAGS
     assert "LNG_SPECIALIZATION_BRIDGE" in pg._FINGERPRINTED_ENV
+
+
+def _result():
+    from src.logic_network_generator import PathwayResult
+    return PathwayResult(network(), {}, pd.DataFrame(), pd.DataFrame({"uid": [], "reactome_id": []}),
+                         {}, boundary_mask=list(MASK))
+
+
+def test_pipeline_step_off_returns_the_result_untouched(monkeypatch):
+    import src.pathway_generator as pg
+    monkeypatch.setenv("LNG_SPECIALIZATION_BRIDGE", "off")
+    monkeypatch.setattr(pg, "specialization_bridges",
+                        lambda *a: pytest.fail("off must not read Neo4j"))
+    r = _result()
+    assert pg.apply_specialization_step(r, "R-HSA-1") is r
+
+
+def test_pipeline_step_applies_the_bridges(monkeypatch):
+    import src.pathway_generator as pg
+    import src.logic_network_generator as lng
+    monkeypatch.delenv("LNG_SPECIALIZATION_BRIDGE", raising=False)      # default add
+    monkeypatch.setattr(lng, "node_rows", lambda *a: rows())
+    monkeypatch.setattr(pg, "specialization_bridges",
+                        lambda pid, node_rows: ([("S", "G")], sp.copy_bridges([("S", "G")], node_rows)))
+    out = pg.apply_specialization_step(_result(), "R-HSA-1")
+    assert len(out.logic_network) == 6 and out.boundary_mask == MASK + [False]
+    assert out.logic_network.iloc[-1].edge_type == "specialization"

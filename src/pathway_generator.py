@@ -24,6 +24,9 @@ from src.logic_network_generator import (
     export_uuid_to_reactome_mapping,
 )
 from src.neo4j_connector import get_reaction_connections, get_reactome_release
+from src.specialization import (
+    apply_specialization_bridges, specialization_bridge_mode, specialization_bridges,
+)
 from src.reaction_generator import CAPPED_IDS, get_decomposed_uid_mapping, prime_entity_caches
 
 # Env vars that change what a generated network contains. Anything listed here
@@ -229,6 +232,24 @@ BUNDLE_FILES = (
     "drugs.csv", "pathogens.csv",
     "pools.csv", "pool_transitions.csv", "pool_carriers.csv", "carrier_loops.csv",
 )
+
+
+def apply_specialization_step(result, pathway_id: str):
+    """deltasignal specs/067 (LNG_SPECIALIZATION_BRIDGE): the network with
+    specialization bridges added, read from Neo4j. A module-level step so a
+    test without Neo4j can stub it like the exports."""
+    mode = specialization_bridge_mode()
+    if mode == "off":
+        return result
+    from src.logic_network_generator import node_rows
+    rows = node_rows(result.logic_network, result.reaction_id_map, result.uuid_mapping)
+    pairs, edges = specialization_bridges(pathway_id, rows)
+    n_before = len(result.logic_network)
+    net, mask = apply_specialization_bridges(
+        result.logic_network, list(result.boundary_mask) or [False] * n_before, edges, mode)
+    logger.info(f"Specialization bridges ({mode}): {len(pairs)} linked pairs, "
+                f"{len(edges)} copy edges; network {n_before} -> {len(net)} edges")
+    return result._replace(logic_network=net, boundary_mask=mask)
 
 
 def generate_pathway_file(
@@ -453,23 +474,7 @@ def generate_pathway_file(
         # deltasignal specs/067: join a specific complex to the generic one it
         # instantiates, copy to copy, where the curators order the two
         # reactions by precedingEvent. Default `add` since specs/067 was adopted.
-        from src.specialization import (
-            apply_specialization_bridges, specialization_bridge_mode, specialization_bridges,
-        )
-        spec_mode = specialization_bridge_mode()
-        if spec_mode != "off":
-            from src.logic_network_generator import node_rows
-            rows = node_rows(result.logic_network, result.reaction_id_map, result.uuid_mapping)
-            spec_pairs, spec_edges = specialization_bridges(pathway_id, rows)
-            n_before = len(result.logic_network)
-            net, spec_mask = apply_specialization_bridges(
-                result.logic_network,
-                list(result.boundary_mask) or [False] * n_before,
-                spec_edges, spec_mode)
-            result = result._replace(logic_network=net, boundary_mask=spec_mask)
-            logger.info(
-                f"Specialization bridges ({spec_mode}): {len(spec_pairs)} linked pairs, "
-                f"{len(spec_edges)} copy edges; network {n_before} -> {len(net)} edges")
+        result = apply_specialization_step(result, pathway_id)
 
         # Save logic network (main output file users need)
         # logic_network.csv holds what curators curated. The edges the
