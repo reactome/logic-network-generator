@@ -666,13 +666,16 @@ def test_unknown_pool_active_via_is_a_startup_error(monkeypatch):
 
 # --- carrier loops (deltasignal specs/049) ------------------------------------------------------------------
 
-def enzyme_loop(synthesis=False):
+def enzyme_loop(synthesis=False, specialization=False):
     edges = [e("e", "v1", "input"), e("v1", "se", "output"), e("se", "v3", "input"), e("v3", "e", "output")]
     rxs = ["v1", "v3"]
     if synthesis:   # the enzyme is also made outside its loop
         edges.append(e("v5", "e", "output"))
         rxs.append("v5")
-    net, rmap, umap = network(edges, rxs, {"e": "R-HSA-E", "se": "R-HSA-SE"})
+    if specialization:   # a specific copy of the same species, made outside the loop (specs/067)
+        edges += [e("v5", "p", "output"), e("p", "e", "specialization")]
+        rxs.append("v5")
+    net, rmap, umap = network(edges, rxs, {"e": "R-HSA-E", "se": "R-HSA-SE", "p": "R-HSA-P"})
     profiles = {"R-HSA-E": prof([KIN]), "R-HSA-SE": prof([KIN, SUB], slots=2, comps=2)}
     steps = [("R-HSA-v1", KIN, "R-HSA-E", "R-HSA-SE", True), ("R-HSA-v3", KIN, "R-HSA-SE", "R-HSA-E", False)]
     return net, rmap, umap, profiles, steps
@@ -693,6 +696,30 @@ def test_a_fed_carrier_loop_lists_only_the_in_edges_from_inside_the_loop():
     m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
     assert loops == [("loop1", KIN, False, U["e"], "R-HSA-E", U["v3"])]    # synthesis (v5) is supply, kept
     assert st["carrier_loops_closed"] == 0
+
+
+@pytest.mark.parametrize("mode, closed", [(None, True), ("off", False), ("twin", True)])
+def test_a_specialization_bridge_opens_a_carrier_loop_only_when_not_a_twin(monkeypatch, mode, closed):
+    # deltasignal specs/068: under LNG_SPECIALIZATION_CLOSED=twin the bridge is
+    # the same species under another id, like closed_twin's root-copy supply
+    if mode is None:
+        monkeypatch.delenv("LNG_SPECIALIZATION_CLOSED", raising=False)
+    else:
+        monkeypatch.setenv("LNG_SPECIALIZATION_CLOSED", mode)
+    net, rmap, umap, profiles, steps = enzyme_loop(specialization=True)
+    st, loops = {}, []
+    m.find_pools(net, rmap, umap, steps, profiles, set(), {}, st, carrier_loops=loops)
+    assert loops == [("loop1", KIN, closed, U["e"], "R-HSA-E", U["v3"])]   # the bridge is never a listed loop edge
+    assert st["carrier_loops_closed"] == int(closed)
+
+
+def test_specialization_closed_mode_is_validated(monkeypatch):
+    monkeypatch.setenv("LNG_SPECIALIZATION_CLOSED", "on")
+    with pytest.raises(ValueError):
+        m._reject_removed_env()
+    import src.pathway_generator as pg
+    from src.env_flags import OTHER_FLAGS
+    assert "LNG_SPECIALIZATION_CLOSED" in OTHER_FLAGS and "LNG_SPECIALIZATION_CLOSED" in pg._FINGERPRINTED_ENV
 
 
 def test_a_carrier_loop_free_form_that_a_pool_manages_is_not_listed():

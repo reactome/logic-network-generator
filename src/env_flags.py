@@ -44,6 +44,7 @@ OTHER_FLAGS = frozenset({
     "LNG_POOL_REGEN",             # pool_regen()
     "LNG_PYTHON",                 # catalog.sh: the interpreter, not a switch
     "LNG_SPECIALIZATION_BRIDGE",  # specialization_bridge_mode() (deltasignal specs/067)
+    "LNG_SPECIALIZATION_CLOSED",  # specialization_closed_mode() (deltasignal specs/068)
 })
 
 
