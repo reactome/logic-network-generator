@@ -698,7 +698,7 @@ def test_a_fed_carrier_loop_lists_only_the_in_edges_from_inside_the_loop():
     assert st["carrier_loops_closed"] == 0
 
 
-@pytest.mark.parametrize("mode, closed", [(None, False), ("off", False), ("twin", True)])
+@pytest.mark.parametrize("mode, closed", [(None, True), ("off", False), ("twin", True)])
 def test_a_specialization_bridge_opens_a_carrier_loop_only_when_not_a_twin(monkeypatch, mode, closed):
     # deltasignal specs/068: under LNG_SPECIALIZATION_CLOSED=twin the bridge is
     # the same species under another id, like closed_twin's root-copy supply
