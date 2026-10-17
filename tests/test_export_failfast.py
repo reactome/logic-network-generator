@@ -41,6 +41,9 @@ def mocked(monkeypatch):
     monkeypatch.setattr(pg, "create_pathway_logic_network", lambda *a, **k: PathwayResult(
         net, {"x": "R-HSA-2"}, pd.DataFrame(), pd.DataFrame({"uid": [], "reactome_id": []}), {}))
 
+    # deltasignal specs/067: reads Neo4j; stubbed like the exports.
+    monkeypatch.setattr(pg, "apply_specialization_step", lambda result, pid: result)
+
     def writes(*a, **k):
         for p in (x for x in a if isinstance(x, str) and x.endswith(".csv")):
             pathlib.Path(p).write_text("x\n")
