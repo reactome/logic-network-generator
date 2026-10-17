@@ -27,6 +27,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Mapping, Sequence, Set, Tuple
 
 _MODES = ("off", "add", "replace")
+_CLOSED_MODES = ("off", "twin")
 EDGE_TYPE = "specialization"
 _MAX_SLOTS = 12
 
@@ -37,6 +38,19 @@ def specialization_bridge_mode() -> str:
     value = os.environ.get("LNG_SPECIALIZATION_BRIDGE", "add")
     if value not in _MODES:
         raise ValueError(f"LNG_SPECIALIZATION_BRIDGE must be one of {_MODES}, got {value!r}")
+    return value
+
+
+def specialization_closed_mode() -> str:
+    """LNG_SPECIALIZATION_CLOSED (deltasignal specs/068): ``off`` (default) |
+    ``twin``. Under ``twin`` the carrier-loop closedness test ignores
+    ``specialization`` in-edges: the bridge joins two copies of one species,
+    as ``closed_twin``'s root-copy supply does, so it does not open the loop
+    (PLCG1's release of the generic PDGF receptor, R-HSA-186811). The edges
+    stay in the network; only ``carrier_loops.csv`` changes."""
+    value = os.environ.get("LNG_SPECIALIZATION_CLOSED", "off")
+    if value not in _CLOSED_MODES:
+        raise ValueError(f"LNG_SPECIALIZATION_CLOSED must be one of {_CLOSED_MODES}, got {value!r}")
     return value
 
 

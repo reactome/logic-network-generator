@@ -54,6 +54,7 @@ _FINGERPRINTED_ENV = (
     "LNG_VARIANT_NODES",
     "LNG_DIAGRAM_SET_MEMBER",
     "LNG_SPECIALIZATION_BRIDGE",
+    "LNG_SPECIALIZATION_CLOSED",
     # Of these three, only LNG_EMIT_ONE_SIDED is a genuine cache gap: it is
     # read in reaction_generator.decompose_by_reactions, so it changes
     # best_matches.csv / decomposed_uid_mapping.csv, which ARE cached.

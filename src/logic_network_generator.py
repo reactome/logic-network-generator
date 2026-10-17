@@ -513,8 +513,9 @@ def _reject_removed_env() -> None:
     validate_env(removed=_REMOVED_ENV)
     pool_active_via()
     pool_regen()
-    from src.specialization import specialization_bridge_mode
+    from src.specialization import specialization_bridge_mode, specialization_closed_mode
     specialization_bridge_mode()
+    specialization_closed_mode()
 
 
 _POOL_ACTIVE_VIA = ("direct", "made_from")
@@ -4116,6 +4117,10 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
     join_members = env_flag("LNG_POOL_JOIN_MEMBERS")
     regen_by_protein = pool_regen() == "protein"
     active_via = pool_active_via()
+    # deltasignal specs/068: a specialization bridge is the same species under
+    # another id, so under `twin` it is not supply that opens a carrier loop
+    from src.specialization import EDGE_TYPE as SPECIALIZATION_EDGE, specialization_closed_mode
+    spec_twin = specialization_closed_mode() == "twin"
     has_st = "stoichiometry" in pathway_logic_network.columns
     for _, e in pathway_logic_network.iterrows():
         s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
@@ -4144,7 +4149,8 @@ def find_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFram
             split_to.setdefault(s, set()).add(t)
         if et == "input" and t in vr:
             feeds.setdefault(s, set()).add(t)
-        if et not in ("input", "catalyst", "regulator", "depletion") and t not in vr:
+        if et not in ("input", "catalyst", "regulator", "depletion") and t not in vr \
+                and not (et == SPECIALIZATION_EDGE and spec_twin):
             # every positive in-edge into an entity counts as supply: output,
             # variant_split/variant_pool/set_member, and the flagged derived
             # classes (diagram_bridge, composition, handoff) when present
