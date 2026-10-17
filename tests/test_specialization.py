@@ -156,7 +156,7 @@ def test_existing_bridge_is_not_duplicated():
 
 def test_mode_is_validated(monkeypatch):
     monkeypatch.delenv("LNG_SPECIALIZATION_BRIDGE", raising=False)
-    assert sp.specialization_bridge_mode() == "off"
+    assert sp.specialization_bridge_mode() == "add"     # default since specs/067 adoption
     monkeypatch.setenv("LNG_SPECIALIZATION_BRIDGE", "on")
     with pytest.raises(ValueError):
         sp.specialization_bridge_mode()

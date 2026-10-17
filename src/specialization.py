@@ -15,9 +15,10 @@ and the copy of the generic one with the same member leaves are the same
 species. This module finds the pairs; ``apply_specialization_bridges`` joins
 the copies.
 
-Modes: ``off`` (default), ``add`` (emit the bridge), ``replace`` (emit it and
-drop the boundary assembly/composition in-edges of each bridged target copy:
-the boundary decomposition stood in for a producer the pathway lacked).
+Modes: ``add`` (default since deltasignal specs/067 was adopted, 2026-10-17:
+curator held-out +59, experimental 0; emit the bridge), ``replace`` (emit it
+and drop the boundary assembly/composition in-edges of each bridged target
+copy; measured, failed the gate: DNA Damage Bypass -14), ``off``.
 """
 from __future__ import annotations
 
@@ -31,9 +32,9 @@ _MAX_SLOTS = 12
 
 
 def specialization_bridge_mode() -> str:
-    """LNG_SPECIALIZATION_BRIDGE: ``off`` (default) | ``add`` | ``replace``.
-    Any other value is an error at startup."""
-    value = os.environ.get("LNG_SPECIALIZATION_BRIDGE", "off")
+    """LNG_SPECIALIZATION_BRIDGE: ``add`` (default, deltasignal specs/067) |
+    ``replace`` | ``off``. Any other value is an error at startup."""
+    value = os.environ.get("LNG_SPECIALIZATION_BRIDGE", "add")
     if value not in _MODES:
         raise ValueError(f"LNG_SPECIALIZATION_BRIDGE must be one of {_MODES}, got {value!r}")
     return value

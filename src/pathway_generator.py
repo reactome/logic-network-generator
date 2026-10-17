@@ -452,7 +452,7 @@ def generate_pathway_file(
 
         # deltasignal specs/067: join a specific complex to the generic one it
         # instantiates, copy to copy, where the curators order the two
-        # reactions by precedingEvent. Default off.
+        # reactions by precedingEvent. Default `add` since specs/067 was adopted.
         from src.specialization import (
             apply_specialization_bridges, specialization_bridge_mode, specialization_bridges,
         )
