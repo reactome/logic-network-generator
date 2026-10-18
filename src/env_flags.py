@@ -23,6 +23,7 @@ BOOL_FLAGS = {
     "LNG_DIAGRAM_BRIDGE": False,
     "LNG_DIAGRAM_CONNECTIVITY": True,
     "LNG_DIAGRAM_SET_MEMBER": False,
+    "LNG_DIAGRAM_SUBPATHWAYS": False,  # deltasignal specs/070
     "LNG_EMIT_ONE_SIDED": True,
     "LNG_HANDOFF_EDGES": False,
     "LNG_PATHOGEN_PROTEIN": True,   # default since deltasignal specs/048 amendment 2 (arm pathp: exp +7, held-out +1, 0 broken)

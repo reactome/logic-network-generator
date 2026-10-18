@@ -71,30 +71,25 @@ def _pathway_reaction_stids(pathway_id: str) -> Set[str]:
     return set(rows or [])
 
 
-def diagram_shared_product_pairs(pathway_id: str) -> Set[Tuple[str, str]]:
-    """(producer_stId, consumer_stId) reaction pairs drawn as connected in the diagram.
+def _subpathway_diagram_stids(pathway_id: str) -> List[str]:
+    """stIds of the pathways under this one that have a diagram of their own.
 
-    A pair is emitted when a producer reaction's OUTPUT glyph is the same glyph a
-    consumer reaction takes as INPUT or CATALYST. Reaction identity is the
-    Reactome stId (mapped from the diagram's numeric reactomeId via the
-    companion ``.graph.json``). The diagram used is the pathway's own, else the
-    nearest diagrammed ancestor; pairs are then **restricted to reactions that
-    belong to this pathway** so an ancestor diagram only contributes the target
-    pathway's internal connectivity. Returns an empty set if no diagram covers it.
+    A top-level diagram draws such a sub-pathway as one box and its reactions
+    only on the sub-pathway's own diagram, so its drawn hand-offs are read
+    from there (deltasignal specs/070).
     """
-    ddir = _diagram_dir()
-    diagram_stid = _covering_diagram_stid(pathway_id)
-    if not diagram_stid:
-        logger.info(f"No diagram (own or ancestor) covers {pathway_id}; skipping diagram connectivity")
-        return set()
-    if diagram_stid != pathway_id:
-        logger.info(f"{pathway_id} has no own diagram; using ancestor diagram {diagram_stid}")
+    from src.neo4j_connector import get_graph
+    rows = get_graph().run(
+        "MATCH (:Pathway {stId:$pid})-[:hasEvent*]->(s:Pathway) "
+        "RETURN collect(DISTINCT s.stId) AS s",
+        pid=pathway_id,
+    ).evaluate()
+    return sorted(s for s in (rows or []) if _has_diagram(s))
 
-    layout = json.loads((ddir / f"{diagram_stid}.json").read_text())
-    graph = json.loads((ddir / f"{diagram_stid}.graph.json").read_text())
-    # Restrict to this pathway's reactions (isolate it within the ancestor diagram).
-    own_reactions = _pathway_reaction_stids(pathway_id)
 
+def _drawn_pairs(layout: dict, graph: dict) -> Set[Tuple[str, str]]:
+    """(producer_stId, consumer_stId) for every glyph one reaction outputs and
+    another takes as input or catalyst, on one diagram."""
     # reaction dbId -> stId (graph.json edges carry both)
     dbid_to_stid = {e["dbId"]: e["stId"] for e in graph.get("edges", []) if e.get("stId")}
 
@@ -120,13 +115,49 @@ def diagram_shared_product_pairs(pathway_id: str) -> Set[Tuple[str, str]]:
                     continue
                 p_st = dbid_to_stid.get(producer)
                 c_st = dbid_to_stid.get(consumer)
-                if not p_st or not c_st:
-                    continue
-                # Keep only pairs whose BOTH reactions belong to this pathway
-                # (so an ancestor diagram contributes only this pathway's flow).
-                if own_reactions and (p_st not in own_reactions or c_st not in own_reactions):
-                    continue
-                pairs.add((p_st, c_st))
+                if p_st and c_st:
+                    pairs.add((p_st, c_st))
+    return pairs
+
+
+def diagram_shared_product_pairs(pathway_id: str) -> Set[Tuple[str, str]]:
+    """(producer_stId, consumer_stId) reaction pairs drawn as connected in the diagram.
+
+    A pair is emitted when a producer reaction's OUTPUT glyph is the same glyph a
+    consumer reaction takes as INPUT or CATALYST. Reaction identity is the
+    Reactome stId (mapped from the diagram's numeric reactomeId via the
+    companion ``.graph.json``). The diagram used is the pathway's own, else the
+    nearest diagrammed ancestor; pairs are then **restricted to reactions that
+    belong to this pathway** so an ancestor diagram only contributes the target
+    pathway's internal connectivity. Returns an empty set if no diagram covers it.
+    """
+    ddir = _diagram_dir()
+    diagram_stid = _covering_diagram_stid(pathway_id)
+    if not diagram_stid:
+        logger.info(f"No diagram (own or ancestor) covers {pathway_id}; skipping diagram connectivity")
+        return set()
+    if diagram_stid != pathway_id:
+        logger.info(f"{pathway_id} has no own diagram; using ancestor diagram {diagram_stid}")
+
+    # Restrict to this pathway's reactions (isolate it within the ancestor diagram).
+    own_reactions = _pathway_reaction_stids(pathway_id)
+
+    # LNG_DIAGRAM_SUBPATHWAYS: also every sub-pathway's own diagram, where the
+    # covering diagram draws that sub-pathway as a box (deltasignal specs/070).
+    diagrams = [diagram_stid]
+    if env_flag("LNG_DIAGRAM_SUBPATHWAYS"):
+        diagrams += [s for s in _subpathway_diagram_stids(pathway_id) if s != diagram_stid]
+
+    pairs: Set[Tuple[str, str]] = set()
+    for stid in diagrams:
+        layout = json.loads((ddir / f"{stid}.json").read_text())
+        graph = json.loads((ddir / f"{stid}.graph.json").read_text())
+        for p_st, c_st in _drawn_pairs(layout, graph):
+            # Keep only pairs whose BOTH reactions belong to this pathway
+            # (so an ancestor diagram contributes only this pathway's flow).
+            if own_reactions and (p_st not in own_reactions or c_st not in own_reactions):
+                continue
+            pairs.add((p_st, c_st))
     return pairs
 
 

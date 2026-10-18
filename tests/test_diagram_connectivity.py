@@ -75,3 +75,25 @@ def test_augment_disabled_by_env(diagram_dir, monkeypatch):
                        "following_reaction_id": ["R-HSA-2"],
                        "event_status": ["x"]})
     assert dc.augment_reaction_connections("R-HSA-TEST", rc) is rc
+
+
+def test_subpathway_diagram_read_only_under_flag(diagram_dir, monkeypatch):
+    """A sub-pathway drawn as a box on the covering diagram has its hand-offs on
+    its own diagram; LNG_DIAGRAM_SUBPATHWAYS reads them (deltasignal specs/070)."""
+    (diagram_dir / "R-HSA-TOP.json").write_text(json.dumps({"nodes": [], "edges": []}))
+    (diagram_dir / "R-HSA-TOP.graph.json").write_text(json.dumps({"edges": []}))
+    _write_diagram(diagram_dir, "R-HSA-SUB")
+    monkeypatch.setattr(dc, "_subpathway_diagram_stids", lambda pid: ["R-HSA-SUB"])
+    assert dc.diagram_shared_product_pairs("R-HSA-TOP") == set()
+    monkeypatch.setenv("LNG_DIAGRAM_SUBPATHWAYS", "1")
+    assert dc.diagram_shared_product_pairs("R-HSA-TOP") == {("R-HSA-100", "R-HSA-200")}
+
+
+def test_subpathway_pairs_still_restricted_to_own_reactions(diagram_dir, monkeypatch):
+    (diagram_dir / "R-HSA-TOP.json").write_text(json.dumps({"nodes": [], "edges": []}))
+    (diagram_dir / "R-HSA-TOP.graph.json").write_text(json.dumps({"edges": []}))
+    _write_diagram(diagram_dir, "R-HSA-SUB")
+    monkeypatch.setattr(dc, "_subpathway_diagram_stids", lambda pid: ["R-HSA-SUB"])
+    monkeypatch.setattr(dc, "_pathway_reaction_stids", lambda pid: {"R-HSA-100"})
+    monkeypatch.setenv("LNG_DIAGRAM_SUBPATHWAYS", "1")
+    assert dc.diagram_shared_product_pairs("R-HSA-TOP") == set()
