@@ -622,6 +622,7 @@ def generate_pathway_file(
                 str(pathway_output_dir / "pool_transitions.csv"),
                 str(pathway_output_dir / "pool_carriers.csv"),
                 str(pathway_output_dir / "carrier_loops.csv"),
+                boundary_file=str(pathway_output_dir / "boundary_edges.csv"),
             )
         except Exception as e:
             logger.error(f"Failed to write pools.csv: {e}", exc_info=True)

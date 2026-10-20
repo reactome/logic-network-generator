@@ -72,6 +72,7 @@ what NOT to touch. Overriding is for A/B benchmarking only.
 | `LNG_SET_POOL` | `1` | one OR node per set-valued catalyst or regulator (deltasignal specs/033) |
 | `LNG_POOL_ACTIVE_VIA` | `made_from` | how a pool's active form is found (deltasignal specs/039) |
 | `LNG_CAP_POOLS` | `1` | past the variant cap, one OR pool per set instead of an all-required bundle (deltasignal specs/045) |
+| `LNG_RECYCLE_POOLS` | `0` | write a modified protein's return to the complex it starts in as a pool with several resting states, plus a structural `recycle` edge from the free copy to the starting copy in `boundary_edges.csv` (p130/p107 in Mitotic G1; deltasignal specs/081) |
 | `LNG_CATALYST_BUNDLE` | `0` | legacy; subsumed by `LNG_COMPLEX_AS_NODE` |
 | `LNG_HANDOFF_EDGES` | `0` | precedingEvent hand-off bridges (net-negative, off) |
 
