@@ -79,6 +79,7 @@ def test_a_two_protein_free_copy_is_not_a_candidate():
     assert m.find_recycle_pools(net, rmap, umap, profiles) == ([], [], [])
 
 
-def test_the_flag_is_off_by_default():
+def test_the_flag_is_on_by_default():
+    # default since deltasignal specs/081 was adopted (Adam, 2026-10-20)
     from src.env_flags import BOOL_FLAGS
-    assert BOOL_FLAGS["LNG_RECYCLE_POOLS"] is False
+    assert BOOL_FLAGS["LNG_RECYCLE_POOLS"] is True
