@@ -4650,7 +4650,7 @@ def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
 
     def route(c: str, p: str, r) -> Optional[List[Tuple[str, str, str]]]:
         """Shortest (prev, reaction node, next) route from c to p through R's forms."""
-        prev = {c: None}; frontier = [c]
+        prev: Dict[str, Optional[Tuple[str, str]]] = {c: None}; frontier = [c]
         for _ in range(RECYCLE_MAX_REACTIONS):
             nxt = []
             for x in frontier:
@@ -4660,9 +4660,11 @@ def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
                             continue
                         prev[y] = (x, rx); nxt.append(y)
                         if y == p:
-                            steps = []
-                            while prev[y] is not None:
-                                a, rr = prev[y]; steps.append((a, rr, y)); y = a
+                            steps: List[Tuple[str, str, str]] = []
+                            link = prev[y]
+                            while link is not None:
+                                a, rr = link; steps.append((a, rr, y)); y = a
+                                link = prev[y]
                             return steps[::-1]
             frontier = nxt
         return None
@@ -4688,10 +4690,10 @@ def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
                 mods = [i for i, (_, _, y) in enumerate(st[:-1]) if sig(y, r) != sig(p, r)]
                 if not mods:
                     continue
-                k = mods[0]
-                m_node = st[k][2]
+                km = mods[0]
+                m_node = st[km][2]
                 g = found.setdefault((p, m_node), {"cs": {}, "bs": set(), "r": r})
-                g["cs"][c] = (st, k)
+                g["cs"][c] = (st, km)
                 g["bs"].add(b)
     forms: List[Tuple] = []; transitions: List[Tuple] = []; edges: List[Tuple[str, str]] = []
     n = 0
