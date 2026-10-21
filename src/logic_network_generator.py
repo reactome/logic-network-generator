@@ -4570,9 +4570,176 @@ def r_steps(participants, profiles: Dict[str, Dict[str, Any]], ubiquitin_stids=(
     return out
 
 
+RECYCLE_MAX_REACTIONS = 4   # deltasignal specs/081: longest route from a starting complex back to the free copy
+
+
+def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
+                       uuid_mapping: Dict[str, str], profiles: Dict[str, Dict[str, Any]],
+                       claimed: Optional[Set[str]] = None, stats: Optional[Dict[str, int]] = None):
+    """Recycle pools (deltasignal specs/081): a modified protein's return to the
+    complex it starts in, which Reactome does not curate as a reaction.
+
+    p130 (RBL2) starts in RBL2:E2F4,E2F5:TFDP1,TFDP2, a ROOT complex the boundary
+    expansion builds from its own starting copy of RBL2. Cyclin D:CDK4
+    phosphorylates it out of the complex and PP2A makes free RBL2 again, but that
+    free copy leads nowhere, so the cycle is never closed. A candidate is:
+
+    - P, a node of a single protein (one reference entity R) that a reaction
+      produces (an ``output`` in-edge) and that has no out-edge;
+    - B, another node of the same entity that feeds a complex C by ``assembly``;
+    - a route C -> ... -> P of at most ``RECYCLE_MAX_REACTIONS`` reactions (input to
+      output), through forms that carry R;
+    - on that route a form whose modification signature for R (the pool finder's
+      ``sig``) differs from P's: the protein is modified on the way. A partner
+      released unchanged is a carrier (deltasignal specs/077), not this.
+
+    The pool's states are every C the route reaches back to (all resting, base) and
+    M, the first modified form on the route; route forms between M and P are
+    intermediates. Paths: C -> ... -> M through that C's reaction copies, and
+    M -> ... -> C, whose last step is the reaction that makes P. A candidate any of
+    whose nodes is in ``claimed`` (an existing pool's forms or step copies) is
+    skipped and counted. The edge P -> B (type ``recycle``) closes the cycle for the
+    consumer's component detection; it carries no value there.
+
+    Returns (forms, transitions, recycle_edges) in :func:`find_pools`'s row formats,
+    the edges as ``(source_uuid, target_uuid)``."""
+    from src.variant_keys import variant_parts
+    stats = stats if stats is not None else {}
+    for k in ("recycle_pools", "recycle_states", "recycle_paths", "recycle_edges", "recycle_claimed"):
+        stats[k] = 0
+    claimed = claimed or set()
+    if pathway_logic_network.empty:
+        return [], [], []
+    ent = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
+    vr = {str(u): str(r) for u, r in zip(reaction_id_map["uid"], reaction_id_map["reactome_id"])}
+    inputs_of: Dict[str, Set[str]] = {}     # entity -> reaction nodes it is an input of
+    rin: Dict[str, Set[str]] = {}           # reaction node -> its input entities
+    rout: Dict[str, Set[str]] = {}          # reaction node -> its output entities
+    catalysed: Set[str] = set()
+    produced: Set[str] = set(); has_out: Set[str] = set(); assembly: Dict[str, Set[str]] = {}
+    for _, e in pathway_logic_network.iterrows():
+        s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
+        has_out.add(s)
+        if et == "input" and t in vr:
+            inputs_of.setdefault(s, set()).add(t); rin.setdefault(t, set()).add(s)
+        elif et == "output" and s in vr:
+            rout.setdefault(s, set()).add(t); produced.add(t)
+        elif et == "catalyst" and t in vr:
+            catalysed.add(t)
+        elif et == "assembly":
+            assembly.setdefault(s, set()).add(t)
+
+    def pe_of(u: str) -> str:
+        return variant_parts(ent.get(u, ""))[0]
+
+    def proteins(u: str) -> frozenset:
+        parent, members = variant_parts(ent.get(u, ""))
+        if not members:
+            return frozenset(profiles.get(parent, {}).get("proteins", ()))
+        out = set(profiles.get(parent, {}).get("fixed", ()))
+        for mm in members:
+            out |= set(profiles.get(mm, {}).get("proteins", ()))
+        return frozenset(out)
+
+    def sig(u: str, r):
+        return profiles.get(pe_of(u), {}).get("sig", {}).get(r, frozenset())
+
+    by_pe: Dict[str, List[str]] = {}
+    for u in sorted(ent):
+        by_pe.setdefault(pe_of(u), []).append(u)
+
+    def route(c: str, p: str, r) -> Optional[List[Tuple[str, str, str]]]:
+        """Shortest (prev, reaction node, next) route from c to p through R's forms."""
+        prev: Dict[str, Optional[Tuple[str, str]]] = {c: None}; frontier = [c]
+        for _ in range(RECYCLE_MAX_REACTIONS):
+            nxt = []
+            for x in frontier:
+                for rx in sorted(inputs_of.get(x, ())):
+                    for y in sorted(rout.get(rx, ())):
+                        if y in prev or r not in proteins(y):
+                            continue
+                        prev[y] = (x, rx); nxt.append(y)
+                        if y == p:
+                            steps: List[Tuple[str, str, str]] = []
+                            link = prev[y]
+                            while link is not None:
+                                a, rr = link; steps.append((a, rr, y)); y = a
+                                link = prev[y]
+                            return steps[::-1]
+            frontier = nxt
+        return None
+
+    def copies(a: str, b: str, rx: str) -> List[str]:
+        return sorted(u for u in vr if vr[u] == vr[rx] and a in rin.get(u, ()) and b in rout.get(u, ()))
+
+    found: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for p in sorted(produced):
+        if p in has_out or p in vr:
+            continue
+        rs = proteins(p)
+        if len(rs) != 1:
+            continue
+        r = next(iter(rs))
+        for b in by_pe.get(pe_of(p), []):
+            if b == p or b not in assembly:
+                continue
+            for c in sorted(assembly[b]):
+                st = route(c, p, r)
+                if not st or len(st) < 2:
+                    continue
+                mods = [i for i, (_, _, y) in enumerate(st[:-1]) if sig(y, r) != sig(p, r)]
+                if not mods:
+                    continue
+                km = mods[0]
+                m_node = st[km][2]
+                g = found.setdefault((p, m_node), {"cs": {}, "bs": set(), "r": r})
+                g["cs"][c] = (st, km)
+                g["bs"].add(b)
+    forms: List[Tuple] = []; transitions: List[Tuple] = []; edges: List[Tuple[str, str]] = []
+    n = 0
+    for (p, m_node), g in sorted(found.items()):
+        nodes = set(g["cs"]) | {m_node}
+        rows = []
+        for c, (st, k) in sorted(g["cs"].items()):
+            fwd = st[:k + 1]
+            back = st[k + 1:]
+            nodes |= {y for _, _, y in back[:-1]}
+            fwd_steps = [(a, y, copies(a, y, rx)) for a, rx, y in fwd]
+            back_steps = [(a, y, copies(a, y, rx)) for a, rx, y in back]
+            a_last, _, _ = back[-1]
+            back_steps[-1] = (a_last, c, back_steps[-1][2])        # the return lands in C
+            rows.append((c, fwd_steps, back_steps, [rx for _, rx, _ in st]))
+        step_nodes = {u for _, fs, bs, _ in rows for _, _, cs in fs + bs for u in cs}
+        if (nodes | step_nodes) & claimed or any(not cs for _, fs, bs, _ in rows for _, _, cs in fs + bs):
+            stats["recycle_claimed"] += 1
+            continue
+        n += 1
+        pid = f"recycle{n}"
+        for c in sorted(g["cs"]):
+            forms.append((pid, c, ent.get(c, ""), "state", True))
+        forms.append((pid, m_node, ent.get(m_node, ""), "state", False))
+        inter = sorted(nodes - set(g["cs"]) - {m_node})
+        for u in inter:
+            forms.append((pid, u, ent.get(u, ""), "intermediate", False))
+        for i, (c, fs, bs, _) in enumerate(rows, 1):
+            for tag, steps in (("f", fs), ("r", bs)):
+                enz = any(u in catalysed for _, _, cs in steps for u in cs)
+                for si, (a, b, cs) in enumerate(steps, 1):
+                    for u in cs:
+                        transitions.append((pid, f"{pid}_{tag}{i}", si, a, b, u, vr[u], enz))
+                stats["recycle_paths"] += 1
+        for b in sorted(g["bs"]):
+            edges.append((p, b))
+        stats["recycle_pools"] += 1
+        stats["recycle_states"] += len(g["cs"]) + 1
+    stats["recycle_edges"] = len(edges)
+    return forms, transitions, edges
+
+
 def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
                  uuid_mapping: Dict[str, str], pools_file: str, transitions_file: str,
-                 carriers_file: str, carrier_loops_file: Optional[str] = None) -> None:
+                 carriers_file: str, carrier_loops_file: Optional[str] = None,
+                 boundary_file: Optional[str] = None) -> None:
     """Write pools.csv, pool_transitions.csv and pool_carriers.csv (deltasignal
     specs/039 amendment 2): each protein's modification-cycle pool, for a
     consumer that solves it at steady state (pi = pi P) instead of multiplying
@@ -4599,6 +4766,24 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     loops: List[Tuple] = []
     forms, transitions, carriers = find_pools(pathway_logic_network, reaction_id_map, uuid_mapping, steps,
                                               profiles, donors, set_members, stats, carrier_loops=loops)
+    if env_flag("LNG_RECYCLE_POOLS"):
+        # deltasignal specs/081: after the ordinary pools, which keep their nodes
+        claimed = {f[1] for f in forms} | {t[5] for t in transitions}
+        rstats: Dict[str, int] = {}
+        rf, rt, redges = find_recycle_pools(pathway_logic_network, reaction_id_map, uuid_mapping, profiles,
+                                            claimed, rstats)
+        forms = list(forms) + rf
+        transitions = list(transitions) + rt
+        if redges:
+            if boundary_file is None:
+                raise ValueError("LNG_RECYCLE_POOLS found recycle edges but no boundary file to write them to")
+            cols = list(pd.read_csv(boundary_file, nrows=0).columns)
+            add = pd.DataFrame([{"source_id": a, "target_id": b, "pos_neg": "pos", "and_or": "or",
+                                 "edge_type": "recycle", "stoichiometry": 1} for a, b in redges])
+            add.reindex(columns=cols).to_csv(boundary_file, mode="a", header=False, index=False)
+        logger.info(f"Recycle pools (specs/081): {rstats['recycle_pools']} pools, {rstats['recycle_states']} states, "
+                    f"{rstats['recycle_paths']} paths, {rstats['recycle_edges']} recycle edges, "
+                    f"{rstats['recycle_claimed']} skipped (nodes claimed by a pool)")
     pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "role", "is_base"]).to_csv(pools_file, index=False)
     pd.DataFrame(transitions, columns=["pool_id", "path_id", "step", "source_uuid", "target_uuid", "reaction_uuid",
                                        "reaction_stid", "enzyme_driven"]).to_csv(transitions_file, index=False)

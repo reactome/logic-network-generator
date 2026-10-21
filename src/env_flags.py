@@ -28,6 +28,7 @@ BOOL_FLAGS = {
     "LNG_PATHOGEN_PROTEIN": True,   # default since deltasignal specs/048 amendment 2 (arm pathp: exp +7, held-out +1, 0 broken)
     "LNG_POOL_JOIN_MEMBERS": False,   # deltasignal specs/048 lever B1
     "LNG_POOL_SHARED": False,         # deltasignal specs/049
+    "LNG_RECYCLE_POOLS": True,        # default since deltasignal specs/081 (tuning +70/0, experimental +8, held-out 0)
     "LNG_SET_EXPAND": True,
     "LNG_SET_MEMBERS_OR": False,
     "LNG_SET_POOL": True,
