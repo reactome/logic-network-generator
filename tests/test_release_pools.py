@@ -73,3 +73,26 @@ def test_a_candidate_on_a_claimed_node_is_skipped_and_counted():
 def test_the_flag_is_off_by_default():
     from src.env_flags import BOOL_FLAGS
     assert BOOL_FLAGS["LNG_RELEASE_POOLS"] is False
+
+
+def test_every_variant_chain_is_in_the_pool():
+    # amendment 1: a second variant of the complex (dc2 -> c1b -> c2b -> c3b) also releases p
+    net, rmap, umap, profiles = bcat()
+    extra = ["dc2", "w1", "c1b", "w2", "c2b", "w3", "c3b", "w4"]
+    for i, k in enumerate(extra, 100):
+        U[k] = f"00000000-0000-0000-0000-{i:012d}"
+    rows = [e("s", "w1", "input"), e("dc2", "w1", "input"), e("w1", "c1b", "output"),
+            e("c1b", "w2", "input"), e("kin", "w2", "catalyst"), e("w2", "c2b", "output"),
+            e("c2b", "w3", "input"), e("pp", "w3", "catalyst"), e("w3", "c3b", "output"),
+            e("c3b", "w4", "input"), e("w4", "p", "output")]
+    net = pd.concat([net, pd.DataFrame(rows)], ignore_index=True)
+    rmap = pd.concat([rmap, pd.DataFrame({"uid": [U[k] for k in ("w1", "w2", "w3", "w4")],
+                                          "reactome_id": ["R-HSA-V1", "R-HSA-V2", "R-HSA-V3", "R-HSA-V4"]})],
+                     ignore_index=True)
+    umap = dict(umap); umap.update({U["dc2"]: "R-HSA-DC", U["c1b"]: "R-HSA-C1", U["c2b"]: "R-HSA-C2", U["c3b"]: "R-HSA-C3"})
+    st = {}
+    forms, trans, carriers, edges = m.find_release_pools(net, rmap, umap, profiles, stats=st)
+    assert sorted(u for _, u, _, role, base in forms if base) == sorted([U["c3"], U["c3b"]])
+    assert sorted(c[2] for c in carriers) == sorted([U["v4"], U["w4"]])
+    assert {t[1] for t in trans} == {"release1_f1", "release1_r1", "release1_f2", "release1_r2"}
+    assert st["release_pools"] == 1 and st["release_paths"] == 4

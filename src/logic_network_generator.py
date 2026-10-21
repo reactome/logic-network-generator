@@ -4758,10 +4758,11 @@ def find_release_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
     - on that route a form whose modification signature for R differs from S's (a partner
       released unchanged is a carrier, deltasignal specs/077, and is excluded).
 
-    The pool's states are M, the form the release consumes (the base: at rest the protein
-    is mostly bound), and S; the forms between are intermediates. Paths: S -> ... -> M
-    through the route's reaction copies, and M -> S through the release. P is the pool's
-    carrier, its release steps the release copies, so it reads its other producers; the
+    The pool's states are every form M_v a release copy that makes P consumes (one per
+    variant of the complex; all bases: at rest the protein is mostly bound), and S; the
+    forms between are intermediates (amendment 1). Paths: S -> ... -> M_v along each
+    M_v's own route, and M_v -> S through its release. P is the pool's carrier, its
+    release steps every release copy, so it reads its other producers; the
     edge S -> P (``released_twin``, OR) makes that S. A structural ``recycle`` edge
     P -> S (specs/081) makes the cycle one component. A candidate any of whose nodes is in
     ``claimed`` is skipped and counted.
@@ -4854,30 +4855,52 @@ def find_release_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
         if not any(sig(y, r) != sig(s_node, r) for _, _, y in st[:-1]):
             continue
         p_node = st[-1][2]
-        m_node, rel_rx, _ = st[-1]
-        fwd = [(a, y, copies(a, y, rx)) for a, rx, y in st[:-1]]
-        rel = copies(m_node, p_node, rel_rx)
-        inter = [y for _, _, y in st[:-2]]
-        nodes = {s_node, m_node} | set(inter) | {u for _, _, cs in fwd for u in cs} | set(rel)
-        if nodes & claimed or not rel or any(not cs for _, _, cs in fwd):
+        rel_stid = vr[st[-1][1]]
+        # amendment 1: every release copy that makes P, each with its own consumed form
+        # M_v and its own route from S (one chain per variant of the complex)
+        chains = []
+        for rc in sorted(u for u in vr if vr[u] == rel_stid and p_node in rout.get(u, ())):
+            for m_node in sorted(x for x in rin.get(rc, ()) if r in proteins(x) and x != s_node):
+                cst = route(s_node, {m_node}, r)
+                if cst:
+                    chains.append((m_node, rc, cst))
+        if not chains:
+            continue
+        nodes = {s_node}
+        fwd_by_m: Dict[str, List[Tuple[str, str, List[str]]]] = {}
+        rel_by_m: Dict[str, List[str]] = {}
+        inter: Set[str] = set()
+        for m_node, rc, cst in chains:
+            fwd_by_m.setdefault(m_node, [(a, y, copies(a, y, rx)) for a, rx, y in cst])
+            rel_by_m.setdefault(m_node, []).append(rc)
+            inter |= {y for _, _, y in cst[:-1]}
+            nodes |= {m_node}
+        inter -= set(fwd_by_m) | {s_node}
+        nodes |= inter | {u for f in fwd_by_m.values() for _, _, cs in f for u in cs} | \
+                 {u for rs in rel_by_m.values() for u in rs}
+        if nodes & claimed or any(not cs for f in fwd_by_m.values() for _, _, cs in f):
             stats["release_claimed"] += 1
             continue
         n += 1
         pid = f"release{n}"
-        forms.append((pid, m_node, ent.get(m_node, ""), "state", True))
+        for m_node in sorted(fwd_by_m):
+            forms.append((pid, m_node, ent.get(m_node, ""), "state", True))
         forms.append((pid, s_node, ent.get(s_node, ""), "state", False))
-        for u in sorted(set(inter)):
+        for u in sorted(inter):
             forms.append((pid, u, ent.get(u, ""), "intermediate", False))
-        enz = any(u in catalysed for _, _, cs in fwd for u in cs)
-        for si, (a, b, cs) in enumerate(fwd, 1):
-            for u in cs:
-                transitions.append((pid, f"{pid}_f1", si, a, b, u, vr[u], enz))
-        for u in rel:
-            transitions.append((pid, f"{pid}_r1", 1, m_node, s_node, u, vr[u], any(x in catalysed for x in rel)))
-            carriers.append((pid, p_node, u))
+        for i, m_node in enumerate(sorted(fwd_by_m), 1):
+            fwd = fwd_by_m[m_node]
+            enz = any(u in catalysed for _, _, cs in fwd for u in cs)
+            for si, (a, b, cs) in enumerate(fwd, 1):
+                for u in cs:
+                    transitions.append((pid, f"{pid}_f{i}", si, a, b, u, vr[u], enz))
+            for u in sorted(set(rel_by_m[m_node])):
+                transitions.append((pid, f"{pid}_r{i}", 1, m_node, s_node, u, vr[u], u in catalysed))
+                carriers.append((pid, p_node, u))
+            stats["release_paths"] += 2
         edges += [(s_node, p_node, "released_twin"), (p_node, s_node, "recycle")]
         claimed |= nodes
-        stats["release_pools"] += 1; stats["release_paths"] += 2
+        stats["release_pools"] += 1
     return forms, transitions, carriers, edges
 
 
