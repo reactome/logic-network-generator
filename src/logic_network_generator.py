@@ -4736,6 +4736,151 @@ def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
     return forms, transitions, edges
 
 
+RELEASE_MAX_REACTIONS = 10   # deltasignal specs/086: beta-catenin's route is 8 reactions
+
+
+def find_release_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
+                       uuid_mapping: Dict[str, str], profiles: Dict[str, Dict[str, Any]],
+                       claimed: Optional[Set[str]] = None, stats: Optional[Dict[str, int]] = None):
+    """Release pools (deltasignal specs/086): a protein bound, modified and released by a
+    complex, whose released copy carries on downstream.
+
+    beta-catenin in Signaling by WNT: its starting copy S binds the destruction complex;
+    CK1 and GSK3 phosphorylate it there, PP2A dephosphorylates it, and the released copy P
+    goes on to the nucleus. P's only producer is the release, so the nuclear signal was
+    the traffic through the destruction complex, and an APC knockout read DOWN. A candidate:
+
+    - S, a node of a single protein R with no in-edge that is an ``input`` or ``catalyst``
+      of a reaction;
+    - P, another node of the same entity that a reaction produces and that has an out-edge;
+    - a route S -> ... -> P of at most ``RELEASE_MAX_REACTIONS`` reactions (input or
+      catalyst to output) through forms that carry R;
+    - on that route a form whose modification signature for R differs from S's (a partner
+      released unchanged is a carrier, deltasignal specs/077, and is excluded).
+
+    The pool's states are M, the form the release consumes (the base: at rest the protein
+    is mostly bound), and S; the forms between are intermediates. Paths: S -> ... -> M
+    through the route's reaction copies, and M -> S through the release. P is the pool's
+    carrier, its release steps the release copies, so it reads its other producers; the
+    edge S -> P (``released_twin``, OR) makes that S. A structural ``recycle`` edge
+    P -> S (specs/081) makes the cycle one component. A candidate any of whose nodes is in
+    ``claimed`` is skipped and counted.
+
+    Returns (forms, transitions, carriers, edges) in :func:`find_pools`'s row formats, the
+    edges as ``(source_uuid, target_uuid, edge_type)``."""
+    from src.variant_keys import variant_parts
+    stats = stats if stats is not None else {}
+    for k in ("release_pools", "release_paths", "release_claimed"):
+        stats[k] = 0
+    claimed = claimed or set()
+    if pathway_logic_network.empty:
+        return [], [], [], []
+    ent = _uuid_to_stable_id_map(pathway_logic_network, uuid_mapping)
+    vr = {str(u): str(r) for u, r in zip(reaction_id_map["uid"], reaction_id_map["reactome_id"])}
+    feeds: Dict[str, Set[str]] = {}      # entity -> reaction nodes it is an input or catalyst of
+    rin: Dict[str, Set[str]] = {}        # reaction node -> its input and catalyst entities
+    rout: Dict[str, Set[str]] = {}
+    catalysed: Set[str] = set()
+    produced: Set[str] = set(); has_out: Set[str] = set(); has_in: Set[str] = set()
+    for _, e in pathway_logic_network.iterrows():
+        s, t, et = str(e["source_id"]), str(e["target_id"]), e.get("edge_type")
+        has_out.add(s); has_in.add(t)
+        if et in ("input", "catalyst") and t in vr:
+            feeds.setdefault(s, set()).add(t); rin.setdefault(t, set()).add(s)
+            if et == "catalyst":
+                catalysed.add(t)
+        elif et == "output" and s in vr:
+            rout.setdefault(s, set()).add(t); produced.add(t)
+
+    def pe_of(u: str) -> str:
+        return variant_parts(ent.get(u, ""))[0]
+
+    def proteins(u: str) -> frozenset:
+        parent, members = variant_parts(ent.get(u, ""))
+        if not members:
+            return frozenset(profiles.get(parent, {}).get("proteins", ()))
+        out = set(profiles.get(parent, {}).get("fixed", ()))
+        for mm in members:
+            out |= set(profiles.get(mm, {}).get("proteins", ()))
+        return frozenset(out)
+
+    def sig(u: str, r):
+        return profiles.get(pe_of(u), {}).get("sig", {}).get(r, frozenset())
+
+    by_pe: Dict[str, List[str]] = {}
+    for u in sorted(ent):
+        by_pe.setdefault(pe_of(u), []).append(u)
+
+    def route(src: str, targets: Set[str], r) -> Optional[List[Tuple[str, str, str]]]:
+        prev: Dict[str, Optional[Tuple[str, str]]] = {src: None}
+        frontier = [src]
+        for _ in range(RELEASE_MAX_REACTIONS):
+            nxt = []
+            for x in frontier:
+                for rx in sorted(feeds.get(x, ())):
+                    for y in sorted(rout.get(rx, ())):
+                        if y in prev or r not in proteins(y):
+                            continue
+                        prev[y] = (x, rx); nxt.append(y)
+                        if y in targets:
+                            steps: List[Tuple[str, str, str]] = []
+                            link = prev[y]
+                            while link is not None:
+                                a, rr = link; steps.append((a, rr, y)); y = a
+                                link = prev[y]
+                            return steps[::-1]
+            frontier = nxt
+        return None
+
+    def copies(a: str, b: str, rx: str) -> List[str]:
+        return sorted(u for u in vr if vr[u] == vr[rx] and a in rin.get(u, ()) and b in rout.get(u, ()))
+
+    forms: List[Tuple] = []; transitions: List[Tuple] = []; carriers: List[Tuple] = []
+    edges: List[Tuple[str, str, str]] = []
+    n = 0
+    for s_node in sorted(ent):
+        if s_node in has_in or s_node in vr or not feeds.get(s_node):
+            continue
+        rs = proteins(s_node)
+        if len(rs) != 1:
+            continue
+        r = next(iter(rs))
+        ps = {u for u in by_pe.get(pe_of(s_node), []) if u != s_node and u in produced and u in has_out}
+        if not ps:
+            continue
+        st = route(s_node, ps, r)
+        if not st or len(st) < 2:
+            continue
+        if not any(sig(y, r) != sig(s_node, r) for _, _, y in st[:-1]):
+            continue
+        p_node = st[-1][2]
+        m_node, rel_rx, _ = st[-1]
+        fwd = [(a, y, copies(a, y, rx)) for a, rx, y in st[:-1]]
+        rel = copies(m_node, p_node, rel_rx)
+        inter = [y for _, _, y in st[:-2]]
+        nodes = {s_node, m_node} | set(inter) | {u for _, _, cs in fwd for u in cs} | set(rel)
+        if nodes & claimed or not rel or any(not cs for _, _, cs in fwd):
+            stats["release_claimed"] += 1
+            continue
+        n += 1
+        pid = f"release{n}"
+        forms.append((pid, m_node, ent.get(m_node, ""), "state", True))
+        forms.append((pid, s_node, ent.get(s_node, ""), "state", False))
+        for u in sorted(set(inter)):
+            forms.append((pid, u, ent.get(u, ""), "intermediate", False))
+        enz = any(u in catalysed for _, _, cs in fwd for u in cs)
+        for si, (a, b, cs) in enumerate(fwd, 1):
+            for u in cs:
+                transitions.append((pid, f"{pid}_f1", si, a, b, u, vr[u], enz))
+        for u in rel:
+            transitions.append((pid, f"{pid}_r1", 1, m_node, s_node, u, vr[u], any(x in catalysed for x in rel)))
+            carriers.append((pid, p_node, u))
+        edges += [(s_node, p_node, "released_twin"), (p_node, s_node, "recycle")]
+        claimed |= nodes
+        stats["release_pools"] += 1; stats["release_paths"] += 2
+    return forms, transitions, carriers, edges
+
+
 def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
                  uuid_mapping: Dict[str, str], pools_file: str, transitions_file: str,
                  carriers_file: str, carrier_loops_file: Optional[str] = None,
@@ -4784,6 +4929,24 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
         logger.info(f"Recycle pools (specs/081): {rstats['recycle_pools']} pools, {rstats['recycle_states']} states, "
                     f"{rstats['recycle_paths']} paths, {rstats['recycle_edges']} recycle edges, "
                     f"{rstats['recycle_claimed']} skipped (nodes claimed by a pool)")
+    if env_flag("LNG_RELEASE_POOLS"):
+        # deltasignal specs/086: after the ordinary and recycle pools, which keep their nodes
+        claimed = {f[1] for f in forms} | {t[5] for t in transitions}
+        lstats: Dict[str, int] = {}
+        lf, lt, lc, ledges = find_release_pools(pathway_logic_network, reaction_id_map, uuid_mapping, profiles,
+                                                claimed, lstats)
+        forms = list(forms) + lf
+        transitions = list(transitions) + lt
+        carriers = list(carriers) + lc
+        if ledges:
+            if boundary_file is None:
+                raise ValueError("LNG_RELEASE_POOLS found release pools but no boundary file to write their edges to")
+            cols = list(pd.read_csv(boundary_file, nrows=0).columns)
+            add = pd.DataFrame([{"source_id": a, "target_id": b, "pos_neg": "pos", "and_or": "or",
+                                 "edge_type": t, "stoichiometry": 1} for a, b, t in ledges])
+            add.reindex(columns=cols).to_csv(boundary_file, mode="a", header=False, index=False)
+        logger.info(f"Release pools (specs/086): {lstats['release_pools']} pools, {lstats['release_paths']} paths, "
+                    f"{lstats['release_claimed']} skipped (nodes claimed by a pool or no reaction copies)")
     pd.DataFrame(forms, columns=["pool_id", "node_uuid", "stable_id", "role", "is_base"]).to_csv(pools_file, index=False)
     pd.DataFrame(transitions, columns=["pool_id", "path_id", "step", "source_uuid", "target_uuid", "reaction_uuid",
                                        "reaction_stid", "enzyme_driven"]).to_csv(transitions_file, index=False)
