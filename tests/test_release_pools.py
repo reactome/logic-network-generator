@@ -70,9 +70,10 @@ def test_a_candidate_on_a_claimed_node_is_skipped_and_counted():
     assert st["release_claimed"] == 1
 
 
-def test_the_flag_is_off_by_default():
+def test_the_flag_is_on_by_default():
+    # default since deltasignal specs/086 was adopted (Adam, 2026-10-21)
     from src.env_flags import BOOL_FLAGS
-    assert BOOL_FLAGS["LNG_RELEASE_POOLS"] is False
+    assert BOOL_FLAGS["LNG_RELEASE_POOLS"] is True
 
 
 def test_every_variant_chain_is_in_the_pool():
