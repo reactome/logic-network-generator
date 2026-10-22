@@ -93,7 +93,7 @@ def pass_(monkeypatch):
 
 
 def test_off_the_ligase_drains_its_own_subunit(pass_, monkeypatch):
-    monkeypatch.delenv("LNG_UB_LIGASE_UNIT", raising=False)
+    monkeypatch.setenv("LNG_UB_LIGASE_UNIT", "0")
     assert pass_() == {("u-c", "u-cks"), ("u-c", "u-rbl2")}
 
 
@@ -102,6 +102,7 @@ def test_on_only_the_substrate_is_drained(pass_, monkeypatch):
     assert pass_() == {("u-c", "u-rbl2")}
 
 
-def test_the_switch_is_off_by_default(monkeypatch):
+def test_the_rule_is_the_default(pass_, monkeypatch):
     monkeypatch.delenv("LNG_UB_LIGASE_UNIT", raising=False)
-    assert lng.env_flag("LNG_UB_LIGASE_UNIT") is False
+    assert lng.env_flag("LNG_UB_LIGASE_UNIT") is True
+    assert pass_() == {("u-c", "u-rbl2")}
