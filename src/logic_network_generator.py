@@ -1444,6 +1444,63 @@ def _pool_variant_depleters(pathway_logic_network_data: List[Dict[str, Any]], st
                 f"{sum(len(set(v)) for v in pooled.values())} catalyst variants")
 
 
+def _ub_substrates(in_leaves: List[Tuple[Optional[str], Optional[List[str]]]],
+                   output_genes: Set[str], output_leaves: Set[str],
+                   ligase_leaves: Set[str]) -> Tuple[Set[str], Set[str]]:
+    """A ubiquitination's substrate: the input leaves whose gene also appears
+    in the output (the modified form), as (genes, leaf stIds).
+
+    deltasignal specs/089: a leaf of the ligase (``ligase_leaves``) is not the
+    substrate when its own stId is also an output leaf, i.e. it leaves the
+    reaction unmodified. Without this, SCF(Skp2):Cks1 drained its own free
+    CKS1B. A ligase that is itself modified (autoubiquitination: Ub-BRAP has
+    another stId) stays a substrate, and so do the substrate's partners
+    (EGFR and GRB2 under CBL, specs/078)."""
+    subst_stids: Set[str] = set()
+    subst_genes: Set[str] = set()
+    if not output_genes:
+        return subst_genes, subst_stids
+    for leaf_stid, leaf_genes in in_leaves:
+        if not leaf_stid or not leaf_genes:
+            continue
+        if leaf_stid in ligase_leaves and leaf_stid in output_leaves:
+            continue
+        common = output_genes & set(leaf_genes)
+        if common:
+            subst_stids.add(leaf_stid)
+            subst_genes.update(common)
+    return subst_genes, subst_stids
+
+
+def _ub_ligase_leaves(rstids: List[str]) -> Dict[str, Set[str]]:
+    """The ligase's leaf stIds in each ubiquitination (deltasignal specs/089):
+    the leaves of its catalyst activity's curated ``activeUnit``; or, where no
+    activeUnit is curated, the leaves of an output entity that is also a direct
+    component of an input complex (the ligase released unchanged, as
+    CUL1:SKP1:SKP2:CKS1B from R-HSA-1363331)."""
+    from src.neo4j_connector import get_graph
+    leaf = ("OPTIONAL MATCH (x)-[:hasComponent|hasMember|hasCandidate*0..3]->(l:PhysicalEntity) "
+            "RETURN id AS rxn, l.stId AS leaf_stid")
+    au_rows = get_graph().run(
+        "UNWIND $ids AS id "
+        "MATCH (:ReactionLikeEvent {stId: id})-[:catalystActivity]->(:CatalystActivity)-[:activeUnit]->(x) "
+        + leaf, ids=rstids).data()
+    out: Dict[str, Set[str]] = {}
+    for r in au_rows:
+        if r["leaf_stid"]:
+            out.setdefault(r["rxn"], set()).add(r["leaf_stid"])
+    rest = [r for r in rstids if r not in out]
+    if rest:
+        rel_rows = get_graph().run(
+            "UNWIND $ids AS id "
+            "MATCH (rx:ReactionLikeEvent {stId: id})-[:output]->(x)<-[:hasComponent]-(:Complex)<-[:input]-(rx) "
+            + leaf, ids=rest).data()
+        for r in rel_rows:
+            if r["leaf_stid"]:
+                out.setdefault(r["rxn"], set()).add(r["leaf_stid"])
+    return out
+
+
 def _emit_substrate_depletion_edges(
     pathway_logic_network_data: List[Dict[str, Any]],
     reactome_id_to_uuid: Dict[str, str],
@@ -1556,32 +1613,30 @@ def _emit_substrate_depletion_edges(
                 "WHERE NOT o.stId IN $ub_stids "
                 "OPTIONAL MATCH (o)-[:hasComponent|hasMember|hasCandidate*0..3]->(leaf:PhysicalEntity) "
                 "OPTIONAL MATCH (leaf)-[:referenceEntity]->(re:ReferenceEntity) "
-                "RETURN id AS rxn, re.geneName AS genes",
+                "RETURN id AS rxn, leaf.stId AS leaf_stid, re.geneName AS genes",
                 ids=ubiq_rstids,
                 ub_stids=list(_UBIQUITIN_STIDS),
             ).data() if ubiq_rstids else []
+            # deltasignal specs/089: the ligase's own leaves, which a
+            # ubiquitination carries through rather than modifies.
+            ligase_by_rxn = _ub_ligase_leaves(ubiq_rstids) \
+                if ubiq_rstids and env_flag("LNG_UB_LIGASE_UNIT") else {}
             in_by_rxn: Dict[str, List[Tuple[Optional[str], Optional[List[str]]]]] = {}
             for r in in_rows:
                 in_by_rxn.setdefault(r["rxn"], []).append((r["leaf_stid"], r["genes"]))
             out_by_rxn: Dict[str, Set[str]] = {}
+            out_leaves_by_rxn: Dict[str, Set[str]] = {}
             for r in out_rows:
+                if r.get("leaf_stid"):
+                    out_leaves_by_rxn.setdefault(r["rxn"], set()).add(r["leaf_stid"])
                 g = r["genes"]
                 if g:
                     for gn in g:
                         out_by_rxn.setdefault(r["rxn"], set()).add(gn)
             for rxn in ubiq_rstids:
-                output_genes = out_by_rxn.get(rxn, set())
-                if not output_genes: continue
-                # The substrate: input-leaf proteins whose gene also appears
-                # in the output (modified form). Collect their leaf stids.
-                subst_stids: Set[str] = set()
-                subst_genes: Set[str] = set()
-                for leaf_stid, leaf_genes in in_by_rxn.get(rxn, []):
-                    if not leaf_stid or not leaf_genes: continue
-                    common = output_genes & set(leaf_genes)
-                    if common:
-                        subst_stids.add(leaf_stid)
-                        subst_genes.update(common)
+                subst_genes, subst_stids = _ub_substrates(
+                    in_by_rxn.get(rxn, []), out_by_rxn.get(rxn, set()),
+                    out_leaves_by_rxn.get(rxn, set()), ligase_by_rxn.get(rxn, set()))
                 if subst_stids:
                     ubiquitin_subst_by_rstid[rxn] = (subst_genes, subst_stids)
         except Exception as exc:
