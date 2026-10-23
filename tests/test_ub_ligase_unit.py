@@ -106,3 +106,20 @@ def test_the_rule_is_the_default(pass_, monkeypatch):
     monkeypatch.delenv("LNG_UB_LIGASE_UNIT", raising=False)
     assert lng.env_flag("LNG_UB_LIGASE_UNIT") is True
     assert pass_() == {("u-c", "u-rbl2")}
+
+
+def test_rule_b_applies_only_where_no_active_unit_is_curated(monkeypatch):
+    # review 2026-10-22: the stub above answers activeUnit with nothing, so rule A
+    # and its precedence over rule B were untested. R1 has an active unit (the
+    # ligase L); its release query would also name a partner P, which must stay.
+    class G:
+        def run(self, q, **kw):
+            if "activeUnit" in q:
+                return _Result([{"rxn": "R1", "leaf_stid": "L"}])
+            if "<-[:hasComponent]-(:Complex)<-[:input]-" in q:
+                assert kw["ids"] == ["R2"]          # R1 is not asked again
+                rows = [{"rxn": "R1", "leaf_stid": "P"}, {"rxn": "R2", "leaf_stid": "Q"}]
+                return _Result([r for r in rows if r["rxn"] in kw["ids"]])
+            raise AssertionError(q)
+    monkeypatch.setattr(nc, "get_graph", lambda: G())
+    assert lng._ub_ligase_leaves(["R1", "R2"]) == {"R1": {"L"}, "R2": {"Q"}}
