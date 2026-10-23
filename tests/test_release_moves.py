@@ -27,3 +27,11 @@ def test_only_a_release_across_compartments_moves(monkeypatch):
 def test_no_pairs_asks_nothing(monkeypatch):
     monkeypatch.setattr(nc, "get_graph", lambda: (_ for _ in ()).throw(AssertionError("queried")))
     assert lng._release_moves(set()) == set()
+
+
+def test_the_query_compares_compartment_ids_not_stids():
+    # Reactome compartments (GO cellular components) have no stId: collecting
+    # cf.stId gave empty lists and marked nothing on the first build (specs/093)
+    import inspect
+    src = inspect.getsource(lng._release_moves)
+    assert "cf.dbId" in src and "ci.dbId" in src

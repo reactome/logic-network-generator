@@ -4980,7 +4980,8 @@ def _release_moves(pairs: Set[Tuple[str, str]]) -> Set[Tuple[str, str]]:
         "UNWIND $p AS p "
         "MATCH (f:PhysicalEntity {stId: p[0]})-[:compartment]->(cf) "
         "MATCH (r:ReactionLikeEvent {stId: p[1]})-[:input]->(i)-[:compartment]->(ci) "
-        "RETURN p[0] AS f, p[1] AS r, collect(DISTINCT cf.stId) AS cf, collect(DISTINCT ci.stId) AS ci",
+        # compartments (GO cellular components) carry no stId; compare dbIds
+        "RETURN p[0] AS f, p[1] AS r, collect(DISTINCT cf.dbId) AS cf, collect(DISTINCT ci.dbId) AS ci",
         p=[list(x) for x in sorted(pairs)]).data()
     return {(x["f"], x["r"]) for x in rows if x["cf"] and x["ci"] and not set(x["cf"]) & set(x["ci"])}
 
