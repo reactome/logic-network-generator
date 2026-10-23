@@ -5058,7 +5058,8 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
     pd.DataFrame(carriers, columns=["pool_id", "carrier_uuid", "release_reaction_uuid"]).to_csv(carriers_file, index=False)
     if carrier_loops_file is not None:
         # deltasignal specs/093: mark releases that move the free form across compartments
-        base = lambda s: str(s).split("::")[0]
+        def base(s: Any) -> str:
+            return str(s).split("::")[0]
         rx_stid = {str(u): str(r) for u, r in zip(reaction_id_map["uid"], reaction_id_map["reactome_id"])} \
             if {"uid", "reactome_id"} <= set(reaction_id_map.columns) else {}
         keyed = [(base(row[4]), base(rx_stid.get(str(row[5])) or ent.get(row[5], ""))) for row in loops]
