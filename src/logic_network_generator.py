@@ -4660,7 +4660,8 @@ def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
     the edges as ``(source_uuid, target_uuid)``."""
     from src.variant_keys import variant_parts
     stats = stats if stats is not None else {}
-    for k in ("recycle_pools", "recycle_states", "recycle_paths", "recycle_edges", "recycle_claimed"):
+    for k in ("recycle_pools", "recycle_states", "recycle_paths", "recycle_edges", "recycle_claimed",
+              "recycle_no_copies"):
         stats[k] = 0
     claimed = claimed or set()
     if pathway_logic_network.empty:
@@ -4758,6 +4759,8 @@ def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
         for c, (st, k) in sorted(g["cs"].items()):
             fwd = st[:k + 1]
             back = st[k + 1:]
+            # forms between C and M (km >= 1) are pool-written too (review 2026-10-22)
+            nodes |= {y for _, _, y in fwd[:-1]}
             nodes |= {y for _, _, y in back[:-1]}
             fwd_steps = [(a, y, copies(a, y, rx)) for a, rx, y in fwd]
             back_steps = [(a, y, copies(a, y, rx)) for a, rx, y in back]
@@ -4765,9 +4768,15 @@ def find_recycle_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
             back_steps[-1] = (a_last, c, back_steps[-1][2])        # the return lands in C
             rows.append((c, fwd_steps, back_steps, [rx for _, rx, _ in st]))
         step_nodes = {u for _, fs, bs, _ in rows for _, _, cs in fs + bs for u in cs}
-        if (nodes | step_nodes) & claimed or any(not cs for _, fs, bs, _ in rows for _, _, cs in fs + bs):
+        if (nodes | step_nodes) & claimed:
             stats["recycle_claimed"] += 1
             continue
+        if any(not cs for _, fs, bs, _ in rows for _, _, cs in fs + bs):
+            stats["recycle_no_copies"] += 1
+            continue
+        # an accepted pool claims its nodes, so a later candidate cannot share them
+        # (review 2026-10-22; find_release_pools already did this)
+        claimed |= nodes | step_nodes
         n += 1
         pid = f"recycle{n}"
         for c in sorted(g["cs"]):
@@ -5006,7 +5015,8 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
             add.reindex(columns=cols).to_csv(boundary_file, mode="a", header=False, index=False)
         logger.info(f"Recycle pools (specs/081): {rstats['recycle_pools']} pools, {rstats['recycle_states']} states, "
                     f"{rstats['recycle_paths']} paths, {rstats['recycle_edges']} recycle edges, "
-                    f"{rstats['recycle_claimed']} skipped (nodes claimed by a pool)")
+                    f"{rstats['recycle_claimed']} skipped (nodes claimed by a pool), "
+                    f"{rstats['recycle_no_copies']} skipped (no reaction copies)")
     if env_flag("LNG_RELEASE_POOLS"):
         # deltasignal specs/086: after the ordinary and recycle pools, which keep their nodes
         claimed = {f[1] for f in forms} | {t[5] for t in transitions}

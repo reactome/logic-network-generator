@@ -75,12 +75,17 @@ what NOT to touch. Overriding is for A/B benchmarking only.
 | `LNG_RECYCLE_POOLS` | `1` | write a modified protein's return to the complex it starts in as a pool with several resting states, plus a structural `recycle` edge from the free copy to the starting copy in `boundary_edges.csv` (p130/p107 in Mitotic G1; deltasignal specs/081) |
 | `LNG_RELEASE_POOLS` | `1` | a protein bound, modified and released by a complex, whose released copy carries on (beta-catenin and the destruction complex), as a free/bound pool whose released copy reads the free state; writes `released_twin` and `recycle` edges (deltasignal specs/086) |
 | `LNG_UB_LIGASE_UNIT` | `1` | a ubiquitination does not deplete its own ligase: a leaf of the catalyst's curated `activeUnit`, or of a complex released unchanged, that leaves the reaction unmodified is not the substrate (CKS1B under SCF(Skp2); deltasignal specs/089) |
+| `LNG_SPECIALIZATION_BRIDGE` | `add` | join a generic complex of sets and the specific member combination Reactome curates under another id, ordered by `precedingEvent` (`specialization` OR edges; `replace` \| `off`; deltasignal specs/067) |
+| `LNG_SPECIALIZATION_CLOSED` | `twin` | a specialization in-edge does not open a carrier loop (`off`; deltasignal specs/068) |
 | `LNG_CATALYST_BUNDLE` | `0` | legacy; subsumed by `LNG_COMPLEX_AS_NODE` |
 | `LNG_HANDOFF_EDGES` | `0` | precedingEvent hand-off bridges (net-negative, off) |
 
 A switch takes exactly `0` or `1`; any other value, or an `LNG_*` name the
-generator does not read (a typo), stops the run at startup. The full list and
-defaults are `BOOL_FLAGS` in `src/env_flags.py`.
+generator does not read (a typo), stops the run at startup. The boolean
+switches and their defaults are `BOOL_FLAGS` in `src/env_flags.py`; the
+switches with other values are listed in `OTHER_FLAGS` there, and their
+defaults are in the modules that read them (`src/specialization.py` for the two
+above).
 
 **Solver (DeltaSignal):** the defaults live in the deltasignal repo's
 CLAUDE.md ("Solver Configuration"), which CI keeps in step with the code; they

@@ -130,7 +130,9 @@ def linked_pairs(reactions: Sequence[Tuple[str, Set[str], Set[str], Set[str], Se
     preceding reactions). A pair qualifies when one complex specializes the
     other and some reaction consuming the second lists some reaction producing
     the first as ``precedingEvent``: the curators' own statement of order, so
-    a bridge never runs against it (and a mutual pair is not welded)."""
+    a bridge never runs against it. A mutual pair (two complexes with identical
+    components, each preceding the other) would be a positive 2-cycle, so it is
+    not bridged at all (review 2026-10-22; none occurs in Release 97)."""
     produced: Dict[str, Set[str]] = defaultdict(set)
     consumed: Dict[str, Set[str]] = defaultdict(set)
     preceding: Dict[str, Set[str]] = {}
@@ -149,7 +151,8 @@ def linked_pairs(reactions: Sequence[Tuple[str, Set[str], Set[str], Set[str], Se
                 continue
             if any(p in preceding[c] for c in consumed[b] for p in produced[a]):
                 out.append((a, b))
-    return out
+    pairs = set(out)
+    return [(a, b) for a, b in out if (b, a) not in pairs]
 
 
 def copy_bridges(pairs: Sequence[Tuple[str, str]],

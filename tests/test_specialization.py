@@ -196,3 +196,11 @@ def test_pipeline_step_applies_the_bridges(monkeypatch):
     out = pg.apply_specialization_step(_result(), "R-HSA-1")
     assert len(out.logic_network) == 6 and out.boundary_mask == MASK + [False]
     assert out.logic_network.iloc[-1].edge_type == "specialization"
+
+
+def test_a_mutual_pair_is_not_bridged(structure):
+    # review 2026-10-22: each complex preceding the other would weld a positive
+    # 2-cycle, which the docstring already ruled out
+    make_g = ("makeG", {"setP", "setR"}, {"G"}, set(), set())
+    uses_s = ("useS", {"S", "ATP"}, {"pS"}, set(), {"makeG"})
+    assert sp.linked_pairs([AUTOPHOS, GRB2_BINDS, make_g, uses_s], structure) == []
