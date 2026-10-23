@@ -4968,6 +4968,23 @@ def find_release_pools(pathway_logic_network: pd.DataFrame, reaction_id_map: pd.
     return forms, transitions, carriers, edges
 
 
+def _release_moves(pairs: Set[Tuple[str, str]]) -> Set[Tuple[str, str]]:
+    """(free form stId, release reaction stId) pairs whose release carries the
+    free form across compartments: its compartment is not among the reaction's
+    inputs' (deltasignal specs/093). A receptor recycled from an endosome to the
+    membrane (MET by RAB4:GTP) is a return of material, not a partner letting go."""
+    if not pairs:
+        return set()
+    from src.neo4j_connector import get_graph
+    rows = get_graph().run(
+        "UNWIND $p AS p "
+        "MATCH (f:PhysicalEntity {stId: p[0]})-[:compartment]->(cf) "
+        "MATCH (r:ReactionLikeEvent {stId: p[1]})-[:input]->(i)-[:compartment]->(ci) "
+        "RETURN p[0] AS f, p[1] AS r, collect(DISTINCT cf.stId) AS cf, collect(DISTINCT ci.stId) AS ci",
+        p=[list(x) for x in sorted(pairs)]).data()
+    return {(x["f"], x["r"]) for x in rows if x["cf"] and x["ci"] and not set(x["cf"]) & set(x["ci"])}
+
+
 def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_id_map: pd.DataFrame,
                  uuid_mapping: Dict[str, str], pools_file: str, transitions_file: str,
                  carriers_file: str, carrier_loops_file: Optional[str] = None,
@@ -5040,8 +5057,17 @@ def export_pools(pathway_id: str, pathway_logic_network: pd.DataFrame, reaction_
                                        "reaction_stid", "enzyme_driven"]).to_csv(transitions_file, index=False)
     pd.DataFrame(carriers, columns=["pool_id", "carrier_uuid", "release_reaction_uuid"]).to_csv(carriers_file, index=False)
     if carrier_loops_file is not None:
-        pd.DataFrame(loops, columns=["loop_id", "r", "closed", "free_uuid", "free_stid", "loop_source_uuid"]).to_csv(
+        # deltasignal specs/093: mark releases that move the free form across compartments
+        base = lambda s: str(s).split("::")[0]
+        rx_stid = {str(u): str(r) for u, r in zip(reaction_id_map["uid"], reaction_id_map["reactome_id"])} \
+            if {"uid", "reactome_id"} <= set(reaction_id_map.columns) else {}
+        keyed = [(base(row[4]), base(rx_stid.get(str(row[5])) or ent.get(row[5], ""))) for row in loops]
+        moving = _release_moves({k for k in keyed if k[0] and k[1]})
+        pd.DataFrame([tuple(row) + (k in moving,) for row, k in zip(loops, keyed)],
+                     columns=["loop_id", "r", "closed", "free_uuid", "free_stid", "loop_source_uuid", "moves"]).to_csv(
             carrier_loops_file, index=False)
+        if moving:
+            logger.info(f"Carrier loops (specs/093): {sum(k in moving for k in keyed)} rows release across compartments")
     logger.info(
         f"Exported {stats['pools']} pools ({stats['states']} states, {stats['intermediates']} intermediates, "
         f"{stats['paths']} paths in {stats['copy_rows']} step-copy rows, {stats['multi_step_pools']} multi-step; "
