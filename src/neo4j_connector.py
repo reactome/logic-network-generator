@@ -942,6 +942,20 @@ _pathogen_ref_cache: Dict[str, str] = {}
 PROTEIN_REFERENCE_CLASSES = frozenset({"ReferenceGeneProduct", "ReferenceIsoform"})
 
 
+def get_rna_entities(stable_ids) -> Dict[str, Dict[str, str]]:
+    """The entities among ``stable_ids`` that are RNA: an entity whose reference
+    entity is a ReferenceRNASequence (an mRNA, a miRNA), with schema class and
+    display name (deltasignal specs/100). Complexes and sets are not listed: the
+    consumer twins node copies of one RNA species, never of a complex holding one."""
+    ids = sorted({s for s in stable_ids if s})
+    if not ids:
+        return {}
+    rows = get_graph().run(
+        "UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})-[:referenceEntity]->(:ReferenceRNASequence) "
+        "RETURN s, e.schemaClass AS c, e.displayName AS n", ids=ids).data()
+    return {r["s"]: {"schema_class": r["c"], "name": r["n"]} for r in rows}
+
+
 def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
     """The entities among ``stable_ids`` that are PATHOGEN-DERIVED, with their
     schema class and display name (deltasignal specs/048).
