@@ -308,6 +308,7 @@ def test_balance_keeps_an_input_with_no_balanced_partner(monkeypatch):
     assert pairs == [("MDM2", "HOMO"), ("MDM4", "HET"), ("MDMX", "HOMO")]
 
 
-def test_balance_flag_off_by_default():
+def test_balance_flag_on_by_default(monkeypatch):
     from src.env_flags import env_flag
-    assert env_flag("LNG_BALANCE_CHOICES") is False
+    monkeypatch.delenv("LNG_BALANCE_CHOICES", raising=False)
+    assert env_flag("LNG_BALANCE_CHOICES") is True
