@@ -510,3 +510,34 @@ def test_pathogen_polymer_counts_through_its_repeated_unit(monkeypatch):
     monkeypatch.setenv("LNG_PATHOGEN_PROTEIN", "1")
     assert set(neo4j_connector.get_pathogen_entities(cache)) == {"REV", "POLY", "C"}
 
+
+
+# --- rnas.csv (deltasignal specs/100) ------------------------------------------
+
+def test_export_rnas_lists_rna_species(tmp_path, monkeypatch):
+    monkeypatch.setattr(neo4j_connector, "get_rna_entities",
+                        lambda stids: {"R-HSA-MRNA": {"schema_class": "EntityWithAccessionedSequence",
+                                                      "name": "PTEN mRNA [cytosol]"}})
+    monkeypatch.setattr(neo4j_connector, "get_reactome_release", lambda: 97)
+    out = tmp_path / "rnas.csv"
+    m.export_rnas(pd.DataFrame([{"source_id": "u-1", "target_id": "u-2"}]),
+                  {"R-HSA-MRNA": "u-1", "R-HSA-P": "u-2"}, str(out))
+    df = pd.read_csv(out)
+    assert list(df.columns) == ["stable_id", "schema_class", "name", "reactome_release"]
+    assert list(df.stable_id) == ["R-HSA-MRNA"]
+
+
+def test_rna_finder_reads_the_reference_entity_class(monkeypatch):
+    seen = {}
+    class G:
+        def run(self, q, **kw):
+            seen["q"] = q
+            class R:
+                def data(self_inner):
+                    return [{"s": "R-HSA-MRNA", "c": "EntityWithAccessionedSequence", "n": "PTEN mRNA"}]
+            return R()
+    monkeypatch.setattr(neo4j_connector, "get_graph", lambda: G())
+    assert neo4j_connector.get_rna_entities({"R-HSA-MRNA", "R-HSA-P", ""}) == {
+        "R-HSA-MRNA": {"schema_class": "EntityWithAccessionedSequence", "name": "PTEN mRNA"}}
+    assert "ReferenceRNASequence" in seen["q"]
+    assert neo4j_connector.get_rna_entities(set()) == {}

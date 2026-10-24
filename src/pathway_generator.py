@@ -15,6 +15,7 @@ from src.logic_network_generator import (
     export_drugs,
     export_pathogens,
     export_pools,
+    export_rnas,
     export_containment,
     export_containment_structure,
     export_entity_reaction_proxy_mapping,
@@ -234,7 +235,7 @@ BUNDLE_FILES = (
     "logic_network.csv", "stid_to_uuid_mapping.csv", "entity_reaction_proxy_mapping.csv",
     "nodes.csv", "node_reaction_context.csv", "node_resolution.csv", "node_exclusions.csv",
     "boundary_edges.csv", "cofactors.csv", "containment.csv", "containment_structure.csv",
-    "drugs.csv", "pathogens.csv",
+    "drugs.csv", "pathogens.csv", "rnas.csv",
     "pools.csv", "pool_transitions.csv", "pool_carriers.csv", "carrier_loops.csv",
 )
 
@@ -613,6 +614,17 @@ def generate_pathway_file(
             )
         except Exception as e:
             logger.error(f"Failed to write pathogens.csv: {e}", exc_info=True)
+            raise
+
+        # RNA species (deltasignal specs/100), likewise on their own.
+        try:
+            export_rnas(
+                result.logic_network,
+                result.uuid_mapping,
+                str(pathway_output_dir / "rnas.csv"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to write rnas.csv: {e}", exc_info=True)
             raise
 
         # Interconversion pools (deltasignal specs/039), in their own block.

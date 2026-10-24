@@ -4010,6 +4010,18 @@ def export_pathogens(pathway_logic_network: pd.DataFrame,
                     get_pathogen_entities, "pathogen-derived")
 
 
+def export_rnas(pathway_logic_network: pd.DataFrame,
+               reactome_id_to_uuid: Dict[str, str],
+               output_file: str) -> None:
+    """Write rnas.csv: which entities in THIS network are RNA species (deltasignal
+    specs/100), by :func:`src.neo4j_connector.get_rna_entities`. A consumer joins
+    node copies of one RNA (a root mRNA copy reads the copy transcription makes).
+    Same columns and always-written rule as drugs.csv and pathogens.csv."""
+    from src.neo4j_connector import get_rna_entities
+    _export_derived(pathway_logic_network, reactome_id_to_uuid, output_file,
+                    get_rna_entities, "RNA")
+
+
 def _export_derived(pathway_logic_network: pd.DataFrame,
                     reactome_id_to_uuid: Dict[str, str],
                     output_file: str, finder, label: str) -> None:
