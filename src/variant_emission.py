@@ -218,6 +218,58 @@ def _choices(parts: dict, limit: int) -> Tuple[List[Dict[str, str]], bool]:
     return result, len(result) > limit
 
 
+def _protein_refs(entity: str, sig: Dict[str, str]) -> Set[str]:
+    """Reference entities (proteins and RNAs) of a participant's variant under `sig`."""
+    from src.neo4j_connector import get_reference_entity_id
+    try:
+        key = vk.vkey(entity, sig)
+    except KeyError:
+        return set()
+    return {r for r in (get_reference_entity_id(x) for x in vk.variant_leaves(key)) if r}
+
+
+def balance_choices(parts: dict, choices: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """LNG_BALANCE_CHOICES (deltasignal specs/101): drop copies whose protein content does not balance.
+
+    An output set whose members differ in composition from the input set's (MDM2 forms homo- or
+    heterodimers: {MDM2, MDM4} -> {MDM2 dimer, MDM2:MDM4}) is not bound to it, so every input
+    member is paired with every output member, and a copy can make MDM4 from MDM2 alone. A copy
+    scores d = proteins its outputs gain over its inputs + proteins its inputs lose (reference
+    entities; inputs only, not catalysts or regulators). It is dropped when a copy with the same
+    outputs AND a copy with the same input-side choice both score lower, so an input member with
+    no balanced partner (incomplete curation) keeps its route."""
+    if len(choices) < 2:
+        return choices
+    inputs = sorted(parts["in"])
+    input_side = inputs + sorted(parts["cat"]) + sorted(parts["pos"]) + sorted(parts["neg"])
+    outputs = sorted(parts["out"])
+
+    def keys(es, sig):
+        out = []
+        for e in es:
+            try:
+                out.append(vk.vkey(e, sig))
+            except KeyError:
+                out.append(e)
+        return tuple(out)
+
+    scored = []
+    for sig in choices:
+        i = set().union(*[_protein_refs(e, sig) for e in inputs]) if inputs else set()
+        o = set().union(*[_protein_refs(e, sig) for e in outputs]) if outputs else set()
+        scored.append((sig, len(o - i) + len(i - o), keys(input_side, sig), keys(outputs, sig)))
+    best_out: Dict[tuple, int] = {}
+    best_in: Dict[tuple, int] = {}
+    for _, d, ik, ok in scored:
+        best_out[ok] = min(d, best_out.get(ok, d))
+        best_in[ik] = min(d, best_in.get(ik, d))
+    kept = [sig for sig, d, ik, ok in scored if not (d > best_out[ok] and d > best_in[ik])]
+    STATS["balance_dropped"] += len(choices) - len(kept)
+    if len(kept) < len(choices):
+        STATS["balance_reactions"] += 1
+    return kept
+
+
 def _missing_slots(e: str, sig: Dict[str, str], depth: int = 0) -> Set[str]:
     """Slots `e` needs under `sig` that `sig` does not assign, followed
     through chosen members recursively (a bound set's chosen member complex
@@ -309,6 +361,8 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
     for rx in sorted(parts_by_rx):
         parts = parts_by_rx[rx]
         found, over = _choices(parts, cap if cap > 0 else 10 ** 9)
+        if found and not over and env_flag("LNG_BALANCE_CHOICES"):
+            found = balance_choices(parts, found)
         choices: List[Optional[Dict[str, str]]] = list(found)
         if not found and not over:
             # Never drop a reaction silently: zero copies means a set with no

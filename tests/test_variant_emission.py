@@ -267,3 +267,48 @@ def test_priming_a_pathway_clears_derived_structure_caches(monkeypatch):
         c["stale"] = None
     rg.prime_entity_caches(None)
     assert all("stale" not in c for c in caches)
+
+
+def _mdm_world(monkeypatch):
+    """R-HSA-6804741, MDM2 forms homo- or heterodimers: {MDM2, MDM4} + MDM2 x2 ->
+    {MDM2 dimer, MDM2:MDM4}. The output set is not bound to the input set (other
+    signatures), so the copies are the cross product."""
+    import src.neo4j_connector as nc
+    labels = {"INSET": ["EntitySet"], "OUTSET": ["EntitySet"], "HOMO": ["Complex"], "HET": ["Complex"]}
+    vk._lookups.update(labels=lambda s: labels.get(s, ["EWAS"]),
+                       components=lambda s: {"HOMO": ["MDM2"], "HET": ["MDM2", "MDM4"]}.get(s, []),
+                       members=lambda s: {"INSET": ["MDM2", "MDM4"], "OUTSET": ["HOMO", "HET"]}.get(s, []))
+    vk.reset_caches()
+    monkeypatch.setattr(ve, "_reference_signature", lambda m: {"HOMO": ("MDM2", "MDM2"), "HET": ("MDM2", "MDM4")}.get(m, (m,)))
+    monkeypatch.setattr(nc, "get_reference_entity_id", lambda x: x if x in ("MDM2", "MDM4") else None)
+    return parts(**{"in": {"INSET": 1, "MDM2": 2}, "out": {"OUTSET": 1}})
+
+
+def test_unbalanced_copies_are_dropped(monkeypatch):
+    """specs/101: MDM2 alone must not make MDM2:MDM4, and MDM4 must not vanish into the MDM2 dimer."""
+    p = _mdm_world(monkeypatch)
+    found, over = ve._choices(p, 100)
+    assert not over and len(found) == 4                  # the cross product
+    kept = ve.balance_choices(p, found)
+    pairs = sorted((c["INSET"], c["OUTSET"]) for c in kept)
+    assert pairs == [("MDM2", "HOMO"), ("MDM4", "HET")]
+    assert ve.STATS["balance_dropped"] == 2 and ve.STATS["balance_reactions"] == 1
+
+
+def test_balance_keeps_an_input_with_no_balanced_partner(monkeypatch):
+    """An input member no output member balances (incomplete curation) keeps a route: its
+    best-balanced copy (MDMX -> MDM2 dimer loses MDMX, d 1; MDMX -> MDM2:MDM4 also makes MDM4, d 2)."""
+    p = _mdm_world(monkeypatch)
+    vk._lookups["members"] = lambda s: {"INSET": ["MDM2", "MDM4", "MDMX"], "OUTSET": ["HOMO", "HET"]}.get(s, [])
+    vk.reset_caches()
+    import src.neo4j_connector as nc
+    monkeypatch.setattr(nc, "get_reference_entity_id", lambda x: x if x in ("MDM2", "MDM4", "MDMX") else None)
+    kept = ve.balance_choices(p, ve._choices(p, 100)[0])
+    pairs = sorted((c["INSET"], c["OUTSET"]) for c in kept)
+    assert pairs == [("MDM2", "HOMO"), ("MDM4", "HET"), ("MDMX", "HOMO")]
+
+
+def test_balance_flag_on_by_default(monkeypatch):
+    from src.env_flags import env_flag
+    monkeypatch.delenv("LNG_BALANCE_CHOICES", raising=False)
+    assert env_flag("LNG_BALANCE_CHOICES") is True
