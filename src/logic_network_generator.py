@@ -4018,13 +4018,16 @@ def export_rnas(pathway_logic_network: pd.DataFrame,
     node copies of one RNA (a root mRNA copy reads the copy transcription makes).
     Same columns and always-written rule as drugs.csv and pathogens.csv."""
     from src.neo4j_connector import get_rna_entities
+    # only nodes that ARE an RNA species: a variant of a complex that chose an RNA
+    # member (a miR-26A RISC) is a complex, not the RNA (the drug rule's member
+    # clause would list it; the first variant build listed 2,393 such rows)
     _export_derived(pathway_logic_network, reactome_id_to_uuid, output_file,
-                    get_rna_entities, "RNA")
+                    get_rna_entities, "RNA", by_member=False)
 
 
 def _export_derived(pathway_logic_network: pd.DataFrame,
                     reactome_id_to_uuid: Dict[str, str],
-                    output_file: str, finder, label: str) -> None:
+                    output_file: str, finder, label: str, by_member: bool = True) -> None:
     """The node listing shared by drugs.csv and pathogens.csv. ``finder`` maps
     stable ids to {stId: {"schema_class", "name"}} for the derived ones."""
     from src.neo4j_connector import get_reactome_release
@@ -4054,7 +4057,8 @@ def _export_derived(pathway_logic_network: pd.DataFrame,
     rows = []
     for n in sorted(node_ids):
         parent, members = parts(n)
-        hit = parent if parent in derived else next((m for m in members if m in derived), None)
+        hit = parent if parent in derived else \
+            (next((m for m in members if m in derived), None) if by_member else None)
         if hit is None:
             continue
         rows.append({"stable_id": n, "schema_class": derived[hit]["schema_class"],
