@@ -512,6 +512,31 @@ def test_pathogen_polymer_counts_through_its_repeated_unit(monkeypatch):
 
 
 
+# --- leaf_refs.csv (deltasignal specs/107) -------------------------------------
+
+def test_export_leaf_refs_maps_every_leaf_with_a_reference(tmp_path, monkeypatch):
+    seen = {}
+    def refs(stids):
+        seen["ids"] = set(stids)
+        return {"R-HSA-GM": "uniprot:Q9C0E4", "R-HSA-GC": "uniprot:Q9C0E4", "R-ALL-PE": "chebi:57613"}
+    monkeypatch.setattr(neo4j_connector, "get_leaf_references", refs)
+    nodes = tmp_path / "nodes.csv"
+    pd.DataFrame([{"uuid": "u1", "node_kind": "simple_entity", "member_leaves": "R-HSA-GM"},
+                  {"uuid": "u2", "node_kind": "simple_complex", "member_leaves": "R-HSA-GC|R-ALL-PE|R-HSA-X"},
+                  {"uuid": "u3", "node_kind": "reaction", "member_leaves": ""}]).to_csv(nodes, index=False)
+    out = tmp_path / "leaf_refs.csv"
+    m.export_leaf_refs(str(nodes), str(out))
+    assert seen["ids"] == {"R-HSA-GM", "R-HSA-GC", "R-ALL-PE", "R-HSA-X"}
+    df = pd.read_csv(out)
+    assert list(df.columns) == ["leaf_stid", "reference_stid"]
+    assert list(df.itertuples(index=False, name=None)) == [
+        ("R-ALL-PE", "chebi:57613"), ("R-HSA-GC", "uniprot:Q9C0E4"), ("R-HSA-GM", "uniprot:Q9C0E4")]
+    # nothing with a reference: the header alone, so the file still exists
+    monkeypatch.setattr(neo4j_connector, "get_leaf_references", lambda s: {})
+    m.export_leaf_refs(str(nodes), str(out))
+    assert list(pd.read_csv(out).columns) == ["leaf_stid", "reference_stid"] and len(pd.read_csv(out)) == 0
+
+
 # --- rnas.csv (deltasignal specs/100) ------------------------------------------
 
 def test_export_rnas_lists_rna_species(tmp_path, monkeypatch):

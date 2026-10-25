@@ -4037,6 +4037,24 @@ def export_rnas(pathway_logic_network: pd.DataFrame,
                     get_rna_entities, "RNA", by_member=False)
 
 
+def export_leaf_refs(nodes_file: str, output_file: str) -> None:
+    """Write leaf_refs.csv (deltasignal specs/107): every leaf named in the
+    ``member_leaves`` of ``nodes_file`` (this bundle's nodes.csv) that has a
+    reference entity, with that reference entity's stable id, so a consumer can tell
+    that GRIP2 at the plasma membrane and GRIP2 in the cytosol are one protein.
+    Always written (a header alone when no leaf has a reference entity), so a
+    missing file means an older bundle, not "no references"."""
+    from src.neo4j_connector import get_leaf_references
+    leaves: set[str] = set()
+    nodes = pd.read_csv(nodes_file, dtype=str, keep_default_na=False)
+    for v in nodes.get("member_leaves", pd.Series(dtype=str)):
+        leaves.update(x for x in str(v).split("|") if x)
+    refs = get_leaf_references(leaves)
+    rows = [{"leaf_stid": leaf, "reference_stid": refs[leaf]} for leaf in sorted(refs)]
+    pd.DataFrame(rows, columns=["leaf_stid", "reference_stid"]).to_csv(output_file, index=False)
+    logger.info(f"Exported {len(rows)} leaf references to {output_file}")
+
+
 def _export_derived(pathway_logic_network: pd.DataFrame,
                     reactome_id_to_uuid: Dict[str, str],
                     output_file: str, finder, label: str, by_member: bool = True) -> None:
