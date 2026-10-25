@@ -355,6 +355,12 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
     STATS.clear()
     cap = vk._max_variants()
     parts_by_rx = fetch_participants(graph, reaction_ids)
+    if env_flag("LNG_SUMMATION_REGULATIONS"):
+        from src.summation_regulations import summation_regulations
+        for rx, regs in summation_regulations(graph, reaction_ids).items():
+            if rx in parts_by_rx:
+                for sign in ("pos", "neg"):
+                    parts_by_rx[rx][sign] = sorted(set(parts_by_rx[rx][sign]) | set(regs[sign]))
     rows: List[dict] = []
     vr_entities: Dict[str, tuple] = {}
     cat_rows: List[dict] = []; neg_rows: List[dict] = []; pos_rows: List[dict] = []

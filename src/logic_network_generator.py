@@ -2915,6 +2915,18 @@ def create_pathway_logic_network(
         catalyst_map = get_catalysts_for_reaction(reaction_id_map, graph)
         negative_regulator_map = get_negative_regulators_for_reaction(reaction_id_map, graph)
         positive_regulator_map = get_positive_regulators_for_reaction(reaction_id_map, graph)
+        if env_flag("LNG_SUMMATION_REGULATIONS"):
+            from src.summation_regulations import summation_regulations
+            regs = summation_regulations(graph, list(reaction_id_map["reactome_id"].dropna().astype(str).unique()))
+            extra: Dict[str, List[dict]] = {"pos": [], "neg": []}
+            for _, row in reaction_id_map.iterrows():
+                for sign, ids in regs.get(str(row["reactome_id"]), {}).items():
+                    for e in ids:
+                        extra[sign].append({"reaction_id": row["reactome_id"], "entity_id": e,
+                                            "edge_type": "regulator", "uuid": str(uuid.uuid4()),
+                                            "reaction_uuid": row["uid"]})
+            positive_regulator_map = pd.concat([positive_regulator_map, pd.DataFrame(extra["pos"], columns=_CAT_REG_COLUMNS)], ignore_index=True)
+            negative_regulator_map = pd.concat([negative_regulator_map, pd.DataFrame(extra["neg"], columns=_CAT_REG_COLUMNS)], ignore_index=True)
 
     # Print regulator statistics
     _print_regulator_statistics(positive_regulator_map, negative_regulator_map, catalyst_map)
