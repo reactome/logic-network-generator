@@ -355,12 +355,14 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
     STATS.clear()
     cap = vk._max_variants()
     parts_by_rx = fetch_participants(graph, reaction_ids)
+    # specs/102: a summation regulator is read as ONE pool of its variants, added
+    # after the copies are chosen, so it never multiplies them or pushes a
+    # reaction past the cap (as a curated participant it took the RBL1/RBL2
+    # phosphorylations over the cap and broke their recycle pools).
+    supplement: Dict[str, Dict[str, List[str]]] = {}
     if env_flag("LNG_SUMMATION_REGULATIONS"):
         from src.summation_regulations import summation_regulations
-        for rx, regs in summation_regulations(graph, reaction_ids).items():
-            if rx in parts_by_rx:
-                for sign in ("pos", "neg"):
-                    parts_by_rx[rx][sign] = sorted(set(parts_by_rx[rx][sign]) | set(regs[sign]))
+        supplement = summation_regulations(graph, reaction_ids)
     rows: List[dict] = []
     vr_entities: Dict[str, tuple] = {}
     cat_rows: List[dict] = []; neg_rows: List[dict] = []; pos_rows: List[dict] = []
@@ -404,6 +406,12 @@ def build_variant_reactions(graph, reaction_ids: Sequence[str]
                                    "edge_type": "catalyst" if target is cat_rows else "regulator",
                                    "uuid": str(uuid.uuid4()), "reaction_uuid": uid,
                                    "participant": e})
+            for sign, target in (("neg", neg_rows), ("pos", pos_rows)):
+                for e in supplement.get(rx, {}).get(sign, []):
+                    target.append({"reaction_id": rx, "entity_id": e + POOL_SUFFIX,
+                                   "edge_type": "regulator", "uuid": str(uuid.uuid4()),
+                                   "reaction_uuid": uid, "participant": e})
+                    STATS["summation_regulator_rows"] += 1
     rid_map = pd.DataFrame(rows, columns=["uid", "reactome_id", "input_hash", "output_hash"])
     mk = lambda r: pd.DataFrame(r, columns=_CAT_REG_COLUMNS)  # noqa: E731
     return rid_map, vr_entities, mk(cat_rows), mk(neg_rows), mk(pos_rows)

@@ -54,3 +54,21 @@ def test_release_targets_in_mitotic_g1():
     assert sorted(t for t, d in regs.items() if "R-HSA-198605" in d["neg"]) == ["R-HSA-69562", "R-HSA-8941915"]
     assert sorted(t for t, d in regs.items() if "R-HSA-8942622" in d["pos"]) == [
         "R-HSA-1226094", "R-HSA-1226095", "R-HSA-69227"]
+
+
+def test_a_summation_regulator_is_one_pool_and_never_multiplies_copies(monkeypatch):
+    """specs/102: as a curated participant the regulator's set choices multiplied the
+    copies and took the RBL1/RBL2 phosphorylations past the cap."""
+    import src.variant_emission as ve
+    from tests.test_variant_emission import _mdm_world
+    p = _mdm_world(monkeypatch)
+    monkeypatch.setattr(ve, "fetch_participants", lambda g, ids: {"RX": p})
+    monkeypatch.setattr(sr, "summation_regulations", lambda g, ids: {"RX": {"pos": [], "neg": ["REG"]}})
+    monkeypatch.setenv("LNG_BALANCE_CHOICES", "0")
+    monkeypatch.setenv("LNG_SUMMATION_REGULATIONS", "0")
+    rid0, *_ = ve.build_variant_reactions(None, ["RX"])
+    monkeypatch.setenv("LNG_SUMMATION_REGULATIONS", "1")
+    rid1, _, _, neg, pos = ve.build_variant_reactions(None, ["RX"])
+    assert len(rid1) == len(rid0) == 4
+    assert sorted(neg["entity_id"]) == ["REG::pool"] * 4 and len(pos) == 0
+    assert set(neg["reaction_uuid"]) == set(rid1["uid"])
