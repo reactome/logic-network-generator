@@ -15,7 +15,8 @@ and only inside a pathway that holds both the source reaction and the target.
   by CDK4/6 with no other active unit. "increased catalytic activity of CDK4 or
   CDK6."
 
-This is a curation supplement to the release, not the release: off by default.
+This is a curation supplement to the release, not the release. On by default since
+specs/102 (Adam, 2026-10-24); `LNG_SUMMATION_REGULATIONS=0` builds the release alone.
 """
 from collections import Counter
 from typing import Dict, List, Sequence

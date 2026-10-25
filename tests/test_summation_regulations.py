@@ -34,10 +34,10 @@ def test_signs_and_the_source_is_never_its_own_target():
                     "R-HSA-69227": {"pos": ["R-HSA-8942622"], "neg": []}}
 
 
-def test_flag_off_by_default(monkeypatch):
+def test_flag_on_by_default(monkeypatch):
     from src.env_flags import env_flag
     monkeypatch.delenv("LNG_SUMMATION_REGULATIONS", raising=False)
-    assert env_flag("LNG_SUMMATION_REGULATIONS") is False
+    assert env_flag("LNG_SUMMATION_REGULATIONS") is True
 
 
 @pytest.mark.database

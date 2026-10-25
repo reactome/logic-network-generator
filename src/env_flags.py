@@ -15,7 +15,7 @@ BOOL_FLAGS = {
     "LNG_BOUNDARY_EXPANSION": True,
     "LNG_BOUNDARY_HIERARCHY": True,
     "LNG_BALANCE_CHOICES": True,      # default since deltasignal specs/101 (held-out +30, exp -4; MDM4 KO inverts)
-    "LNG_SUMMATION_REGULATIONS": False,  # deltasignal specs/102 (pre-registered; a curation supplement)
+    "LNG_SUMMATION_REGULATIONS": True,   # default since deltasignal specs/102 (a curation supplement: exp +6, tuning +173, held-out 0)
     "LNG_BIND_STOICH": True,     # default since deltasignal specs/048 (homodimer binding; 0 predictions moved)
     "LNG_CAP_POOLS": True,      # default since deltasignal specs/045 (RAF experimental +14, held-out 0)
     "LNG_CATALYST_BUNDLE": False,
