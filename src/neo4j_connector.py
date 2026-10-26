@@ -956,6 +956,20 @@ def get_rna_entities(stable_ids) -> Dict[str, Dict[str, str]]:
     return {r["s"]: {"schema_class": r["c"], "name": r["n"]} for r in rows}
 
 
+def get_leaf_references(stable_ids) -> Dict[str, str]:
+    """Each of ``stable_ids`` that has a reference entity, mapped to that reference
+    entity's stable id (``uniprot:Q9C0E4``, ``chebi:57613``): deltasignal specs/107.
+    Copies of one protein in different compartments, or modified, are different
+    entities with one reference entity. Entities without one are left out."""
+    ids = sorted({s for s in stable_ids if s})
+    if not ids:
+        return {}
+    rows = get_graph().run(
+        "UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})-[:referenceEntity]->(r:ReferenceEntity) "
+        "RETURN s, r.stId AS ref", ids=ids).data()
+    return {r["s"]: r["ref"] for r in rows if r["ref"]}
+
+
 def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
     """The entities among ``stable_ids`` that are PATHOGEN-DERIVED, with their
     schema class and display name (deltasignal specs/048).
