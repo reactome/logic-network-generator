@@ -4041,17 +4041,21 @@ def export_leaf_refs(nodes_file: str, output_file: str) -> None:
     """Write leaf_refs.csv (deltasignal specs/107): every leaf named in the
     ``member_leaves`` of ``nodes_file`` (this bundle's nodes.csv) that has a
     reference entity, with that reference entity's stable id, so a consumer can tell
-    that GRIP2 at the plasma membrane and GRIP2 in the cytosol are one protein.
+    that GRIP2 at the plasma membrane and GRIP2 in the cytosol are one protein, and
+    the leaf's modified residues (``modifications``, empty when it has none;
+    amendment 1), so a consumer can tell a compartment copy from a modified form.
     Always written (a header alone when no leaf has a reference entity), so a
     missing file means an older bundle, not "no references"."""
-    from src.neo4j_connector import get_leaf_references
+    from src.neo4j_connector import get_leaf_references, get_leaf_modifications
     leaves: set[str] = set()
     nodes = pd.read_csv(nodes_file, dtype=str, keep_default_na=False)
     for v in nodes.get("member_leaves", pd.Series(dtype=str)):
         leaves.update(x for x in str(v).split("|") if x)
     refs = get_leaf_references(leaves)
-    rows = [{"leaf_stid": leaf, "reference_stid": refs[leaf]} for leaf in sorted(refs)]
-    pd.DataFrame(rows, columns=["leaf_stid", "reference_stid"]).to_csv(output_file, index=False)
+    mods = get_leaf_modifications(set(refs)) if refs else {}
+    rows = [{"leaf_stid": leaf, "reference_stid": refs[leaf], "modifications": mods.get(leaf, "")}
+            for leaf in sorted(refs)]
+    pd.DataFrame(rows, columns=["leaf_stid", "reference_stid", "modifications"]).to_csv(output_file, index=False)
     logger.info(f"Exported {len(rows)} leaf references to {output_file}")
 
 
