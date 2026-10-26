@@ -970,6 +970,21 @@ def get_leaf_references(stable_ids) -> Dict[str, str]:
     return {r["s"]: r["ref"] for r in rows if r["ref"]}
 
 
+def get_leaf_modifications(stable_ids) -> Dict[str, str]:
+    """Each of ``stable_ids`` that carries modified residues, mapped to their display
+    names, sorted and joined by "; " ("O-phospho-L-serine at 465; O-phospho-L-serine
+    at 467"): deltasignal specs/107 amendment 1. Two copies of one reference entity
+    with the same modifications differ only in compartment; SMAD2 and p-SMAD2 do not.
+    Entities without modified residues are left out."""
+    ids = sorted({s for s in stable_ids if s})
+    if not ids:
+        return {}
+    rows = get_graph().run(
+        "UNWIND $ids AS s MATCH (e:PhysicalEntity {stId: s})-[:hasModifiedResidue]->(m) "
+        "RETURN s, collect(m.displayName) AS mods", ids=ids).data()
+    return {r["s"]: "; ".join(sorted(x for x in r["mods"] if x)) for r in rows if r["mods"]}
+
+
 def get_pathogen_entities(stable_ids) -> Dict[str, Dict[str, str]]:
     """The entities among ``stable_ids`` that are PATHOGEN-DERIVED, with their
     schema class and display name (deltasignal specs/048).

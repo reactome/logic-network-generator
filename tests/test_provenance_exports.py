@@ -520,6 +520,8 @@ def test_export_leaf_refs_maps_every_leaf_with_a_reference(tmp_path, monkeypatch
         seen["ids"] = set(stids)
         return {"R-HSA-GM": "uniprot:Q9C0E4", "R-HSA-GC": "uniprot:Q9C0E4", "R-ALL-PE": "chebi:57613"}
     monkeypatch.setattr(neo4j_connector, "get_leaf_references", refs)
+    monkeypatch.setattr(neo4j_connector, "get_leaf_modifications",
+                        lambda stids: {"R-HSA-GC": "O-phospho-L-serine at 465; O-phospho-L-serine at 467"})
     nodes = tmp_path / "nodes.csv"
     pd.DataFrame([{"uuid": "u1", "node_kind": "simple_entity", "member_leaves": "R-HSA-GM"},
                   {"uuid": "u2", "node_kind": "simple_complex", "member_leaves": "R-HSA-GC|R-ALL-PE|R-HSA-X"},
@@ -527,14 +529,19 @@ def test_export_leaf_refs_maps_every_leaf_with_a_reference(tmp_path, monkeypatch
     out = tmp_path / "leaf_refs.csv"
     m.export_leaf_refs(str(nodes), str(out))
     assert seen["ids"] == {"R-HSA-GM", "R-HSA-GC", "R-ALL-PE", "R-HSA-X"}
-    df = pd.read_csv(out)
-    assert list(df.columns) == ["leaf_stid", "reference_stid"]
+    df = pd.read_csv(out, dtype=str, keep_default_na=False)
+    assert list(df.columns) == ["leaf_stid", "reference_stid", "modifications"]
+    # GM and GC share a reference entity; only the modifications tell a compartment
+    # copy from a modified form (specs/107 amendment 1)
     assert list(df.itertuples(index=False, name=None)) == [
-        ("R-ALL-PE", "chebi:57613"), ("R-HSA-GC", "uniprot:Q9C0E4"), ("R-HSA-GM", "uniprot:Q9C0E4")]
+        ("R-ALL-PE", "chebi:57613", ""),
+        ("R-HSA-GC", "uniprot:Q9C0E4", "O-phospho-L-serine at 465; O-phospho-L-serine at 467"),
+        ("R-HSA-GM", "uniprot:Q9C0E4", "")]
     # nothing with a reference: the header alone, so the file still exists
     monkeypatch.setattr(neo4j_connector, "get_leaf_references", lambda s: {})
     m.export_leaf_refs(str(nodes), str(out))
-    assert list(pd.read_csv(out).columns) == ["leaf_stid", "reference_stid"] and len(pd.read_csv(out)) == 0
+    assert list(pd.read_csv(out).columns) == ["leaf_stid", "reference_stid", "modifications"]
+    assert len(pd.read_csv(out)) == 0
 
 
 # --- rnas.csv (deltasignal specs/100) ------------------------------------------
