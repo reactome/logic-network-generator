@@ -235,21 +235,49 @@ def prefetch_entity_data(reaction_ids: List[str]) -> None:
         _members_cache[pid].add(cid)
     logger.info(f"Cached {len(_members_cache)} set -> member mappings")
 
-    # Query 5: All HGNC reference entity IDs
+    # Query 5: reference entity ids for human gene products.
+    # Until Release 97 this keyed on an HGNC ReferenceDNASequence under
+    # referenceGene; Release 98 removed every HGNC referenceGene row (0 of
+    # 106,316 ReferenceGeneProducts carry one), which silently returned None
+    # for every protein and disabled balancing, slot binding and the identity
+    # signatures build-wide (deltasignal specs/151, LNG #131). The predicate
+    # now names the population directly: a human ReferenceGeneProduct (isoforms
+    # carry the label) that has a referenceGene. On Release 97 this matches the
+    # old HGNC population exactly for every class the old chain returned, plus
+    # 189 gene products whose HGNC rows were missing from that release's slice
+    # (immunoglobulin V segments, UBE2O, SORCS3, CD21); ReferenceRNASequences
+    # never matched the old chain and are excluded by the label. Viral and
+    # other non-human proteins keep returning no reference, as before.
     logger.info("Bulk fetching reference entity IDs...")
     ref_results = g.run(
         """
-        MATCH (rd:ReferenceDatabase)<-[:referenceDatabase]-(reg:ReferenceEntity)
-              <-[:referenceGene]-(re:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
-        WHERE rd.displayName = 'HGNC'
-          AND pe.stId IN $entity_ids
-        RETURN pe.stId AS entity_id, re.stId AS reference_id
+        MATCH (pe:PhysicalEntity)-[:referenceEntity]->(re:ReferenceGeneProduct),
+              (re)-[:species]->(:Species {displayName: 'Homo sapiens'})
+        WHERE pe.stId IN $entity_ids AND (re)-[:referenceGene]->()
+        RETURN DISTINCT pe.stId AS entity_id, re.stId AS reference_id
         """,
         entity_ids=all_ids_list,
     ).data()
     for row in ref_results:
         _reference_entity_cache[row["entity_id"]] = row["reference_id"]
     logger.info(f"Cached {len(_reference_entity_cache)} reference entity mappings")
+
+    # A human pathway with accessioned sequences but zero resolvable
+    # references means the lookup is broken against this release, not that the
+    # biology lacks genes. Build loudly rather than quietly wrong (LNG #131).
+    ewas_count = sum(
+        1 for labels in _labels_cache.values()
+        if "EntityWithAccessionedSequence" in labels
+    )
+    if not _reference_entity_cache and ewas_count >= 10 and not env_flag(
+        "LNG_ALLOW_NO_REFERENCES"
+    ):
+        raise RuntimeError(
+            f"reference lookup resolved 0 of {ewas_count} accessioned entities: "
+            "the reference-entity query does not fit this Reactome release "
+            "(set LNG_ALLOW_NO_REFERENCES=1 only for a deliberately "
+            "non-human build)"
+        )
 
     _prefetch_done = True
     logger.info("Bulk pre-fetch complete")
@@ -836,16 +864,15 @@ def get_reference_entity_id(entity_id: str) -> Union[str, None]:
     if entity_id in _reference_entity_cache:
         return _reference_entity_cache[entity_id]
     if _prefetch_done:
-        return None  # Not in bulk results means no HGNC reference
+        return None  # Not in bulk results means no gene reference
 
     try:
         data = get_graph().run(
             """
-            MATCH (rd:ReferenceDatabase)<-[:referenceDatabase]-(reg:ReferenceEntity)
-                  <-[:referenceGene]-(re:ReferenceEntity)<-[:referenceEntity]-(pe:PhysicalEntity)
-            WHERE rd.displayName = 'HGNC'
-              AND pe.stId = $entity_id
-            RETURN re.stId AS id
+            MATCH (pe:PhysicalEntity)-[:referenceEntity]->(re:ReferenceGeneProduct),
+                  (re)-[:species]->(:Species {displayName: 'Homo sapiens'})
+            WHERE pe.stId = $entity_id AND (re)-[:referenceGene]->()
+            RETURN DISTINCT re.stId AS id
             """,
             entity_id=entity_id,
         ).data()

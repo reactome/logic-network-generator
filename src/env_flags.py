@@ -14,6 +14,7 @@ import os
 BOOL_FLAGS = {
     "LNG_BOUNDARY_EXPANSION": True,
     "LNG_BOUNDARY_HIERARCHY": True,
+    "LNG_ALLOW_NO_REFERENCES": False,  # LNG #131: a build resolving zero references refuses unless deliberately non-human
     "LNG_BALANCE_CHOICES": True,      # default since deltasignal specs/101 (held-out +30, exp -4; MDM4 KO inverts)
     "LNG_SUMMATION_REGULATIONS": True,   # default since deltasignal specs/102 (a curation supplement: exp +6, tuning +173, held-out 0)
     "LNG_BIND_STOICH": True,     # default since deltasignal specs/048 (homodimer binding; 0 predictions moved)
